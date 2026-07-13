@@ -26,7 +26,7 @@ Mirrors the `civitai-block-prompt-library` page-app template:
 ## Layout
 
 ```
-block.manifest.json     Page-app manifest: 9 scopes, secondsPerImage/videoLoopCount settings
+block.manifest.json     Page-app manifest: 7 scopes (settings are device-local, not manifest)
 src/
   App.tsx               Top-level: discover/mine tabs, popular rail, player, optimistic follow/tip
   types.ts              Domain types mirroring the Wave 1A endpoint shapes
@@ -64,18 +64,23 @@ npm test               # vitest run (node + jsdom projects)
 > On a machine without `pnpm` on PATH, run the binaries directly, e.g.
 > `~/.nix-profile/bin/npx vitest run`, `~/.nix-profile/bin/npm run build`.
 
-## Settings
+## Settings (device-local)
 
-Declared in `block.manifest.json` under **snake_case** keys (the platform +
-`defineBlock` enforce `/^[a-z][a-z0-9_]{0,40}$/` on setting keys):
+Two playback prefs, persisted in **localStorage** — NOT manifest settings. A
+page app can't use `block:settings:*` (the token mint's C8 gate requires the
+caller to be the block *installer*, which a page app has none of, so it 403s),
+and per-viewer manifest settings are unbuilt platform-wide. So these are
+ephemeral device-local UI prefs, controlled by two in-app sliders in the player
+chrome (the ⚙ button).
 
-| Manifest key        | Label             | Scope  | Default | Range |
-| ------------------- | ----------------- | ------ | ------- | ----- |
-| `seconds_per_image` | Seconds per image | viewer | 5       | 1–60  |
-| `video_loop_count`  | Video loop count  | viewer | 1       | 1–10  |
+| localStorage key                          | Label             | Default | Range |
+| ----------------------------------------- | ----------------- | ------- | ----- |
+| `playable-collections:secondsPerImage`    | Seconds per image | 5       | 1–60  |
+| `playable-collections:videoLoopCount`     | Video loop count  | 1       | 1–10  |
 
-Read via `useBlockSettings().userSettings` and resolved to a camelCase
-`PlayerSettings` in `src/settings.ts`.
+Read/clamped/persisted via `usePlayerSettings()` in `src/settings.ts`
+(corrupt/missing → default; out-of-range → clamped). The player consumes the
+resolved camelCase `PlayerSettings`.
 
 ## Known deviations from the published SDK (TODO(wave2))
 
@@ -92,7 +97,7 @@ Read via `useBlockSettings().userSettings` and resolved to a camelCase
 
 ## Private collections & the consent gate
 
-The app requests **9 scopes**. `collections:read:private` is **consent-gated**
+The app requests **7 scopes**. `collections:read:private` is **consent-gated**
 (like `ai:write:budgeted`): the block-token mint withholds it until the viewer
 grants it through the host's consent UI, and the server omits the viewer's
 private collections / 404s private detail until the scope is on the token.

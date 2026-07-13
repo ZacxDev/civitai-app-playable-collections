@@ -5,18 +5,20 @@ import { defineBlock } from '@civitai/app-sdk/blocks';
 import { KNOWN_INCOMING_SCOPES, manifest, validateManifest } from './manifest.js';
 
 describe('block.manifest.json', () => {
-  it('declares the 9 required scopes (incl. the consent-gated private read)', () => {
+  it('declares the 7 required scopes (no block:settings:*)', () => {
     expect(manifest.scopes).toEqual([
       'collections:read:self',
       'collections:read:private',
       'collections:write:self',
       'social:tip:self',
       'buzz:read:self',
-      'block:settings:read',
-      'block:settings:write',
       'apps:storage:shared:read',
       'apps:storage:shared:write',
     ]);
+    // block:settings:* was removed — a page app has no installer, so the mint C8
+    // gate 403s when they're declared.
+    expect(manifest.scopes).not.toContain('block:settings:read');
+    expect(manifest.scopes).not.toContain('block:settings:write');
   });
 
   it('collections:read:private is 3-segment so defineBlock accepts it (no exemption)', () => {
@@ -24,11 +26,13 @@ describe('block.manifest.json', () => {
     expect(validated.scopes).toContain('collections:read:private');
   });
 
-  it('is a page app at "/" with the right settings keys', () => {
+  it('is a page app at "/" with NO manifest settings block (settings are localStorage-local)', () => {
     expect((manifest.page as { path: string }).path).toBe('/');
-    const settings = manifest.settings as Record<string, { scope: string; min?: number; max?: number; default?: number }>;
-    expect(settings.seconds_per_image).toMatchObject({ scope: 'viewer', min: 1, max: 60, default: 5 });
-    expect(settings.video_loop_count).toMatchObject({ scope: 'viewer', min: 1, max: 10, default: 1 });
+    expect(manifest.settings).toBeUndefined();
+  });
+
+  it('is version 0.1.1', () => {
+    expect(manifest.version).toBe('0.1.1');
   });
 
   it('passes defineBlock once augmented + known-incoming scopes exempted', () => {

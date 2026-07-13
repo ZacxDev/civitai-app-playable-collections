@@ -7,11 +7,45 @@ import { afterEach, beforeEach, vi } from 'vitest';
 
 import { resetHarnessTransport } from './dev-transport.js';
 
+// This jsdom build ships no `localStorage`, so install a simple in-memory one on
+// globalThis (== window under jsdom) — the localStorage-backed player settings
+// need a real Storage to exercise persistence.
+if (typeof globalThis !== 'undefined' && !globalThis.localStorage) {
+  const store = new Map<string, string>();
+  const memoryLocalStorage: Storage = {
+    getItem: (k: string) => (store.has(k) ? (store.get(k) as string) : null),
+    setItem: (k: string, v: string) => {
+      store.set(k, String(v));
+    },
+    removeItem: (k: string) => {
+      store.delete(k);
+    },
+    clear: () => store.clear(),
+    key: (i: number) => Array.from(store.keys())[i] ?? null,
+    get length() {
+      return store.size;
+    },
+  };
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: memoryLocalStorage,
+    configurable: true,
+    writable: true,
+  });
+}
+
 // The SDK transport is a process-wide singleton — reset it before each test so
 // each gets a fresh instance whose allowlist contains the jsdom origin, and so
 // no BLOCK_INIT / token state leaks between tests.
 beforeEach(() => {
   resetHarnessTransport();
+
+  // Device-local player settings persist in localStorage; clear between tests so
+  // a persisted pref doesn't leak into the next test's defaults.
+  try {
+    window.localStorage?.clear();
+  } catch {
+    /* ignore */
+  }
 
   // jsdom has no matchMedia; default to a DESKTOP viewport. Tests that need the
   // mobile branch override this via `setViewport('mobile')` below.

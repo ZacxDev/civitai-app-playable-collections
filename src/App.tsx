@@ -12,14 +12,13 @@ import type { CSSProperties } from 'react';
 import {
   useBlockContext,
   useBlockResize,
-  useBlockSettings,
   useBlockToken,
   useRequestConsent,
   useRequestSignIn,
 } from '@civitai/blocks-react';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
-import { resolveSettings } from './settings.js';
+import { usePlayerSettings } from './settings.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
 import { palette, type Palette } from './theme.js';
 import { useIsMobile } from './useMediaQuery.js';
@@ -68,17 +67,19 @@ export interface AppProps {
 export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
-  const settings = useBlockSettings();
   const { requestSignIn } = useRequestSignIn();
   const { requestConsent } = useRequestConsent();
   const isMobile = useIsMobile();
   const toasts = useToasts();
 
+  // Device-local playback prefs (localStorage) — the host does not deliver
+  // viewer settings on a page app (see settings.ts).
+  const { settings: playerSettings, setSecondsPerImage, setVideoLoopCount } = usePlayerSettings();
+
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
 
   const c = palette(theme === 'dark');
-  const player = useMemo(() => resolveSettings(settings), [settings]);
 
   // Has the viewer granted the consent-gated private-collections scope? The
   // block-token mint withholds it until consent, so it appears on the token's
@@ -315,7 +316,9 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
         <Player
           detail={open.detail}
           items={open.items}
-          settings={player}
+          settings={playerSettings}
+          onSecondsPerImageChange={setSecondsPerImage}
+          onVideoLoopCountChange={setVideoLoopCount}
           viewerUserId={viewer?.id ?? null}
           buzzBalance={balance}
           followed={open.followed}

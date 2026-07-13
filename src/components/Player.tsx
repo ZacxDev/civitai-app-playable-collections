@@ -8,7 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
-import type { PlayerSettings } from '../settings.js';
+import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
 import type { Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
 import { iconBtn } from './styles.js';
@@ -20,6 +20,10 @@ export interface PlayerProps {
   detail: CollectionDetail;
   items: MediaItem[];
   settings: PlayerSettings;
+  /** Persist + apply the seconds-per-image pref (device-local). */
+  onSecondsPerImageChange: (value: number) => void;
+  /** Persist + apply the video-loop-count pref (device-local). */
+  onVideoLoopCountChange: (value: number) => void;
   viewerUserId: number | null;
   buzzBalance: number | null;
   followed: boolean;
@@ -38,6 +42,8 @@ export function Player(props: PlayerProps) {
     detail,
     items,
     settings,
+    onSecondsPerImageChange,
+    onVideoLoopCountChange,
     viewerUserId,
     buzzBalance,
     followed,
@@ -65,6 +71,7 @@ export function Player(props: PlayerProps) {
   const [tippedKeys, setTippedKeys] = useState<Set<string>>(new Set());
   const [chromeVisible, setChromeVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   const creatorIsSelf = current != null && viewerUserId != null && current.creator.userId === viewerUserId;
   const curatorIsSelf = viewerUserId != null && detail.curator.userId === viewerUserId;
@@ -219,7 +226,13 @@ export function Player(props: PlayerProps) {
               const result = player.onVideoEnded();
               if (result === 'replay' && videoRef.current) {
                 videoRef.current.currentTime = 0;
-                void videoRef.current.play?.();
+                // play() can reject (autoplay policy) or be unimplemented (jsdom).
+                try {
+                  const p = videoRef.current.play?.();
+                  if (p && typeof p.catch === 'function') void p.catch(() => {});
+                } catch {
+                  /* ignore */
+                }
               }
             }}
           />
@@ -351,7 +364,28 @@ export function Player(props: PlayerProps) {
             >
               ⛶
             </button>
+            <button
+              type="button"
+              onClick={() => setShowSettings((v) => !v)}
+              style={iconBtn(c, showSettings)}
+              aria-label="Playback settings"
+              aria-pressed={showSettings}
+              aria-expanded={showSettings}
+              data-testid="ctrl-settings"
+            >
+              ⚙
+            </button>
           </div>
+
+          {showSettings && (
+            <SettingsPanel
+              c={c}
+              secondsPerImage={settings.secondsPerImage}
+              videoLoopCount={settings.videoLoopCount}
+              onSecondsPerImageChange={onSecondsPerImageChange}
+              onVideoLoopCountChange={onVideoLoopCountChange}
+            />
+          )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input
               type="range"
@@ -417,6 +451,68 @@ function ChromeButton({
       <span style={{ fontSize: 10, color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
         {label.split(' ')[0]}
       </span>
+    </div>
+  );
+}
+
+/**
+ * In-app playback settings (two sliders). Replaces the host settings form —
+ * the page host doesn't deliver viewer settings, so these device-local prefs are
+ * controlled here and persisted to localStorage by the parent's setters.
+ */
+function SettingsPanel({
+  c,
+  secondsPerImage,
+  videoLoopCount,
+  onSecondsPerImageChange,
+  onVideoLoopCountChange,
+}: {
+  c: Palette;
+  secondsPerImage: number;
+  videoLoopCount: number;
+  onSecondsPerImageChange: (value: number) => void;
+  onVideoLoopCountChange: (value: number) => void;
+}) {
+  return (
+    <div style={settingsPanel(c)} data-testid="settings-panel" role="group" aria-label="Playback settings">
+      <label style={settingsRow}>
+        <span style={settingsLabel}>Seconds per image</span>
+        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="range"
+            min={SECONDS_PER_IMAGE.min}
+            max={SECONDS_PER_IMAGE.max}
+            step={1}
+            value={secondsPerImage}
+            onChange={(e) => onSecondsPerImageChange(Number(e.target.value))}
+            aria-label="Seconds per image"
+            data-testid="set-seconds-per-image"
+            style={{ flex: 1 }}
+          />
+          <span style={settingsValue} data-testid="seconds-per-image-value">
+            {secondsPerImage}s
+          </span>
+        </span>
+      </label>
+      <label style={settingsRow}>
+        <span style={settingsLabel}>Video loop count</span>
+        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="range"
+            min={VIDEO_LOOP_COUNT.min}
+            max={VIDEO_LOOP_COUNT.max}
+            step={1}
+            value={videoLoopCount}
+            onChange={(e) => onVideoLoopCountChange(Number(e.target.value))}
+            aria-label="Video loop count"
+            data-testid="set-video-loop-count"
+            style={{ flex: 1 }}
+          />
+          <span style={settingsValue} data-testid="video-loop-count-value">
+            {videoLoopCount}×
+          </span>
+        </span>
+      </label>
     </div>
   );
 }
@@ -514,6 +610,21 @@ function bottomBar(c: Palette): CSSProperties {
 function progressText(c: Palette): CSSProperties {
   return { color: '#fff', fontSize: 12, minWidth: 54, textAlign: 'right', textShadow: '0 1px 2px ' + c.stageBg };
 }
+
+function settingsPanel(c: Palette): CSSProperties {
+  return {
+    display: 'grid',
+    gap: 10,
+    padding: 12,
+    borderRadius: 10,
+    background: c.card,
+    border: '1px solid ' + c.border,
+    color: c.fg,
+  };
+}
+const settingsRow: CSSProperties = { display: 'grid', gap: 4 };
+const settingsLabel: CSSProperties = { fontSize: 13, fontWeight: 600 };
+const settingsValue: CSSProperties = { fontSize: 13, minWidth: 34, textAlign: 'right' };
 
 function emptyStage(c: Palette): CSSProperties {
   return {
