@@ -1,0 +1,57 @@
+{
+  "$schema": "https://civitai.com/schemas/app-block/v1.json",
+  "blockId": "playable-collections",
+  "version": "0.1.0",
+  "name": "Playable Collections",
+  "type": "block",
+  "category": "discovery",
+  "scopes": [
+    "collections:read:self",
+    "collections:write:self",
+    "social:tip:self",
+    "buzz:read:self",
+    "block:settings:read",
+    "block:settings:write",
+    "apps:storage:shared:read",
+    "apps:storage:shared:write"
+  ],
+  "page": {
+    "path": "/",
+    "title": "Playable Collections",
+    "icon": "player-play"
+  },
+  "settings": {
+    "seconds_per_image": {
+      "scope": "viewer",
+      "type": "number",
+      "widget": "slider",
+      "label": "Seconds per image",
+      "description": "How long each image stays on screen before auto-advancing.",
+      "default": 5,
+      "min": 1,
+      "max": 60,
+      "step": 1
+    },
+    "video_loop_count": {
+      "scope": "viewer",
+      "type": "number",
+      "widget": "slider",
+      "label": "Video loop count",
+      "description": "How many times a video repeats before auto-advancing to the next item.",
+      "default": 1,
+      "min": 1,
+      "max": 10,
+      "step": 1
+    }
+  },
+  "iframe": {
+    "minHeight": 600,
+    "maxHeight": 4000,
+    "resizable": true,
+    "sandbox": "allow-scripts allow-forms"
+  },
+  "contentRating": "pg13",
+  "minApiVersion": "1.0",
+  "buildCommand": "npm run build",
+  "outputDir": "dist"
+}

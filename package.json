@@ -1,0 +1,35 @@
+{
+  "name": "playable-collections",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Playable Collections — a Civitai App Block (W10 full-page) media player that plays through a collection's images and videos. Mobile-first + desktop-responsive: auto-advancing image/video playback, per-media creator tips, curator tips, on-site collection bookmark (follow), configurable pacing, discovery of public + own collections, and a cross-user 'popular collections' rail backed by App Blocks shared storage.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "dev:harness": "VITE_DEV_HARNESS=true vite --host localhost --port 5187",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@civitai/app-sdk": "0.13.0",
+    "@civitai/blocks-react": "0.9.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.0",
+    "@types/node": "^25.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "jsdom": "^25.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^8.0.0",
+    "vitest": "^4.1.0"
+  }
+}
