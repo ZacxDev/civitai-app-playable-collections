@@ -31,6 +31,14 @@ export interface FakeApiOptions {
   collections?: SeedCollection[];
   /** Force every mutating call to fail with this code (to test error UI). */
   failMode?: 'none' | 'forbidden' | 'rate_limited' | 'insufficient_balance' | 'not_found';
+  /**
+   * Models the SERVER's consent gate for `collections:read:private`: when this
+   * returns false, `mode=mine` omits the viewer's PRIVATE collections (the same
+   * way the real server withholds them until the scope is on the token). A
+   * private-detail `getCollection` also 404s. Default: private granted (true),
+   * so tests unconcerned with consent see the full set.
+   */
+  collectionsPrivateGranted?: () => boolean;
 }
 
 export interface SeedCollection {
@@ -86,10 +94,13 @@ function makeSeed(): SeedCollection[] {
   });
   const alice = { userId: 11, username: 'alice' };
   const bob = { userId: 22, username: 'bob' };
+  const me = { userId: 99, username: 'me' };
   return [
     mk(101, 'Neon Cities', alice, true, [img(1001, bob), vid(1002, alice), img(1003, bob)]),
     mk(102, 'Forest Studies', bob, true, [img(1004, alice), img(1005, bob)]),
-    mk(103, 'My Private Board', { userId: 99, username: 'me' }, false, [img(1006, alice)]),
+    // viewer 99's OWN collections: one public, one private (consent-gated).
+    mk(201, 'My Public Board', me, true, [img(1006, alice)]),
+    mk(202, 'My Private Board', me, false, [img(1007, bob)]),
   ];
 }
 
@@ -102,6 +113,7 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
   const playCounts = new Map<number, number>();
   const tips: TipInput[] = [];
   const fail = opts.failMode ?? 'none';
+  const privateGranted = opts.collectionsPrivateGranted ?? (() => true);
 
   function guardFail() {
     switch (fail) {
@@ -124,9 +136,13 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
 
   return {
     async listCollections(params: ListCollectionsParams): Promise<Page<CollectionSummary>> {
-      let list = seeds.filter((s) =>
-        params.mode === 'public' ? s.summary.isPublic : s.summary.curator.userId === viewerUserId,
-      );
+      let list = seeds.filter((s) => {
+        if (params.mode === 'public') return s.summary.isPublic;
+        // mode=mine: the viewer's own collections. PRIVATE ones are omitted by
+        // the server until the `collections:read:private` scope is on the token.
+        if (s.summary.curator.userId !== viewerUserId) return false;
+        return s.summary.isPublic || privateGranted();
+      });
       if (params.query) {
         const q = params.query.toLowerCase();
         list = list.filter((s) => s.summary.name.toLowerCase().includes(q));
@@ -144,6 +160,11 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
     async getCollection(id: number): Promise<CollectionPage> {
       const s = byId.get(id);
       if (!s) throw new ApiError('not_found', 404, 'That collection could not be found.');
+      // Private detail 404s until the private-read scope is on the token (server
+      // parity) — unless the viewer owns it AND has the scope granted.
+      if (!s.summary.isPublic && !privateGranted()) {
+        throw new ApiError('not_found', 404, 'That collection could not be found.');
+      }
       return {
         collection: {
           id: s.summary.id,

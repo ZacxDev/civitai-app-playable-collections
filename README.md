@@ -26,7 +26,7 @@ Mirrors the `civitai-block-prompt-library` page-app template:
 ## Layout
 
 ```
-block.manifest.json     Page-app manifest: 8 scopes, secondsPerImage/videoLoopCount settings
+block.manifest.json     Page-app manifest: 9 scopes, secondsPerImage/videoLoopCount settings
 src/
   App.tsx               Top-level: discover/mine tabs, popular rail, player, optimistic follow/tip
   types.ts              Domain types mirroring the Wave 1A endpoint shapes
@@ -83,10 +83,34 @@ Read via `useBlockSettings().userSettings` and resolved to a camelCase
   scopes; the published SDK's `BLOCK_SCOPE_PATTERN` only accepts 3 segments, so
   `defineBlock` rejects them. `src/manifest.ts` strips them before calling
   `defineBlock` (see `KNOWN_INCOMING_SCOPES`) and validates them against a local
-  allowlist. Remove once `@civitai/app-sdk` ships them.
-- **`collections:read:self` / `collections:write:self`** are 3-segment, so they
-  pass the pattern; they're simply absent from the SDK's `BLOCK_SCOPES` enum
-  (which `defineBlock` does not check) — they validate fine today.
+  allowlist. These are the ONLY two scopes needing the workaround. Remove once
+  `@civitai/app-sdk` ships them.
+- **`collections:read:self` / `collections:read:private` / `collections:write:self`**
+  are 3-segment, so they pass the pattern; they're simply absent from the SDK's
+  `BLOCK_SCOPES` enum (which `defineBlock` does not check) — they validate fine
+  today. No exemption needed.
+
+## Private collections & the consent gate
+
+The app requests **9 scopes**. `collections:read:private` is **consent-gated**
+(like `ai:write:budgeted`): the block-token mint withholds it until the viewer
+grants it through the host's consent UI, and the server omits the viewer's
+private collections / 404s private detail until the scope is on the token.
+
+- **Consent helper:** `useRequestConsent()` (`@civitai/blocks-react`) →
+  `requestConsent({ scopes: ['collections:read:private'] })`. Fire-and-forget:
+  the host opens its consent UI and, on grant, re-mints the token and pushes a
+  `TOKEN_REFRESH`.
+- **Observing the re-mint:** the app reads `useBlockToken().scopes` — once
+  `collections:read:private` appears on it (post-grant), an effect reloads the
+  "My collections" list so private collections show without a manual refresh.
+  (`src/scopes.ts` holds the predicate; `App` accepts an `isPrivateGranted` test
+  seam that maps the mock host's consent scope for integration tests.)
+- **My collections tab:** always lists public-own collections; when the private
+  scope isn't granted it renders a "Show my private collections" affordance
+  (`data-testid="private-consent"`) that triggers the consent gate. Declined /
+  not-yet-granted degrades to public-only with the affordance still available —
+  never a hard error.
 
 ## API contract notes for Wave 1A reconciliation
 

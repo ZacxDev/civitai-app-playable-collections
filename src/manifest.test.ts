@@ -5,9 +5,10 @@ import { defineBlock } from '@civitai/app-sdk/blocks';
 import { KNOWN_INCOMING_SCOPES, manifest, validateManifest } from './manifest.js';
 
 describe('block.manifest.json', () => {
-  it('declares the 8 required scopes', () => {
+  it('declares the 9 required scopes (incl. the consent-gated private read)', () => {
     expect(manifest.scopes).toEqual([
       'collections:read:self',
+      'collections:read:private',
       'collections:write:self',
       'social:tip:self',
       'buzz:read:self',
@@ -16,6 +17,11 @@ describe('block.manifest.json', () => {
       'apps:storage:shared:read',
       'apps:storage:shared:write',
     ]);
+  });
+
+  it('collections:read:private is 3-segment so defineBlock accepts it (no exemption)', () => {
+    const validated = validateManifest();
+    expect(validated.scopes).toContain('collections:read:private');
   });
 
   it('is a page app at "/" with the right settings keys', () => {

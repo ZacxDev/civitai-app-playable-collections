@@ -14,11 +14,13 @@ import {
   useBlockResize,
   useBlockSettings,
   useBlockToken,
+  useRequestConsent,
   useRequestSignIn,
 } from '@civitai/blocks-react';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
 import { resolveSettings } from './settings.js';
+import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
 import { palette, type Palette } from './theme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import type {
@@ -50,11 +52,25 @@ interface OpenCollection {
   followed: boolean;
 }
 
-export function App({ api: injectedApi }: { api?: ApiClient } = {}) {
+export interface AppProps {
+  /** Inject a fake ApiClient in tests/dev; production builds the real HTTP client. */
+  api?: ApiClient;
+  /**
+   * Predicate over the current block-token scopes deciding whether the viewer
+   * has granted the consent-gated `collections:read:private` scope. Defaults to
+   * the real check. A test seam (like `api`): the SDK mock host models consent
+   * for `ai:write:budgeted`, so a test maps that to the private grant to drive
+   * the real request→re-mint→observe round-trip.
+   */
+  isPrivateGranted?: (tokenScopes: string[]) => boolean;
+}
+
+export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
   const settings = useBlockSettings();
   const { requestSignIn } = useRequestSignIn();
+  const { requestConsent } = useRequestConsent();
   const isMobile = useIsMobile();
   const toasts = useToasts();
 
@@ -63,6 +79,22 @@ export function App({ api: injectedApi }: { api?: ApiClient } = {}) {
 
   const c = palette(theme === 'dark');
   const player = useMemo(() => resolveSettings(settings), [settings]);
+
+  // Has the viewer granted the consent-gated private-collections scope? The
+  // block-token mint withholds it until consent, so it appears on the token's
+  // scopes only after a grant + re-mint (TOKEN_REFRESH).
+  const hasPrivateScope = (isPrivateGranted ?? defaultHasPrivateScope)(token.scopes ?? []);
+
+  const requestPrivateConsent = useCallback(() => {
+    if (!viewer) {
+      requestSignIn();
+      return;
+    }
+    // Fire-and-forget: the host opens its consent UI; on grant it re-mints the
+    // token with the scope and pushes TOKEN_REFRESH, which flips hasPrivateScope
+    // and triggers a mine reload below. Declined => nothing changes (no error).
+    requestConsent({ scopes: [COLLECTIONS_READ_PRIVATE] });
+  }, [viewer, requestSignIn, requestConsent]);
 
   // Real HTTP client (prod) unless a fake is injected (tests/dev).
   const realApi = useMemo(
@@ -158,8 +190,10 @@ export function App({ api: injectedApi }: { api?: ApiClient } = {}) {
 
   useEffect(() => {
     if (!ready) return;
+    // Reload when the private scope is granted (re-mint) so the viewer's private
+    // collections appear without a manual refresh.
     if (tab === 'mine') void loadMine();
-  }, [ready, tab, loadMine]);
+  }, [ready, tab, loadMine, hasPrivateScope]);
 
   useEffect(() => {
     if (!ready) return;
@@ -388,20 +422,43 @@ export function App({ api: injectedApi }: { api?: ApiClient } = {}) {
             </button>
           </div>
         ) : (
-          <CollectionGrid
-            collections={activeList.items}
-            loading={activeList.loading || (tab === 'discover' && openLoading)}
-            error={activeList.error}
-            emptyLabel={
-              tab === 'discover'
-                ? 'No public collections match your search yet.'
-                : "You haven't created or bookmarked any collections yet."
-            }
-            onOpen={openCollection}
-            onRetry={tab === 'discover' ? loadDiscover : loadMine}
-            c={c}
-            isMobile={isMobile}
-          />
+          <>
+            {/* Private-collections consent affordance (mine tab, signed in, not
+                yet granted). Public own collections are always shown above; the
+                viewer opts in to reveal private ones. Never a hard error. */}
+            {tab === 'mine' && viewer && !hasPrivateScope && (
+              <div style={consentBox(c)} data-testid="private-consent">
+                <div style={{ display: 'grid', gap: 2 }}>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>Your private collections are hidden</span>
+                  <span style={{ fontSize: 13, color: c.muted }}>
+                    Grant access to include the collections you keep private.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={requestPrivateConsent}
+                  style={chipStyle(c, true)}
+                  data-testid="enable-private"
+                >
+                  Show my private collections
+                </button>
+              </div>
+            )}
+            <CollectionGrid
+              collections={activeList.items}
+              loading={activeList.loading || (tab === 'discover' && openLoading)}
+              error={activeList.error}
+              emptyLabel={
+                tab === 'discover'
+                  ? 'No public collections match your search yet.'
+                  : "You haven't created or bookmarked any collections yet."
+              }
+              onOpen={openCollection}
+              onRetry={tab === 'discover' ? loadDiscover : loadMine}
+              c={c}
+              isMobile={isMobile}
+            />
+          </>
         )}
       </div>
       <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} c={c} />
@@ -445,5 +502,18 @@ function buzzPill(c: Palette): CSSProperties {
     padding: '6px 12px',
     borderRadius: 999,
     whiteSpace: 'nowrap',
+  };
+}
+function consentBox(c: Palette): CSSProperties {
+  return {
+    display: 'flex',
+    gap: 12,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    background: c.card,
+    border: '1px dashed ' + c.border,
+    borderRadius: 10,
+    padding: 12,
   };
 }
