@@ -34,6 +34,7 @@ export type ApiErrorCode =
   | 'rate_limited' // 429 — back off; `retryAfterMs` is populated when the host sends Retry-After
   | 'insufficient_balance' // tip rejected for not enough Buzz
   | 'not_found' // 404 — collection/media gone
+  | 'parse' // 2xx body wasn't JSON (e.g. same-origin SPA index.html) — NON-retryable
   | 'network' // fetch threw (offline / DNS / CORS)
   | 'unknown'; // anything else
 
@@ -144,7 +145,16 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
     if (res.ok) {
       // 204 / empty body tolerance.
       const text = await res.text();
-      return (text ? JSON.parse(text) : {}) as T;
+      if (!text) return {} as T;
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        // A 2xx whose body isn't JSON — the classic "block fetched its own
+        // subdomain and got the SPA index.html" failure. NON-retryable: retrying
+        // the same URL returns the same HTML, so surface it as an error state
+        // instead of looping.
+        throw new ApiError('parse', res.status, 'The API returned an unexpected (non-JSON) response.');
+      }
     }
 
     // 401 → try one token re-mint + retry (expired-token path).

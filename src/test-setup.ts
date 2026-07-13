@@ -7,6 +7,14 @@ import { afterEach, beforeEach, vi } from 'vitest';
 
 import { resetHarnessTransport } from './dev-transport.js';
 
+// jsdom does not implement HTMLMediaElement.play/pause (it logs "Not
+// implemented" + throws). The player guards the throw, but stub them as no-ops
+// so the video-replay path doesn't spam the console.
+if (typeof HTMLMediaElement !== 'undefined') {
+  HTMLMediaElement.prototype.play = () => Promise.resolve();
+  HTMLMediaElement.prototype.pause = () => {};
+}
+
 // This jsdom build ships no `localStorage`, so install a simple in-memory one on
 // globalThis (== window under jsdom) — the localStorage-backed player settings
 // need a real Storage to exercise persistence.
@@ -57,6 +65,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 /** Build a matchMedia stub where max-width queries report the given mobile-ness. */

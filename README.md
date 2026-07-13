@@ -18,8 +18,9 @@ contract adjustment is a one-file edit.
 Mirrors the `civitai-block-prompt-library` page-app template:
 
 - **Vite** + **React 19** + **TypeScript** (strict), inline-style theming.
-- **`@civitai/app-sdk`** + **`@civitai/blocks-react`** — the published block SDK
-  (hooks + iframe transport + `@civitai/blocks-react/testing` mock host).
+- **`@civitai/app-sdk@0.17.0`** + **`@civitai/blocks-react@0.20.0`** — the
+  published block SDK (hooks + iframe transport + `@civitai/blocks-react/testing`
+  mock host; `useHostOrigin()` for the validated API base).
 - **Vitest** with two projects: `node` (pure logic) + `jsdom` (components/hooks/
   e2e via `@testing-library/react` and the SDK mock host).
 
@@ -82,18 +83,29 @@ Read/clamped/persisted via `usePlayerSettings()` in `src/settings.ts`
 (corrupt/missing → default; out-of-range → clamped). The player consumes the
 resolved camelCase `PlayerSettings`.
 
-## Known deviations from the published SDK (TODO(wave2))
+## Scopes & the API host origin
 
-- **`apps:storage:shared:read` / `apps:storage:shared:write`** are 4-segment
-  scopes; the published SDK's `BLOCK_SCOPE_PATTERN` only accepts 3 segments, so
-  `defineBlock` rejects them. `src/manifest.ts` strips them before calling
-  `defineBlock` (see `KNOWN_INCOMING_SCOPES`) and validates them against a local
-  allowlist. These are the ONLY two scopes needing the workaround. Remove once
-  `@civitai/app-sdk` ships them.
-- **`collections:read:self` / `collections:read:private` / `collections:write:self`**
-  are 3-segment, so they pass the pattern; they're simply absent from the SDK's
-  `BLOCK_SCOPES` enum (which `defineBlock` does not check) — they validate fine
-  today. No exemption needed.
+All **7 scopes** are first-class in `@civitai/app-sdk@0.17.0` (the `BLOCK_SCOPES`
+enum + the relaxed `BLOCK_SCOPE_PATTERN` that now accepts the 4-segment
+`apps:storage:shared:*`), so `defineBlock` validates the manifest directly — the
+earlier `KNOWN_INCOMING_SCOPES` strip-before-validate workaround is gone.
+
+**API host origin (the run-page loop fix):** the block-token-gated API lives on
+the **civitai host**, not the block's own subdomain, and the block runs
+cross-origin. Fetching same-origin returned the block's SPA `index.html` → a
+`JSON.parse` throw → (previously) an unbounded retry loop. The app now:
+
+- derives the API base from **`useHostOrigin()`** — the SDK's allowlist-VALIDATED
+  parent origin (never `document.referrer`), `undefined` until `BLOCK_INIT`;
+- **gates all data-fetching on BOTH `host` and `token.raw`** being present — no
+  client is built and nothing is fetched until then (the loading state shows).
+  The HTTP client is memoized on the stable `token.raw` (not the fresh-every-
+  render token object, which would itself loop);
+- wraps the auto-run list loaders in **`withBoundedRetry`** (`src/lib/retry.ts`,
+  ≤3 attempts): a persistent failure — a non-JSON/parse response, a 4xx, or an
+  exhausted 5xx/network — lands in an error state with a manual retry, **never a
+  loop**. Parse errors and 4xx are non-retryable (retrying returns the same
+  result).
 
 ## Private collections & the consent gate
 

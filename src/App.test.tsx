@@ -15,12 +15,13 @@ import { setViewport } from './test-setup.js';
 
 function renderApp(
   opts: {
-    api: ApiClient;
+    api?: ApiClient;
     viewer?: ViewerInfo | null;
     theme?: 'light' | 'dark';
     isPrivateGranted?: (scopes: string[]) => boolean;
     onOutbound?: (msg: { type: string; payload?: unknown }) => void;
-  } = { api: createFakeApi() },
+    retry?: { retries: number; delayMs: number };
+  } = {},
 ) {
   return render(
     <Harness
@@ -29,7 +30,7 @@ function renderApp(
       showLog={false}
       onOutbound={opts.onOutbound}
     >
-      <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} />
+      <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} />
     </Harness>,
   );
 }
@@ -248,5 +249,106 @@ describe('App — private collections consent gate', () => {
     expect(await screen.findByText('My Private Board')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByTestId('private-consent')).not.toBeInTheDocument());
     expect(screen.getByText('My Public Board')).toBeInTheDocument();
+  });
+});
+
+// --------------------------------------------------------------------------
+// Host-origin gating + bounded retry (the run-page infinite-loop fix)
+// --------------------------------------------------------------------------
+
+/** A fetch stub that records request URLs and returns per-URL canned responses. */
+function stubFetch(respond: (url: string) => Response) {
+  const urls: string[] = [];
+  const spy = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    urls.push(url);
+    return respond(url);
+  });
+  vi.stubGlobal('fetch', spy);
+  return { urls, spy };
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+describe('App — host-origin gating (real HTTP client)', () => {
+  it('does NOT create a client or fetch before the host origin is established', () => {
+    const { spy } = stubFetch(() => json({ items: [] }));
+    // No Harness => no BLOCK_INIT => useHostOrigin() is undefined and ready=false.
+    render(<App />);
+    expect(screen.getByText(/Loading Playable Collections/)).toBeInTheDocument();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('once useHostOrigin returns, fetches ABSOLUTE URLs against the validated host (not same-origin)', async () => {
+    const host = window.location.origin;
+    const { urls } = stubFetch((url) => {
+      if (url.includes('/blocks/collections')) return json({ items: [] });
+      if (url.includes('/blocks/buzz')) return json({ balance: 0 });
+      if (url.includes('/shared-storage/top')) return json({ items: [] });
+      return json({});
+    });
+    renderApp(); // no injected api => the real HTTP client path
+    // empty items => the grid renders its empty state; wait for the fetch to land
+    await screen.findByTestId('grid-empty');
+
+    const collectionsCall = urls.find((u) => u.includes('/blocks/collections'));
+    expect(collectionsCall).toBeDefined();
+    // Absolute, against the validated host origin — NOT a same-origin relative path.
+    expect(collectionsCall!.startsWith(`${host}/api/v1/blocks/collections`)).toBe(true);
+    expect(collectionsCall!.startsWith('/api')).toBe(false);
+  });
+});
+
+describe('App — bounded retry / no infinite loop', () => {
+  it('a non-JSON (HTML) response lands in the error state after ONE attempt, not a loop', async () => {
+    const host = window.location.origin;
+    const collectionsCalls: string[] = [];
+    stubFetch((url) => {
+      if (url.includes('/blocks/collections')) {
+        collectionsCalls.push(url);
+        // The exact bug: a same-origin SPA index.html served with 200.
+        return new Response('<!doctype html><html><body>app</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        });
+      }
+      return json({ items: [], balance: 0 });
+    });
+    renderApp(); // real client path against `host`
+    // Parse error is NON-retryable => error surfaces, bounded to a single call.
+    expect(await screen.findByTestId('grid-error')).toBeInTheDocument();
+    expect(collectionsCalls).toHaveLength(1);
+    expect(host).toBeTruthy();
+  });
+
+  it('a persistent 500 surfaces the error after a BOUNDED number of attempts (no loop)', async () => {
+    const base = createFakeApi();
+    const listSpy = vi.fn(async () => {
+      throw new ApiError('unknown', 500, 'server exploded');
+    });
+    const api: ApiClient = { ...base, listCollections: listSpy };
+    // retries: 2 => at most 3 attempts, delay 0 for a fast deterministic run.
+    renderApp({ api, retry: { retries: 2, delayMs: 0 } });
+    expect(await screen.findByTestId('grid-error')).toBeInTheDocument();
+    // BOUNDED: exactly 1 + 2 retries. If it looped, this would be huge.
+    expect(listSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('the manual retry button re-attempts after the bounded failure', async () => {
+    const base = createFakeApi();
+    let fail = true;
+    const listSpy = vi.fn(async (params: Parameters<ApiClient['listCollections']>[0]) => {
+      if (fail) throw new ApiError('unknown', 500, 'boom');
+      return base.listCollections(params);
+    });
+    const api: ApiClient = { ...base, listCollections: listSpy };
+    renderApp({ api, retry: { retries: 1, delayMs: 0 } });
+    await screen.findByTestId('grid-error');
+    expect(listSpy).toHaveBeenCalledTimes(2); // 1 + 1 retry, bounded
+    fail = false;
+    await userEvent.click(screen.getByTestId('grid-retry'));
+    await screen.findByTestId('collection-grid');
   });
 });

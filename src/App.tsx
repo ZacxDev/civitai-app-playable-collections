@@ -13,11 +13,13 @@ import {
   useBlockContext,
   useBlockResize,
   useBlockToken,
+  useHostOrigin,
   useRequestConsent,
   useRequestSignIn,
 } from '@civitai/blocks-react';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
+import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
 import { palette, type Palette } from './theme.js';
@@ -62,11 +64,14 @@ export interface AppProps {
    * the real request→re-mint→observe round-trip.
    */
   isPrivateGranted?: (tokenScopes: string[]) => boolean;
+  /** Bounded-retry config for the auto-run data loaders (test seam). */
+  retry?: RetryConfig;
 }
 
-export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
+export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
+  const host = useHostOrigin();
   const { requestSignIn } = useRequestSignIn();
   const { requestConsent } = useRequestConsent();
   const isMobile = useIsMobile();
@@ -98,16 +103,36 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
   }, [viewer, requestSignIn, requestConsent]);
 
   // Real HTTP client (prod) unless a fake is injected (tests/dev).
-  const realApi = useMemo(
+  //
+  // 🔴 The API lives on the CIVITAI HOST, not this block's own subdomain — a
+  // same-origin fetch hits playable-collections.civit.ai and gets the SPA
+  // index.html (parse error -> the old infinite loop). `useHostOrigin()` is the
+  // SDK's allowlist-VALIDATED parent origin (never document.referrer). It's
+  // `undefined` until BLOCK_INIT, so we build NO client and fetch NOTHING until
+  // BOTH the host origin AND the bearer token are present.
+  //
+  // 🔴 `useBlockToken()` returns a FRESH object every render (`{...token,
+  // refresh}`), so memoizing on the token OBJECT would rebuild the client (and
+  // re-run every loader) each render — an infinite fetch loop. Memoize on the
+  // STABLE `token.raw` string, and read the live token/refresh via a ref.
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+  const tokenRaw = token.raw;
+  const realApi = useMemo<ApiClient | null>(
     () =>
-      createHttpApiClient({
-        baseUrl: (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '',
-        getToken: () => token.raw,
-        refreshToken: () => token.refresh(),
-      }),
-    [token],
+      host && tokenRaw
+        ? createHttpApiClient({
+            baseUrl: host,
+            getToken: () => tokenRef.current.raw,
+            refreshToken: () => tokenRef.current.refresh(),
+          })
+        : null,
+    [host, tokenRaw],
   );
   const api = injectedApi ?? realApi;
+  // Data-fetching is gated on a usable client (injected fake, or the real client
+  // once host+token are established).
+  const canFetch = api != null;
 
   // ---- browse state ----
   const [tab, setTab] = useState<Tab>('discover');
@@ -133,31 +158,43 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
   }, [discover.items, mine.items]);
 
   // ---- loaders ----
+  // The auto-run list loaders are wrapped in `withBoundedRetry` — a persistent
+  // failure (parse/HTML, 4xx, or an exhausted 5xx/network) lands in the error
+  // state with a manual retry, NEVER an unbounded loop.
   const loadDiscover = useCallback(async () => {
+    if (!api) return;
     setDiscover((s) => ({ ...s, loading: true, error: null }));
     try {
-      const page = await api.listCollections({ mode: 'public', query: search, sort, limit: PAGE_LIMIT });
+      const page = await withBoundedRetry(
+        () => api.listCollections({ mode: 'public', query: search, sort, limit: PAGE_LIMIT }),
+        retry,
+      );
       setDiscover({ items: page.items, loading: false, error: null });
     } catch (err) {
       setDiscover({ items: [], loading: false, error: errMessage(err) });
     }
-  }, [api, search, sort]);
+  }, [api, search, sort, retry]);
 
   const loadMine = useCallback(async () => {
+    if (!api) return;
     if (!viewer) {
       setMine({ items: [], loading: false, error: null });
       return;
     }
     setMine((s) => ({ ...s, loading: true, error: null }));
     try {
-      const page = await api.listCollections({ mode: 'mine', query: search, sort, limit: PAGE_LIMIT });
+      const page = await withBoundedRetry(
+        () => api.listCollections({ mode: 'mine', query: search, sort, limit: PAGE_LIMIT }),
+        retry,
+      );
       setMine({ items: page.items, loading: false, error: null });
     } catch (err) {
       setMine({ items: [], loading: false, error: errMessage(err) });
     }
-  }, [api, viewer, search, sort]);
+  }, [api, viewer, search, sort, retry]);
 
   const loadPopular = useCallback(async () => {
+    if (!api) return;
     try {
       const entries = await api.getPopular(POPULAR_LIMIT);
       const resolved = entries
@@ -174,6 +211,7 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
   }, [api, known]);
 
   const loadBalance = useCallback(async () => {
+    if (!api) return;
     if (!viewer) return;
     try {
       const b = await api.getBuzzBalance();
@@ -183,34 +221,36 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
     }
   }, [api, viewer]);
 
-  // ---- effects ----
+  // ---- effects ---- (all gated on `canFetch`: don't fetch until the host
+  // origin + token are established, or the loop's root cause returns)
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !canFetch) return;
     void loadDiscover();
-  }, [ready, loadDiscover]);
+  }, [ready, canFetch, loadDiscover]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !canFetch) return;
     // Reload when the private scope is granted (re-mint) so the viewer's private
     // collections appear without a manual refresh.
     if (tab === 'mine') void loadMine();
-  }, [ready, tab, loadMine, hasPrivateScope]);
+  }, [ready, canFetch, tab, loadMine, hasPrivateScope]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !canFetch) return;
     void loadBalance();
-  }, [ready, loadBalance]);
+  }, [ready, canFetch, loadBalance]);
 
   // Recompute the popular rail whenever the known-collections map changes.
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || !canFetch) return;
     void loadPopular();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, known]);
+  }, [ready, canFetch, known]);
 
   // ---- open a collection into the player (+ increment shared play-count) ----
   const openCollection = useCallback(
     async (summary: CollectionSummary) => {
+      if (!api) return;
       setOpenLoading(true);
       setOpen(null);
       try {
@@ -234,7 +274,7 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
 
   // ---- follow toggle (optimistic + rollback) ----
   const toggleFollow = useCallback(async () => {
-    if (!open) return;
+    if (!open || !api) return;
     if (!viewer) {
       requestSignIn();
       return;
@@ -270,6 +310,7 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
   // ---- tip flow ----
   const doTip = useCallback(
     async (target: TipTarget, amount: number): Promise<boolean> => {
+      if (!api) return false;
       if (!viewer) {
         requestSignIn();
         return false;
@@ -302,7 +343,10 @@ export function App({ api: injectedApi, isPrivateGranted }: AppProps = {}) {
   );
 
   // ---- render ----
-  if (!ready) {
+  // Boot gate: wait for BLOCK_INIT (ready) AND a usable client (host origin +
+  // token established, or an injected fake). Until then, show loading — never
+  // fetch, so the same-origin/no-host loop can't start.
+  if (!ready || !canFetch) {
     return (
       <div ref={rootRef} data-theme={theme} style={pageStyle(c)}>
         <div style={{ margin: 'auto', opacity: 0.7 }}>Loading Playable Collections…</div>
