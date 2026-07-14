@@ -19,6 +19,8 @@ import {
 } from '@civitai/blocks-react';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
+import { createCachedApiClient } from './lib/cache.js';
+import { loadFullCollection } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
@@ -118,14 +120,21 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const tokenRef = useRef(token);
   tokenRef.current = token;
   const tokenRaw = token.raw;
+  // Wrapped in a session cache (feedback #3): the collections-list + collection-
+  // detail responses are memoized in-memory so switching tabs / re-opening a
+  // collection is instant and doesn't re-hit the private,no-store origin. The
+  // cache is bound to this memo (per host+token), and follow mutations clear it.
+  // Media/CDN image URLs still browser-cache normally (untouched).
   const realApi = useMemo<ApiClient | null>(
     () =>
       host && tokenRaw
-        ? createHttpApiClient({
-            baseUrl: host,
-            getToken: () => tokenRef.current.raw,
-            refreshToken: () => tokenRef.current.refresh(),
-          })
+        ? createCachedApiClient(
+            createHttpApiClient({
+              baseUrl: host,
+              getToken: () => tokenRef.current.raw,
+              refreshToken: () => tokenRef.current.refresh(),
+            }),
+          )
         : null,
     [host, tokenRaw],
   );
@@ -137,7 +146,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   // ---- browse state ----
   const [tab, setTab] = useState<Tab>('discover');
   const [search, setSearch] = useState('');
-  const [sort, setSort] = useState<CollectionSort>('newest');
+  // Default the discovery sort to popular (feedback #1). On the wire this becomes
+  // the deployed server's `Most Followers` (CollectionSort.MostContributors) via
+  // SORT_PARAM in lib/api.ts — no dependency on any undeployed server enum.
+  const [sort, setSort] = useState<CollectionSort>('popular');
   const [discover, setDiscover] = useState<ListState>({ items: [], loading: true, error: null });
   const [mine, setMine] = useState<ListState>({ items: [], loading: false, error: null });
   const [popular, setPopular] = useState<Array<{ collection: CollectionSummary; count: number }>>([]);
@@ -254,7 +266,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       setOpenLoading(true);
       setOpen(null);
       try {
-        const page = await api.getCollection(summary.id, { limit: 200 });
+        const page = await loadFullCollection(api, summary.id);
         setOpen({ detail: page.collection, items: page.items, followed: page.collection.followed });
         // Fire-and-forget the play-count bump; a failure never blocks playback.
         api

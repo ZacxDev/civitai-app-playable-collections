@@ -2,10 +2,31 @@
 // presentation: it takes already-loaded data and callbacks. All loading /
 // error / empty states are rendered here so every list surface handles them.
 
+import { useState } from 'react';
 import type { CSSProperties } from 'react';
 
 import type { CollectionSummary } from '../types.js';
 import type { Palette } from '../theme.js';
+
+/**
+ * Cover thumbnail with a graceful placeholder (feedback #2). Renders the ▶
+ * placeholder tile when there is no `src` AND when the image fails to load
+ * (broken/expired URL), so a card is never blank or shows a broken-image icon.
+ */
+export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return (
+      <div style={coverPlaceholder(c)} aria-hidden="true" data-testid="cover-placeholder">
+        ▶
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line jsx-a11y/img-redundant-alt
+    <img src={src} alt="" style={coverImg} loading="lazy" onError={() => setFailed(true)} />
+  );
+}
 
 export interface CollectionGridProps {
   collections: CollectionSummary[];
@@ -87,14 +108,7 @@ export function CollectionCard({
       aria-label={`Play ${collection.name} — ${collection.itemCount} items`}
     >
       <div style={coverWrap(c)}>
-        {collection.coverImageUrl ? (
-          // eslint-disable-next-line jsx-a11y/img-redundant-alt
-          <img src={collection.coverImageUrl} alt="" style={coverImg} loading="lazy" />
-        ) : (
-          <div style={coverPlaceholder(c)} aria-hidden="true">
-            ▶
-          </div>
-        )}
+        <CoverImage src={collection.coverImageUrl} c={c} />
         {!collection.isPublic && (
           <span style={privateBadge(c)} data-testid="private-badge">
             Private
@@ -139,13 +153,7 @@ export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
             aria-label={`Play ${collection.name} — played ${count} times`}
           >
             <div style={railCover(c)}>
-              {collection.coverImageUrl ? (
-                <img src={collection.coverImageUrl} alt="" style={coverImg} loading="lazy" />
-              ) : (
-                <div style={coverPlaceholder(c)} aria-hidden="true">
-                  ▶
-                </div>
-              )}
+              <CoverImage src={collection.coverImageUrl} c={c} />
             </div>
             <span style={railTitle}>{collection.name}</span>
             <span style={cardMeta(c)}>{count} plays</span>
