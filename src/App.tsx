@@ -448,7 +448,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           >
             <option value="newest">Newest</option>
             <option value="popular">Popular</option>
-            <option value="name">Name</option>
           </select>
           <button type="submit" style={ghostBtn(c)} data-testid="search-submit">
             Search

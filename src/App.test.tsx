@@ -126,6 +126,15 @@ describe('App — discover + tabs', () => {
     await waitFor(() => expect(screen.getByTestId('buzz-balance')).toHaveTextContent('1,234'));
   });
 
+  it('offers only Newest + Popular sort (no name-sort — the service has none)', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    renderApp({ api });
+    const select = await screen.findByTestId('sort-select');
+    const options = within(select).getAllByRole('option').map((o) => (o as HTMLOptionElement).value);
+    expect(options).toEqual(['newest', 'popular']);
+    expect(options).not.toContain('name');
+  });
+
   it('switches to My collections and shows own public + private when private access is granted', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api, isPrivateGranted: () => true });

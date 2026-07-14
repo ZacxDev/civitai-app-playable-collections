@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ApiError, createHttpApiClient, parseRetryAfter, playCountKey } from './api.js';
+import {
+  ApiError,
+  asMessageString,
+  createHttpApiClient,
+  parseRetryAfter,
+  playCountKey,
+} from './api.js';
 
 interface MockCall {
   url: string;
@@ -52,8 +58,21 @@ describe('listCollections', () => {
     expect(calls[0].url).toContain('/api/v1/blocks/collections');
     expect(calls[0].url).toContain('mode=public');
     expect(calls[0].url).toContain('query=neon');
-    expect(calls[0].url).toContain('sort=popular');
+    // The friendly UI 'popular' is translated to the server's enum on the wire.
+    expect(calls[0].url).toContain('sort=Most+Followers');
     expect(calls[0].headers.Authorization).toBe('Bearer tok_abc');
+  });
+
+  it('translates the friendly UI sort to the server CollectionSort enum on the wire', async () => {
+    const { api, calls } = makeClient([
+      jsonResponse(200, { items: [] }),
+      jsonResponse(200, { items: [] }),
+    ]);
+    await api.listCollections({ mode: 'public', sort: 'newest' });
+    await api.listCollections({ mode: 'public', sort: 'popular' });
+    // URLSearchParams encodes a space as '+'; decode to assert the wire value.
+    expect(new URL(calls[0].url, 'http://h').searchParams.get('sort')).toBe('Newest');
+    expect(new URL(calls[1].url, 'http://h').searchParams.get('sort')).toBe('Most Followers');
   });
 
   it('maps 403 -> forbidden', async () => {
@@ -209,5 +228,47 @@ describe('network + parse helpers', () => {
     const future = new Date(Date.now() + 10000).toUTCString();
     const ms = parseRetryAfter(future);
     expect(ms).toBeGreaterThan(5000);
+  });
+});
+
+describe('asMessageString (never lets a non-string reach .toLowerCase)', () => {
+  it('passes strings through and coerces everything else safely', () => {
+    expect(asMessageString('boom')).toBe('boom');
+    expect(asMessageString(undefined)).toBe('');
+    expect(asMessageString(null)).toBe('');
+    expect(asMessageString(123)).toBe('123');
+    expect(asMessageString(true)).toBe('true');
+    // The exact crash input: a ZodError-shaped object.
+    const zodish = { name: 'ZodError', issues: [{ path: ['sort'], message: 'Invalid enum value' }] };
+    const out = asMessageString(zodish);
+    expect(typeof out).toBe('string');
+    expect(() => out.toLowerCase()).not.toThrow();
+  });
+});
+
+describe('toApiError robustness — a NON-STRING error body must not crash the client', () => {
+  it('handles `{ error: <ZodError object> }` (the sort-mismatch crash) by classifying on status', async () => {
+    // This exact response is what the deployed server returns for `sort=newest`.
+    const zodBody = {
+      error: {
+        name: 'ZodError',
+        issues: [{ path: ['sort'], message: "Invalid enum value. Expected 'Newest' | 'Most Followers'" }],
+      },
+    };
+    const { api } = makeClient([jsonResponse(400, zodBody)]);
+    // Old code: `bodyMsg.toLowerCase()` threw `n.toLowerCase is not a function`.
+    // New code: rejects with a well-formed ApiError, no TypeError.
+    const err = await api.listCollections({ mode: 'public', sort: 'newest' }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.code).toBe('unknown');
+    expect(err.status).toBe(400);
+    expect(typeof err.message).toBe('string');
+  });
+
+  it('handles a numeric error body `{ error: 123 }` without throwing', async () => {
+    const { api } = makeClient([jsonResponse(400, { error: 123 })]);
+    const err = await api.getBuzzBalance().catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(400);
   });
 });

@@ -142,3 +142,8 @@ reconcile when Wave 1A lands:
   endpoints"): the `apps-shared.router` REST shape isn't in the contract. This
   app uses `POST /api/v1/blocks/shared-storage/increment { key }` and
   `GET /api/v1/blocks/shared-storage/top?prefix=playcount:&limit=N`.
+- **Sort values**: the app/UI speaks `'newest'` / `'popular'`, but the deployed
+  server's `CollectionSort` enum is `'Newest'` | `'Most Followers'`. `src/lib/api.ts`
+  translates on the wire via `SORT_PARAM` (there is no name-sort on the service).
+  `toApiError` also coerces any non-string error body to a string, so a server
+  validation error (a `ZodError` object) can never crash the client.

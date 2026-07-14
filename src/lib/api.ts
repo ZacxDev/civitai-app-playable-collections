@@ -104,6 +104,20 @@ const PATHS = {
   sharedTop: '/api/v1/blocks/shared-storage/top',
 } as const;
 
+/**
+ * Translate the app's friendly UI sort values to the values the DEPLOYED server
+ * accepts (its `CollectionSort` enum). Only the HTTP WIRE value is translated —
+ * the app/UI + the fake api keep speaking `'newest'`/`'popular'`.
+ *
+ * 🔴 The server's enum is exactly `'Newest'` | `'Most Followers'`; sending the
+ * lowercase `newest`/`popular` (or a nonexistent `name`) fails its Zod gate and
+ * returns a ZodError body — the crash this map + the hardened `toApiError` fix.
+ */
+export const SORT_PARAM: Record<'newest' | 'popular', string> = {
+  newest: 'Newest',
+  popular: 'Most Followers',
+};
+
 /** Shared-storage key convention for a collection's play-count. */
 export function playCountKey(collectionId: number): string {
   return `playcount:${collectionId}`;
@@ -172,7 +186,8 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
         query: {
           mode: params.mode,
           query: params.query,
-          sort: params.sort,
+          // Translate the friendly UI sort to the server's accepted enum value.
+          sort: params.sort ? SORT_PARAM[params.sort] : undefined,
           cursor: params.cursor,
           limit: params.limit,
         },
@@ -231,15 +246,19 @@ async function toApiError(res: Response): Promise<ApiError> {
   try {
     bodyText = await res.text();
     if (bodyText) {
-      const parsed = JSON.parse(bodyText) as { error?: string; message?: string; code?: string };
-      bodyMsg = parsed.error ?? parsed.message ?? '';
+      const parsed = JSON.parse(bodyText) as { error?: unknown; message?: unknown; code?: unknown };
+      // 🔴 The server can return a NON-STRING error (e.g. `{ error: <ZodError
+      // object> }` on a sort/validation failure). `bodyMsg` MUST end up a string
+      // — coercing here is what stops `.toLowerCase()` from throwing
+      // `n.toLowerCase is not a function` and crashing the run page.
+      bodyMsg = asMessageString(parsed.error ?? parsed.message);
       // Explicit machine code wins if the server sends one.
       if (parsed.code === 'INSUFFICIENT_BALANCE' || parsed.code === 'insufficient_balance') {
         return new ApiError('insufficient_balance', res.status, bodyMsg || 'Not enough Buzz.');
       }
     }
   } catch {
-    bodyMsg = bodyText;
+    bodyMsg = typeof bodyText === 'string' ? bodyText : '';
   }
 
   const lower = bodyMsg.toLowerCase();
@@ -266,6 +285,23 @@ async function toApiError(res: Response): Promise<ApiError> {
     }
     default:
       return new ApiError('unknown', res.status, bodyMsg || `Request failed (${res.status}).`);
+  }
+}
+
+/**
+ * Coerce an unknown error-body value into a safe, non-empty-or-empty STRING.
+ * Strings pass through; objects/arrays are JSON-stringified (best-effort);
+ * numbers/booleans are String()'d; null/undefined -> ''. Never throws — the
+ * whole point is that `.toLowerCase()` downstream can never see a non-string.
+ */
+export function asMessageString(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
   }
 }
 

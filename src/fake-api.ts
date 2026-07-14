@@ -147,9 +147,9 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
         const q = params.query.toLowerCase();
         list = list.filter((s) => s.summary.name.toLowerCase().includes(q));
       }
-      if (params.sort === 'name') {
-        list = [...list].sort((a, b) => a.summary.name.localeCompare(b.summary.name));
-      } else if (params.sort === 'popular') {
+      // The fake keeps taking the friendly UI sort values ('newest'/'popular');
+      // only the real HTTP client translates to the server's enum.
+      if (params.sort === 'popular') {
         list = [...list].sort(
           (a, b) => (playCounts.get(b.summary.id) ?? 0) - (playCounts.get(a.summary.id) ?? 0),
         );

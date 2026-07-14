@@ -57,8 +57,12 @@ export interface CollectionPage {
   nextCursor?: string;
 }
 
-/** Sort options for the discover tab. */
-export type CollectionSort = 'newest' | 'popular' | 'name';
+/**
+ * Sort options for the discover tab. Maps to the server's `CollectionSort` enum
+ * on the wire (see `SORT_PARAM` in lib/api.ts): `newest`→`Newest`,
+ * `popular`→`Most Followers`. There is NO name-sort on the service.
+ */
+export type CollectionSort = 'newest' | 'popular';
 
 /** List query parameters. */
 export interface ListCollectionsParams {
