@@ -170,3 +170,43 @@ describe('usePlayer — transport controls', () => {
     expect(result.current.playing).toBe(false);
   });
 });
+
+describe('usePlayer — progressive append (lazy detail load)', () => {
+  it('appending more items KEEPS the current position (does not reset to item 0)', () => {
+    const first = [img(1), img(2), img(3)];
+    const { result, rerender } = renderHook(
+      ({ items }) => usePlayer({ items, secondsPerImage: 99, videoLoopCount: 1, autoPlay: false, rng }),
+      { initialProps: { items: first } },
+    );
+    act(() => result.current.next());
+    act(() => result.current.next()); // now on item 3 (position 2)
+    expect(result.current.current?.mediaId).toBe(3);
+    expect(result.current.progressLabel).toBe('3 / 3');
+
+    // Page 2 streams in: same prefix + two more items.
+    const grown = [...first, img(4), img(5)];
+    rerender({ items: grown });
+
+    // Still on item 3 — the viewer is not yanked back to the start — and the
+    // order now covers all 5 so playback can continue into the new tail.
+    expect(result.current.current?.mediaId).toBe(3);
+    expect(result.current.progressLabel).toBe('3 / 5');
+    act(() => result.current.next());
+    expect(result.current.current?.mediaId).toBe(4);
+    act(() => result.current.next());
+    expect(result.current.current?.mediaId).toBe(5);
+  });
+
+  it('swapping to a DIFFERENT collection rebuilds from position 0', () => {
+    const { result, rerender } = renderHook(
+      ({ items }) => usePlayer({ items, secondsPerImage: 99, videoLoopCount: 1, autoPlay: false, rng }),
+      { initialProps: { items: [img(1), img(2), img(3)] } },
+    );
+    act(() => result.current.next());
+    expect(result.current.current?.mediaId).toBe(2);
+    // A genuinely different set (different ids) → fresh playlist at the start.
+    rerender({ items: [img(10), img(11)] });
+    expect(result.current.current?.mediaId).toBe(10);
+    expect(result.current.progressLabel).toBe('1 / 2');
+  });
+});

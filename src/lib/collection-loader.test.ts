@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ApiClient } from './api.js';
 import type { CollectionDetail, CollectionPage, MediaItem } from '../types.js';
-import { DETAIL_PAGE_LIMIT, MAX_DETAIL_PAGES, loadFullCollection } from './collection-loader.js';
+import {
+  DETAIL_PAGE_LIMIT,
+  MAX_DETAIL_PAGES,
+  loadCollectionFirstPage,
+  loadMoreItems,
+} from './collection-loader.js';
 
 const detail: CollectionDetail = {
   id: 7,
@@ -38,46 +43,49 @@ function stub(pages: CollectionPage[]) {
   return { api, calls };
 }
 
-describe('loadFullCollection', () => {
-  it('requests the detail endpoint at the 100 cap, NEVER above it', async () => {
-    const { api, calls } = stub([{ collection: detail, items: [item(1)], nextCursor: undefined }]);
-    await loadFullCollection(api, 7);
+describe('loadCollectionFirstPage (lazy open — one fetch, not fifty)', () => {
+  it('opens a collection with EXACTLY ONE request, at the 100 cap', async () => {
+    const { api, calls } = stub([
+      { collection: detail, items: [item(1), item(2)], nextCursor: 'c1' },
+      { collection: detail, items: [item(3)], nextCursor: undefined },
+    ]);
+    const page = await loadCollectionFirstPage(api, 7);
+    // ONE fetch on open even though a nextCursor is present — the rest is lazy.
+    expect(calls).toHaveLength(1);
     expect(calls[0].opts?.limit).toBe(DETAIL_PAGE_LIMIT);
     expect(DETAIL_PAGE_LIMIT).toBeLessThanOrEqual(100);
+    expect(page.items.map((i) => i.mediaId)).toEqual([1, 2]);
+    // The cursor for the NEXT page is surfaced for on-demand loading.
+    expect(page.nextCursor).toBe('c1');
+  });
+
+  it('a single-page collection surfaces no cursor (nothing more to load)', async () => {
+    const { api, calls } = stub([{ collection: detail, items: [item(1)], nextCursor: undefined }]);
+    const page = await loadCollectionFirstPage(api, 7);
+    expect(calls).toHaveLength(1);
+    expect(page.nextCursor).toBeUndefined();
+  });
+});
+
+describe('loadMoreItems (on-demand next page)', () => {
+  it('fetches ONE page forwarding the cursor, returning items + the next cursor', async () => {
+    const { api, calls } = stub([{ collection: detail, items: [item(3), item(4)], nextCursor: 'c2' }]);
+    const more = await loadMoreItems(api, 7, 'c1');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].opts?.cursor).toBe('c1');
+    expect(calls[0].opts?.limit).toBe(DETAIL_PAGE_LIMIT);
+    expect(more.items.map((i) => i.mediaId)).toEqual([3, 4]);
+    expect(more.nextCursor).toBe('c2');
+  });
+
+  it('never requests above the 100 cap', async () => {
+    const { api, calls } = stub([{ collection: detail, items: [item(9)], nextCursor: undefined }]);
+    await loadMoreItems(api, 7, 'cursor');
     for (const call of calls) expect(call.opts?.limit).toBeLessThanOrEqual(100);
   });
 
-  it('single page (no nextCursor) → one request, items returned as-is', async () => {
-    const { api, calls } = stub([
-      { collection: detail, items: [item(1), item(2)], nextCursor: undefined },
-    ]);
-    const page = await loadFullCollection(api, 7);
-    expect(calls).toHaveLength(1);
-    expect(page.items.map((i) => i.mediaId)).toEqual([1, 2]);
-    expect(page.nextCursor).toBeUndefined();
-  });
-
-  it('paginates through nextCursor and accumulates the full set across pages', async () => {
-    const { api, calls } = stub([
-      { collection: detail, items: [item(1), item(2)], nextCursor: 'c1' },
-      { collection: detail, items: [item(3), item(4)], nextCursor: 'c2' },
-      { collection: detail, items: [item(5)], nextCursor: undefined },
-    ]);
-    const page = await loadFullCollection(api, 7);
-    expect(calls).toHaveLength(3);
-    // Subsequent pages forward the prior nextCursor.
-    expect(calls[1].opts?.cursor).toBe('c1');
-    expect(calls[2].opts?.cursor).toBe('c2');
-    expect(page.items.map((i) => i.mediaId)).toEqual([1, 2, 3, 4, 5]);
-    expect(page.nextCursor).toBeUndefined();
-  });
-
-  it('stops at MAX_DETAIL_PAGES even if the server keeps returning a cursor', async () => {
-    // Every page returns a fresh cursor → the walk must be bounded by the ceiling.
-    const { api, calls } = stub([{ collection: detail, items: [item(1)], nextCursor: 'always' }]);
-    const page = await loadFullCollection(api, 7);
-    expect(calls).toHaveLength(MAX_DETAIL_PAGES);
-    // Cursor still present (walk stopped early), NOT an infinite loop.
-    expect(page.nextCursor).toBe('always');
+  it('MAX_DETAIL_PAGES is a sane safety ceiling', () => {
+    expect(MAX_DETAIL_PAGES).toBeGreaterThan(1);
+    expect(MAX_DETAIL_PAGES).toBeLessThanOrEqual(100);
   });
 });

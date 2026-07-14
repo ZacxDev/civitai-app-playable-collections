@@ -1,20 +1,92 @@
 // Discover / My-collections grid + the cross-user "Popular" rail. Pure
-// presentation: it takes already-loaded data and callbacks. All loading /
-// error / empty states are rendered here so every list surface handles them.
+// presentation: it takes already-loaded data and callbacks.
+//
+// v0.1.5 feedback:
+//   #1a INFINITE SCROLL — an IntersectionObserver sentinel at the end of the grid
+//       calls `onLoadMore` (the parent threads the list `nextCursor` + appends,
+//       deduping by id). No "load more" button; scrolling fetches the next page.
+//   #1b LAZY COVERS — a grid-scoped IntersectionObserver swaps each cover's
+//       `data-src`→`src` ~150px before it scrolls into view, so a long grid does
+//       not fetch every thumbnail up front. (Native `loading="lazy"` does NOT
+//       defer reliably inside a scroll container — the SDK's 0.15.3 lesson — so
+//       we drive it explicitly.) The null-cover ▶ placeholder tile is kept.
+//   #4  RE-SKIN — surfaces are built from `@civitai/blocks-react/ui`
+//       (Card / Loader / Alert / Badge / Button); the card itself stays a single
+//       clickable control (better a11y than a nested-button Card) hand-styled to
+//       the pack idiom via its CSS variables. (See the report's component-pack
+//       gap list: a clickable Card + an ImageGrid/lazy-cover primitive.)
 
-import { useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+
+import { Alert, Badge, Button, Card, Loader } from '@civitai/blocks-react/ui';
 
 import type { CollectionSummary } from '../types.js';
 import type { Palette } from '../theme.js';
 
+/** ~150px prefetch margin so a cover loads just before it enters the viewport. */
+const COVER_PREFETCH_MARGIN = '150px';
+/** Fire the next-page load a little before the sentinel is fully visible. */
+const SENTINEL_MARGIN = '200px';
+
+// A single grid-scoped observer, shared by every CoverImage via context, that
+// swaps `data-src`→`src` on intersect. One observer for the whole grid beats one
+// per image. `null` when IntersectionObserver is unavailable → covers load eagerly.
+type RegisterCover = (img: HTMLImageElement | null) => void;
+const CoverObserverContext = createContext<RegisterCover | null>(null);
+
+function swapIn(img: HTMLImageElement) {
+  const ds = img.getAttribute('data-src');
+  if (ds) {
+    img.src = ds;
+    img.removeAttribute('data-src');
+  }
+}
+
+function useCoverObserver(): RegisterCover {
+  // Created during render (useMemo) so it exists when child ref callbacks fire
+  // at commit — an effect-created observer would still be null then.
+  const observer = useMemo(() => {
+    if (typeof IntersectionObserver === 'undefined') return null;
+    return new IntersectionObserver(
+      (entries, obs) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            swapIn(entry.target as HTMLImageElement);
+            obs.unobserve(entry.target);
+          }
+        }
+      },
+      { rootMargin: COVER_PREFETCH_MARGIN },
+    );
+  }, []);
+
+  useEffect(() => () => observer?.disconnect(), [observer]);
+
+  return useMemo<RegisterCover>(
+    () => (img) => {
+      if (!img) return;
+      if (!observer) {
+        swapIn(img); // no IO support → don't defer
+        return;
+      }
+      observer.observe(img);
+    },
+    [observer],
+  );
+}
+
 /**
- * Cover thumbnail with a graceful placeholder (feedback #2). Renders the ▶
- * placeholder tile when there is no `src` AND when the image fails to load
- * (broken/expired URL), so a card is never blank or shows a broken-image icon.
+ * Cover thumbnail with a graceful placeholder. Renders the ▶ placeholder tile
+ * when there is no `src` AND when the image fails to load (broken/expired URL),
+ * so a card is never blank or shows a broken-image icon. When a `src` is present
+ * it is loaded LAZILY: the element carries `data-src` until the grid observer
+ * swaps it in near the viewport.
  */
 export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
+  const register = useContext(CoverObserverContext);
   const [failed, setFailed] = useState(false);
+
   if (!src || failed) {
     return (
       <div style={coverPlaceholder(c)} aria-hidden="true" data-testid="cover-placeholder">
@@ -22,9 +94,20 @@ export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
       </div>
     );
   }
+
   return (
+    // `data-src` (not `src`) is set until the grid observer swaps it in near the
+    // viewport — deferring off-screen thumbnail fetches. `register` (via context)
+    // adds this <img> to the shared observer.
     // eslint-disable-next-line jsx-a11y/img-redundant-alt
-    <img src={src} alt="" style={coverImg} loading="lazy" onError={() => setFailed(true)} />
+    <img
+      ref={register ?? undefined}
+      data-src={src}
+      alt=""
+      style={coverImg}
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
   );
 }
 
@@ -37,6 +120,12 @@ export interface CollectionGridProps {
   onRetry?: () => void;
   c: Palette;
   isMobile: boolean;
+  /** Infinite scroll: whether another page exists to fetch. */
+  hasMore?: boolean;
+  /** Infinite scroll: a next-page fetch is in flight. */
+  loadingMore?: boolean;
+  /** Infinite scroll: fetch + append the next page. */
+  onLoadMore?: () => void;
 }
 
 export function CollectionGrid({
@@ -48,46 +137,89 @@ export function CollectionGrid({
   onRetry,
   c,
   isMobile,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
 }: CollectionGridProps) {
+  const register = useCoverObserver();
+
   if (loading && collections.length === 0) {
     return (
-      <div style={noteStyle(c)} data-testid="grid-loading" role="status">
-        Loading collections…
-      </div>
+      <Card padding="lg" data-testid="grid-loading" role="status" style={centerNote}>
+        <Loader size="sm" />
+        <span style={{ color: 'var(--ci-color-text-dimmed)' }}>Loading collections…</span>
+      </Card>
     );
   }
   if (error) {
     return (
-      <div role="alert" data-testid="grid-error" style={errorBox(c)}>
-        <p style={{ margin: 0 }}>{error}</p>
-        {onRetry && (
-          <button type="button" onClick={onRetry} style={retryBtn(c)} data-testid="grid-retry">
-            Try again
-          </button>
-        )}
-      </div>
+      <Alert color="error" title="Couldn't load collections" data-testid="grid-error">
+        <div style={{ display: 'grid', gap: 8, justifyItems: 'start' }}>
+          <span>{error}</span>
+          {onRetry && (
+            <Button size="sm" variant="outline" color="error" onClick={onRetry} data-testid="grid-retry">
+              Try again
+            </Button>
+          )}
+        </div>
+      </Alert>
     );
   }
   if (collections.length === 0) {
     return (
-      <p style={noteStyle(c)} data-testid="grid-empty">
-        {emptyLabel}
-      </p>
+      <Card padding="lg" style={centerNote}>
+        <span data-testid="grid-empty" style={{ color: 'var(--ci-color-text-dimmed)' }}>
+          {emptyLabel}
+        </span>
+      </Card>
     );
   }
   return (
-    <ul
-      style={gridStyle(isMobile)}
-      data-testid="collection-grid"
-      data-layout={isMobile ? 'mobile' : 'desktop'}
-    >
-      {collections.map((col) => (
-        <li key={col.id} style={{ listStyle: 'none' }}>
-          <CollectionCard collection={col} onOpen={onOpen} c={c} />
-        </li>
-      ))}
-    </ul>
+    <CoverObserverContext.Provider value={register}>
+      <ul
+        style={gridStyle(isMobile)}
+        data-testid="collection-grid"
+        data-layout={isMobile ? 'mobile' : 'desktop'}
+      >
+        {collections.map((col) => (
+          <li key={col.id} style={{ listStyle: 'none' }}>
+            <CollectionCard collection={col} onOpen={onOpen} c={c} />
+          </li>
+        ))}
+      </ul>
+      {hasMore && (
+        <InfiniteScrollSentinel active={hasMore && !loadingMore} onReach={() => onLoadMore?.()} />
+      )}
+      {loadingMore && (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: 12 }} data-testid="grid-loading-more" role="status">
+          <Loader size="sm" />
+        </div>
+      )}
+    </CoverObserverContext.Provider>
   );
+}
+
+/** An observed 1px marker at the tail of the grid that requests the next page. */
+function InfiniteScrollSentinel({ active, onReach }: { active: boolean; onReach: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const onReachRef = useRef(onReach);
+  onReachRef.current = onReach;
+
+  useEffect(() => {
+    if (!active) return;
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onReachRef.current();
+      },
+      { rootMargin: SENTINEL_MARGIN },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [active]);
+
+  return <div ref={ref} data-testid="grid-sentinel" aria-hidden="true" style={{ height: 1 }} />;
 }
 
 export function CollectionCard({
@@ -103,26 +235,30 @@ export function CollectionCard({
     <button
       type="button"
       onClick={() => onOpen(collection)}
-      style={cardBtn(c)}
+      style={cardBtn}
       data-testid="collection-card"
       aria-label={`Play ${collection.name} — ${collection.itemCount} items`}
     >
-      <div style={coverWrap(c)}>
+      <div style={coverWrap}>
         <CoverImage src={collection.coverImageUrl} c={c} />
         {!collection.isPublic && (
-          <span style={privateBadge(c)} data-testid="private-badge">
-            Private
+          <span style={badgeSlot('left')}>
+            <Badge size="sm" variant="filled" color="warning" data-testid="private-badge">
+              Private
+            </Badge>
           </span>
         )}
         {collection.followed && (
-          <span style={followedBadge(c)} data-testid="followed-badge" aria-label="Followed">
-            ★
+          <span style={badgeSlot('right')}>
+            <Badge size="sm" variant="filled" data-testid="followed-badge" aria-label="Followed">
+              ★
+            </Badge>
           </span>
         )}
       </div>
       <div style={cardBody}>
         <span style={cardTitle}>{collection.name}</span>
-        <span style={cardMeta(c)}>
+        <span style={cardMeta}>
           {collection.curator.username ? `by ${collection.curator.username}` : 'by unknown'} ·{' '}
           {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'}
         </span>
@@ -138,33 +274,47 @@ export interface PopularRailProps {
 }
 
 export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
+  const register = useCoverObserver();
   if (entries.length === 0) return null;
   return (
-    <section aria-label="Popular collections" data-testid="popular-rail" style={{ display: 'grid', gap: 8 }}>
-      <h2 style={railHeading}>🔥 Popular right now</h2>
-      <div style={railScroller}>
-        {entries.map(({ collection, count }) => (
-          <button
-            key={collection.id}
-            type="button"
-            onClick={() => onOpen(collection)}
-            style={railCard(c)}
-            data-testid="popular-card"
-            aria-label={`Play ${collection.name} — played ${count} times`}
-          >
-            <div style={railCover(c)}>
-              <CoverImage src={collection.coverImageUrl} c={c} />
-            </div>
-            <span style={railTitle}>{collection.name}</span>
-            <span style={cardMeta(c)}>{count} plays</span>
-          </button>
-        ))}
-      </div>
-    </section>
+    <CoverObserverContext.Provider value={register}>
+      <section aria-label="Popular collections" data-testid="popular-rail" style={{ display: 'grid', gap: 8 }}>
+        <h2 style={railHeading}>🔥 Popular right now</h2>
+        <div style={railScroller}>
+          {entries.map(({ collection, count }) => (
+            <button
+              key={collection.id}
+              type="button"
+              onClick={() => onOpen(collection)}
+              style={railCard}
+              data-testid="popular-card"
+              aria-label={`Play ${collection.name} — played ${count} times`}
+            >
+              <div style={railCover}>
+                <CoverImage src={collection.coverImageUrl} c={c} />
+              </div>
+              <span style={railTitle}>{collection.name}</span>
+              <span style={cardMeta}>
+                <Badge size="sm" variant="light">
+                  {count} {count === 1 ? 'play' : 'plays'}
+                </Badge>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </CoverObserverContext.Provider>
   );
 }
 
-// ---- styles ----
+// ---- styles (pack-token-driven so the grid matches the component pack) ----
+const centerNote: CSSProperties = {
+  display: 'flex',
+  gap: 10,
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
 function gridStyle(isMobile: boolean): CSSProperties {
   return {
     display: 'grid',
@@ -177,31 +327,27 @@ function gridStyle(isMobile: boolean): CSSProperties {
   };
 }
 
-function cardBtn(c: Palette): CSSProperties {
-  return {
-    display: 'grid',
-    gap: 8,
-    width: '100%',
-    padding: 0,
-    border: '1px solid ' + c.border,
-    borderRadius: 12,
-    overflow: 'hidden',
-    background: c.card,
-    color: c.fg,
-    cursor: 'pointer',
-    textAlign: 'left',
-    fontFamily: 'inherit',
-  };
-}
+const cardBtn: CSSProperties = {
+  display: 'grid',
+  gap: 8,
+  width: '100%',
+  padding: 0,
+  border: '1px solid var(--ci-color-border)',
+  borderRadius: 'var(--ci-radius)',
+  overflow: 'hidden',
+  background: 'var(--ci-color-surface)',
+  color: 'var(--ci-color-text)',
+  cursor: 'pointer',
+  textAlign: 'left',
+  fontFamily: 'var(--ci-font)',
+};
 
-function coverWrap(c: Palette): CSSProperties {
-  return {
-    position: 'relative',
-    aspectRatio: '1 / 1',
-    background: c.inputBg,
-    overflow: 'hidden',
-  };
-}
+const coverWrap: CSSProperties = {
+  position: 'relative',
+  aspectRatio: '1 / 1',
+  background: 'var(--ci-color-surface-2)',
+  overflow: 'hidden',
+};
 
 const coverImg: CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
 
@@ -217,34 +363,8 @@ function coverPlaceholder(c: Palette): CSSProperties {
   };
 }
 
-function privateBadge(c: Palette): CSSProperties {
-  return {
-    position: 'absolute',
-    top: 6,
-    left: 6,
-    background: c.overlay,
-    color: '#fff',
-    fontSize: 11,
-    padding: '2px 8px',
-    borderRadius: 999,
-  };
-}
-
-function followedBadge(c: Palette): CSSProperties {
-  return {
-    position: 'absolute',
-    top: 6,
-    right: 6,
-    background: c.accent,
-    color: c.accentFg,
-    fontSize: 12,
-    width: 22,
-    height: 22,
-    borderRadius: 999,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  };
+function badgeSlot(side: 'left' | 'right'): CSSProperties {
+  return { position: 'absolute', top: 6, [side]: 6 } as CSSProperties;
 }
 
 const cardBody: CSSProperties = { display: 'grid', gap: 2, padding: '0 10px 10px' };
@@ -255,9 +375,7 @@ const cardTitle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
-function cardMeta(c: Palette): CSSProperties {
-  return { fontSize: 12, color: c.muted };
-}
+const cardMeta: CSSProperties = { fontSize: 12, color: 'var(--ci-color-text-dimmed)' };
 
 const railHeading: CSSProperties = { fontSize: 15, margin: 0 };
 const railScroller: CSSProperties = {
@@ -267,25 +385,26 @@ const railScroller: CSSProperties = {
   paddingBottom: 4,
   WebkitOverflowScrolling: 'touch',
 };
-function railCard(c: Palette): CSSProperties {
-  return {
-    flex: '0 0 auto',
-    width: 140,
-    display: 'grid',
-    gap: 4,
-    padding: 8,
-    border: '1px solid ' + c.border,
-    borderRadius: 10,
-    background: c.card,
-    color: c.fg,
-    cursor: 'pointer',
-    textAlign: 'left',
-    fontFamily: 'inherit',
-  };
-}
-function railCover(c: Palette): CSSProperties {
-  return { aspectRatio: '1 / 1', borderRadius: 8, overflow: 'hidden', background: c.inputBg };
-}
+const railCard: CSSProperties = {
+  flex: '0 0 auto',
+  width: 140,
+  display: 'grid',
+  gap: 4,
+  padding: 8,
+  border: '1px solid var(--ci-color-border)',
+  borderRadius: 'var(--ci-radius)',
+  background: 'var(--ci-color-surface)',
+  color: 'var(--ci-color-text)',
+  cursor: 'pointer',
+  textAlign: 'left',
+  fontFamily: 'var(--ci-font)',
+};
+const railCover: CSSProperties = {
+  aspectRatio: '1 / 1',
+  borderRadius: 8,
+  overflow: 'hidden',
+  background: 'var(--ci-color-surface-2)',
+};
 const railTitle: CSSProperties = {
   fontWeight: 600,
   fontSize: 13,
@@ -293,32 +412,3 @@ const railTitle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
-
-function noteStyle(c: Palette): CSSProperties {
-  return { fontSize: 14, color: c.muted, margin: 0, lineHeight: 1.5 };
-}
-function errorBox(c: Palette): CSSProperties {
-  return {
-    background: c.dangerBg,
-    color: c.danger,
-    border: '1px solid ' + c.danger,
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 13,
-    display: 'grid',
-    gap: 8,
-    justifyItems: 'start',
-  };
-}
-function retryBtn(c: Palette): CSSProperties {
-  return {
-    padding: '6px 12px',
-    borderRadius: 8,
-    border: '1px solid ' + c.danger,
-    background: 'transparent',
-    color: c.danger,
-    fontSize: 13,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  };
-}

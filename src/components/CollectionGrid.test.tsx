@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { CollectionGrid } from './CollectionGrid.js';
 import { palette } from '../theme.js';
 import type { CollectionSummary } from '../types.js';
+import { flushIntersections } from '../test-setup.js';
 
 const c = palette(true);
 
@@ -48,16 +49,23 @@ describe('CollectionGrid cover rendering (feedback #2)', () => {
     expect(document.querySelector('img')).toBeNull();
   });
 
-  it('renders an <img> when a coverImageUrl is present', () => {
+  it('lazy-loads the cover: data-src until near the viewport, then swaps to src (feedback #1b)', () => {
     renderGrid([summary({ coverImageUrl: 'https://cdn.example/x.jpg' })]);
-    const img = document.querySelector('img');
+    const img = document.querySelector('img') as HTMLImageElement;
     expect(img).not.toBeNull();
-    expect(img?.getAttribute('src')).toBe('https://cdn.example/x.jpg');
+    // Deferred: the URL is parked on data-src, the <img> has not fetched yet.
+    expect(img.getAttribute('data-src')).toBe('https://cdn.example/x.jpg');
+    expect(img.getAttribute('src')).toBeNull();
+    // The grid observer reports the cover entering the viewport → swap in.
+    flushIntersections(true);
+    expect(img.getAttribute('src')).toBe('https://cdn.example/x.jpg');
+    expect(img.getAttribute('data-src')).toBeNull();
     expect(screen.queryByTestId('cover-placeholder')).toBeNull();
   });
 
   it('falls back to the placeholder when the cover image fails to load (broken URL)', () => {
     renderGrid([summary({ coverImageUrl: 'https://cdn.example/broken.jpg' })]);
+    flushIntersections(true); // swap data-src → src
     const img = document.querySelector('img');
     expect(img).not.toBeNull();
     // Simulate the browser firing onError for a broken/expired image URL.

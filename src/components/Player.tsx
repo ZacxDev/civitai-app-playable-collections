@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
+import { Button, Loader } from '@civitai/blocks-react/ui';
+
 import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
 import type { Palette } from '../theme.js';
@@ -15,6 +17,12 @@ import { iconBtn } from './styles.js';
 import { TipModal, type TipTarget } from './TipModal.js';
 
 const SWIPE_THRESHOLD = 48;
+/**
+ * Fetch the next detail page when the viewer advances to within this many items
+ * of the end of what's loaded — so a big collection streams in progressively
+ * (feedback #2) instead of loading every page before the player renders.
+ */
+const LOAD_AHEAD = 5;
 
 export interface PlayerProps {
   detail: CollectionDetail;
@@ -35,6 +43,12 @@ export interface PlayerProps {
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
+  /** Progressive load: another detail page exists to fetch. */
+  hasMore?: boolean;
+  /** Progressive load: a next-page fetch is in flight. */
+  loadingMore?: boolean;
+  /** Progressive load: fetch + append the next page of items. */
+  onLoadMore?: () => void;
 }
 
 export function Player(props: PlayerProps) {
@@ -54,6 +68,9 @@ export function Player(props: PlayerProps) {
     isMobile,
     c,
     onExit,
+    hasMore = false,
+    loadingMore = false,
+    onLoadMore,
   } = props;
 
   const player = usePlayer({
@@ -61,6 +78,16 @@ export function Player(props: PlayerProps) {
     secondsPerImage: settings.secondsPerImage,
     videoLoopCount: settings.videoLoopCount,
   });
+
+  // Progressive detail load (feedback #2): when the viewer reaches within
+  // LOAD_AHEAD of the end of what's loaded, pull the next page. Opening a big
+  // collection therefore fires ONE fetch (page 1), not one per page up front.
+  const playPosition = player.state.position;
+  const loadedCount = player.state.order.length;
+  useEffect(() => {
+    if (!hasMore || loadingMore || !onLoadMore) return;
+    if (loadedCount - 1 - playPosition <= LOAD_AHEAD) onLoadMore();
+  }, [playPosition, loadedCount, hasMore, loadingMore, onLoadMore]);
 
   const { current } = player;
   const stageRef = useRef<HTMLDivElement>(null);
@@ -190,9 +217,9 @@ export function Player(props: PlayerProps) {
     return (
       <div style={emptyStage(c)} data-testid="player-empty">
         <p>This collection has no playable media.</p>
-        <button type="button" onClick={onExit} style={backBtn(c)} data-testid="player-exit">
+        <Button variant="outline" onClick={onExit} data-testid="player-exit">
           ← Back to collections
-        </button>
+        </Button>
       </div>
     );
   }
@@ -397,6 +424,11 @@ export function Player(props: PlayerProps) {
               aria-label="Seek"
               data-testid="scrubber"
             />
+            {loadingMore && (
+              <span data-testid="player-loading-more" title="Loading more">
+                <Loader size="sm" color="#fff" />
+              </span>
+            )}
             <span style={progressText(c)} data-testid="progress-label">
               {player.progressLabel}
             </span>
@@ -411,7 +443,6 @@ export function Player(props: PlayerProps) {
           submitting={tipping}
           onConfirm={confirmTip}
           onClose={() => setTipTarget(null)}
-          c={c}
         />
       )}
     </div>
@@ -637,17 +668,5 @@ function emptyStage(c: Palette): CSSProperties {
     gap: 12,
     padding: 24,
     textAlign: 'center',
-  };
-}
-function backBtn(c: Palette): CSSProperties {
-  return {
-    padding: '8px 14px',
-    borderRadius: 8,
-    border: '1px solid ' + c.border,
-    background: c.card,
-    color: c.fg,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    justifySelf: 'center',
   };
 }

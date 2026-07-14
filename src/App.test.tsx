@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -10,8 +10,8 @@ import { CollectionGrid } from './components/CollectionGrid.js';
 import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi } from './fake-api.js';
 import { palette } from './theme.js';
-import type { CollectionSummary } from './types.js';
-import { setViewport } from './test-setup.js';
+import type { CollectionSummary, MediaItem } from './types.js';
+import { flushIntersections, setViewport } from './test-setup.js';
 
 function renderApp(
   opts: {
@@ -126,13 +126,46 @@ describe('App — discover + tabs', () => {
     await waitFor(() => expect(screen.getByTestId('buzz-balance')).toHaveTextContent('1,234'));
   });
 
-  it('offers only Newest + Popular sort (no name-sort — the service has none)', async () => {
+  it('offers a Popular ↔ Newest sort toggle, defaulting to Popular labelled "Most followed" (feedback #3)', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api });
-    const select = await screen.findByTestId('sort-select');
-    const options = within(select).getAllByRole('option').map((o) => (o as HTMLOptionElement).value);
-    expect(options).toEqual(['newest', 'popular']);
-    expect(options).not.toContain('name');
+    await screen.findByTestId('collection-grid');
+    const popular = screen.getByTestId('sort-popular');
+    const newest = screen.getByTestId('sort-newest');
+    // Two explicit options, no <select>, no name-sort.
+    expect(popular).toBeInTheDocument();
+    expect(newest).toBeInTheDocument();
+    expect(screen.queryByTestId('sort-select')).toBeNull();
+    expect(screen.queryByText('Name')).toBeNull();
+    // Default = Popular, and it's labelled so users know what it means.
+    expect(popular).toHaveAttribute('aria-pressed', 'true');
+    expect(newest).toHaveAttribute('aria-pressed', 'false');
+    expect(popular).toHaveAttribute('title', 'Most followed');
+    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Most followed');
+  });
+
+  it('toggling the sort re-fetches the list from page 1 with the new sort (feedback #3)', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const seen: Array<{ sort?: string; cursor?: string }> = [];
+    const api: ApiClient = {
+      ...base,
+      async listCollections(params) {
+        if (params.mode === 'public') seen.push({ sort: params.sort, cursor: params.cursor });
+        return base.listCollections(params);
+      },
+    };
+    renderApp({ api });
+    await screen.findByTestId('collection-grid');
+    // Initial load used the default popular sort.
+    await waitFor(() => expect(seen.some((s) => s.sort === 'popular')).toBe(true));
+    seen.length = 0;
+
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    // A fresh page-1 fetch (no cursor) with sort=newest.
+    await waitFor(() => expect(seen.some((s) => s.sort === 'newest')).toBe(true));
+    expect(seen.every((s) => s.cursor === undefined)).toBe(true);
+    expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Newest first');
   });
 
   it('switches to My collections and shows own public + private when private access is granted', async () => {
@@ -171,6 +204,103 @@ describe('App — discover + tabs', () => {
     fail = false;
     await userEvent.click(screen.getByTestId('grid-retry'));
     await screen.findByTestId('collection-grid');
+  });
+});
+
+describe('App — infinite scroll (feedback #1)', () => {
+  /** A public list that serves 2 pages; the 2nd re-emits an id (inclusive cursor). */
+  function paginatedApi() {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const mk = (id: number): CollectionSummary => sampleCollection({ id, name: `Col ${id}` });
+    // Page 0 → ids 1,2,3 (nextCursor "1"); Page 1 (cursor "1") → ids 3,4,5 (dup 3).
+    const pages = [
+      { items: [mk(1), mk(2), mk(3)], nextCursor: '1' as string | undefined },
+      { items: [mk(3), mk(4), mk(5)], nextCursor: undefined as string | undefined },
+    ];
+    const api: ApiClient = {
+      ...base,
+      async listCollections(params) {
+        if (params.mode !== 'public') return { items: [] };
+        const idx = params.cursor ? Number(params.cursor) : 0;
+        const page = pages[idx] ?? { items: [], nextCursor: undefined };
+        return { items: page.items, nextCursor: page.nextCursor };
+      },
+    };
+    return api;
+  }
+
+  it('appends the next page on sentinel intersection and dedupes the re-emitted id', async () => {
+    renderApp({ api: paginatedApi() });
+    const grid = await screen.findByTestId('collection-grid');
+    expect(within(grid).getAllByTestId('collection-card')).toHaveLength(3);
+    // More pages exist → the sentinel is present.
+    expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
+
+    // Sentinel scrolls into view → fetch + append page 2 (dedupe id 3 → 5 total).
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() =>
+      expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5),
+    );
+    // Fully loaded → the sentinel is gone (no unbounded scroll fetch).
+    expect(screen.queryByTestId('grid-sentinel')).toBeNull();
+  });
+});
+
+describe('App — detail lazy load (feedback #2)', () => {
+  const mediaItem = (mediaId: number): MediaItem => ({
+    mediaId,
+    type: 'image',
+    url: `i/${mediaId}`,
+    width: 1,
+    height: 1,
+    creator: { userId: 11, username: 'alice' },
+    nsfwLevel: 1,
+  });
+
+  function bigDetailApi() {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const detail = {
+      id: 101,
+      name: 'Big',
+      description: null,
+      curator: { userId: 11, username: 'alice' },
+      isPublic: true,
+      followed: false,
+    };
+    const page1 = Array.from({ length: 30 }, (_, i) => mediaItem(i + 1));
+    const page2 = Array.from({ length: 10 }, (_, i) => mediaItem(100 + i));
+    const calls: Array<{ cursor?: string }> = [];
+    const api: ApiClient = {
+      ...base,
+      async listCollections() {
+        return { items: [sampleCollection({ id: 101, name: 'Big', curator: { userId: 11, username: 'alice' } })] };
+      },
+      async getCollection(_id, opts) {
+        calls.push({ cursor: opts?.cursor });
+        if (!opts?.cursor) return { collection: detail, items: page1, nextCursor: 'p2' };
+        return { collection: detail, items: page2, nextCursor: undefined };
+      },
+    };
+    return { api, calls };
+  }
+
+  it('opens with EXACTLY ONE fetch, then streams the next page as the player nears the tail', async () => {
+    const { api, calls } = bigDetailApi();
+    renderApp({ api });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getByTestId('collection-card'));
+    await screen.findByTestId('player');
+
+    // ONE getCollection on open even though a nextCursor exists — the rest is lazy.
+    expect(calls).toHaveLength(1);
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 30');
+
+    // Seek to within LOAD_AHEAD of the tail → the next page streams in.
+    fireEvent.change(screen.getByTestId('scrubber'), { target: { value: '27' } });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('28 / 40'));
   });
 });
 
