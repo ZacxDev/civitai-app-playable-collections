@@ -35,3 +35,11 @@ export function useMediaQuery(query: string): boolean {
 export function useIsMobile(): boolean {
   return useMediaQuery(`(max-width: ${MOBILE_MAX_WIDTH}px)`);
 }
+
+/**
+ * True when the viewer asked the OS to reduce motion. 🔴 Gates the continuous
+ * modes' ambient auto-scroll off (they fall back to plain user scrolling).
+ */
+export function useReducedMotion(): boolean {
+  return useMediaQuery('(prefers-reduced-motion: reduce)');
+}

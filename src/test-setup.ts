@@ -111,11 +111,10 @@ beforeEach(() => {
     /* ignore */
   }
 
-  // jsdom has no matchMedia; default to a DESKTOP viewport. Tests that need the
-  // mobile branch override this via `setViewport('mobile')` below.
-  if (!window.matchMedia) {
-    window.matchMedia = makeMatchMedia(false) as typeof window.matchMedia;
-  }
+  // jsdom has no matchMedia; default to a DESKTOP viewport, motion allowed. Tests
+  // override via setViewport('mobile') / setReducedMotion(true).
+  reducedMotion = false;
+  window.matchMedia = makeMatchMedia(false) as typeof window.matchMedia;
 });
 
 afterEach(() => {
@@ -124,22 +123,44 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// Reduced-motion is opt-in per test (default: motion allowed). Toggled by
+// setReducedMotion() below; makeMatchMedia reads it so the same matchMedia stub
+// answers both the mobile breakpoint and the reduced-motion query.
+let reducedMotion = false;
+
+/** Force the `prefers-reduced-motion` query on/off for the auto-scroll branch. */
+export function setReducedMotion(on: boolean) {
+  reducedMotion = on;
+  // Re-install the stub at the current mobile-ness so a live query re-reads it.
+  const isMobile = window.matchMedia('(max-width: 1px)').matches; // max-width:1px → mobile-ness flag
+  window.matchMedia = makeMatchMedia(isMobile) as typeof window.matchMedia;
+}
+
 /** Build a matchMedia stub where max-width queries report the given mobile-ness. */
 export function makeMatchMedia(isMobile: boolean) {
   return (query: string) => {
+    if (/prefers-reduced-motion/.test(query)) {
+      const wantsReduce = /reduce/.test(query);
+      const matches = wantsReduce ? reducedMotion : !reducedMotion;
+      return stubMql(query, matches);
+    }
     const isMaxWidth = /max-width/.test(query);
     const matches = isMaxWidth ? isMobile : !isMobile;
-    return {
-      matches,
-      media: query,
-      onchange: null,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    } as unknown as MediaQueryList;
+    return stubMql(query, matches);
   };
+}
+
+function stubMql(query: string, matches: boolean): MediaQueryList {
+  return {
+    matches,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  } as unknown as MediaQueryList;
 }
 
 /** Switch the jsdom viewport between mobile and desktop for the responsive branch. */

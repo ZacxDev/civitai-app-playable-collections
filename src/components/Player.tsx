@@ -34,6 +34,15 @@ export interface PlayerProps {
   onVideoLoopCountChange: (value: number) => void;
   viewerUserId: number | null;
   buzzBalance: number | null;
+  /** Global audio mute (starts muted; user opts into audio). Default true. */
+  muted?: boolean;
+  /** Start on this item index (RESTORE / open the lightbox on a tapped tile). */
+  initialItemIndex?: number;
+  /** Reports the current playback position (order index) for persistence. */
+  onPositionChange?: (position: number) => void;
+  /** Show the in-player ⚙ settings control (sec/loop sliders). Default true; the
+   * embedding viewer hides it in classic mode because its toolbar owns them. */
+  showSettingsControl?: boolean;
   followed: boolean;
   followPending: boolean;
   onToggleFollow: () => void;
@@ -60,6 +69,10 @@ export function Player(props: PlayerProps) {
     onVideoLoopCountChange,
     viewerUserId,
     buzzBalance,
+    muted = true,
+    initialItemIndex,
+    onPositionChange,
+    showSettingsControl = true,
     followed,
     followPending,
     onToggleFollow,
@@ -77,7 +90,15 @@ export function Player(props: PlayerProps) {
     items,
     secondsPerImage: settings.secondsPerImage,
     videoLoopCount: settings.videoLoopCount,
+    initialPosition: initialItemIndex,
   });
+
+  // Report the playback position out so the viewer can persist it (restore).
+  const reportPos = onPositionChange;
+  const playerPosition = player.state.position;
+  useEffect(() => {
+    reportPos?.(playerPosition);
+  }, [playerPosition, reportPos]);
 
   // Progressive detail load (feedback #2): when the viewer reaches within
   // LOAD_AHEAD of the end of what's loaded, pull the next page. Opening a big
@@ -246,7 +267,7 @@ export function Player(props: PlayerProps) {
             src={current.url}
             style={mediaEl}
             autoPlay={player.playing}
-            muted
+            muted={muted}
             playsInline
             data-testid="media-video"
             onEnded={() => {
@@ -373,16 +394,6 @@ export function Player(props: PlayerProps) {
             </button>
             <button
               type="button"
-              onClick={player.toggleShuffle}
-              style={iconBtn(c, player.state.shuffled)}
-              aria-label="Shuffle"
-              aria-pressed={player.state.shuffled}
-              data-testid="ctrl-shuffle"
-            >
-              🔀
-            </button>
-            <button
-              type="button"
               onClick={toggleFullscreen}
               style={iconBtn(c, isFullscreen)}
               aria-label="Fullscreen"
@@ -391,20 +402,22 @@ export function Player(props: PlayerProps) {
             >
               ⛶
             </button>
-            <button
-              type="button"
-              onClick={() => setShowSettings((v) => !v)}
-              style={iconBtn(c, showSettings)}
-              aria-label="Playback settings"
-              aria-pressed={showSettings}
-              aria-expanded={showSettings}
-              data-testid="ctrl-settings"
-            >
-              ⚙
-            </button>
+            {showSettingsControl && (
+              <button
+                type="button"
+                onClick={() => setShowSettings((v) => !v)}
+                style={iconBtn(c, showSettings)}
+                aria-label="Playback settings"
+                aria-pressed={showSettings}
+                aria-expanded={showSettings}
+                data-testid="ctrl-settings"
+              >
+                ⚙
+              </button>
+            )}
           </div>
 
-          {showSettings && (
+          {showSettingsControl && showSettings && (
             <SettingsPanel
               c={c}
               secondsPerImage={settings.secondsPerImage}

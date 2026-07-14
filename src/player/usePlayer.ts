@@ -41,6 +41,9 @@ export interface UsePlayerOptions {
   rng?: Rng;
   /** Called whenever the current item changes (for analytics / preload logging). */
   onItemChange?: (item: MediaItem | null) => void;
+  /** Start at this playback position (clamped). Used to RESTORE a remembered
+   * spot when reopening a collection, or to open the lightbox on a tapped tile. */
+  initialPosition?: number;
 }
 
 export interface UsePlayer {
@@ -77,7 +80,14 @@ export function usePlayer(opts: UsePlayerOptions): UsePlayer {
   const wrap = opts.wrap ?? true;
   const autoPlay = opts.autoPlay ?? true;
 
-  const [state, setState] = useState<PlaylistState>(() => createPlaylist(items, { rng: opts.rng }));
+  const [state, setState] = useState<PlaylistState>(() => {
+    const base = createPlaylist(items, { rng: opts.rng });
+    const start = opts.initialPosition;
+    if (start != null && base.order.length > 0) {
+      return { ...base, position: Math.max(0, Math.min(Math.floor(start), base.order.length - 1)) };
+    }
+    return base;
+  });
   const [playing, setPlaying] = useState(autoPlay);
 
   // Loop counter for the currently-showing video. Reset whenever the item changes.
@@ -94,6 +104,9 @@ export function usePlayer(opts: UsePlayerOptions): UsePlayer {
   useEffect(() => {
     const prevItems = prevItemsRef.current;
     prevItemsRef.current = items;
+    // Same reference (mount, or a re-render that didn't change items): do nothing
+    // — rebuilding here would clobber an `initialPosition` restore/lightbox seek.
+    if (items === prevItems) return;
     const prevLen = prevItems.length;
     const isAppend =
       items !== prevItems &&

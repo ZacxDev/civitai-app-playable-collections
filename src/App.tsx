@@ -57,7 +57,7 @@ import type {
   MediaItem,
 } from './types.js';
 import { CollectionGrid, PopularRail } from './components/CollectionGrid.js';
-import { Player } from './components/Player.js';
+import { CollectionViewer } from './components/CollectionViewer.js';
 import type { TipTarget } from './components/TipModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
 
@@ -509,7 +509,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   if (open) {
     return (
       <div ref={rootRef} data-theme={dataTheme}>
-        <Player
+        <CollectionViewer
+          key={open.detail.id}
           detail={open.detail}
           items={open.items}
           settings={playerSettings}
