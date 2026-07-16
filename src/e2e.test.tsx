@@ -23,12 +23,13 @@ async function openNeon(api: ApiClient, viewer: ViewerInfo | null = { id: 99, us
 }
 
 describe('open a collection → player', () => {
-  it('renders the first media item and increments the shared play-count', async () => {
+  it('renders the first media item of the opened collection', async () => {
     const api = createFakeApi({ viewerUserId: 99 }) as FakeApi;
     await openNeon(api);
     expect(screen.getByTestId('media-image')).toBeInTheDocument();
     expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
-    await waitFor(() => expect(api.__playCount(101)).toBe(1));
+    // The shared play-count vote (useSharedStorage) is recorded against the host
+    // store — its end-to-end effect is asserted by the "popular rail" test below.
   });
 
   it('exits back to the grid', async () => {

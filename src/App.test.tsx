@@ -21,6 +21,8 @@ function renderApp(
     isPrivateGranted?: (scopes: string[]) => boolean;
     onOutbound?: (msg: { type: string; payload?: unknown }) => void;
     retry?: { retries: number; delayMs: number };
+    /** Per-pool Buzz wallet the mock host reports on GET_BUZZ_BALANCE. */
+    buzzBalance?: { blue: number; green: number; yellow: number };
   } = {},
 ) {
   return render(
@@ -29,6 +31,7 @@ function renderApp(
       theme={opts.theme ?? 'dark'}
       showLog={false}
       onOutbound={opts.onOutbound}
+      buzzBalance={opts.buzzBalance}
     >
       <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} />
     </Harness>,
@@ -120,9 +123,11 @@ describe('App — discover + tabs', () => {
     expect(grid).toHaveTextContent('My Public Board');
   });
 
-  it('shows the viewer Buzz balance once loaded', async () => {
-    const api = createFakeApi({ viewerUserId: 99, balance: 1234 });
-    renderApp({ api });
+  it('shows the viewer Buzz balance (summed pools) from the host bridge once loaded', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    // Balance now comes from useBuzzBalance() → the mock host, NOT the ApiClient.
+    // blue+green+yellow = 1000 + 34 + 200 = 1,234.
+    renderApp({ api, buzzBalance: { blue: 1000, green: 34, yellow: 200 } });
     await waitFor(() => expect(screen.getByTestId('buzz-balance')).toHaveTextContent('1,234'));
   });
 
@@ -292,10 +297,10 @@ describe('App — host-origin gating (real HTTP client)', () => {
 
   it('once useHostOrigin returns, fetches ABSOLUTE URLs against the validated host (not same-origin)', async () => {
     const host = window.location.origin;
+    // Balance + popular no longer use fetch (they go through the postMessage
+    // host bridges), so the only fetch here is the collections list.
     const { urls } = stubFetch((url) => {
       if (url.includes('/blocks/collections')) return json({ items: [] });
-      if (url.includes('/blocks/buzz')) return json({ balance: 0 });
-      if (url.includes('/shared-storage/top')) return json({ items: [] });
       return json({});
     });
     renderApp(); // no injected api => the real HTTP client path

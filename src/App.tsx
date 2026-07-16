@@ -13,12 +13,15 @@ import {
   useBlockContext,
   useBlockResize,
   useBlockToken,
+  useBuzzBalance,
   useHostOrigin,
   useRequestConsent,
   useRequestSignIn,
+  useSharedStorage,
 } from '@civitai/blocks-react';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
+import { readPopular, recordPlay, totalBuzz } from './lib/popular.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
@@ -76,6 +79,19 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const { requestConsent } = useRequestConsent();
   const isMobile = useIsMobile();
   const toasts = useToasts();
+
+  // Buzz balance via the host-mediated GET_BUZZ_BALANCE bridge (scope-free) —
+  // NOT a block HTTP endpoint (the old `/api/v1/blocks/buzz` was retired by
+  // civitai #3144). Returns per-pool { blue, green, yellow }; we sum to one
+  // spendable figure for the pill + tip modal.
+  const { balance: buzzPools, refetch: refetchBalance } = useBuzzBalance();
+  const balance = totalBuzz(buzzPools);
+
+  // Cross-user "popular" play-counts via App Blocks SHARED storage
+  // (apps:storage:shared:* postMessage bridge) — replaces the guessed
+  // `/api/v1/blocks/shared-storage/{increment,top}` REST routes. Stable
+  // identity across renders, so it's safe in the effect/callback deps below.
+  const shared = useSharedStorage();
 
   // Device-local playback prefs (localStorage) — the host does not deliver
   // viewer settings on a page app (see settings.ts).
@@ -147,7 +163,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const [openLoading, setOpenLoading] = useState(false);
   const [followPending, setFollowPending] = useState(false);
   const [tipping, setTipping] = useState(false);
-  const [balance, setBalance] = useState<number | null>(null);
 
   // Known-collection lookup (for resolving popular ids to cards).
   const known = useMemo(() => {
@@ -194,9 +209,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   }, [api, viewer, search, sort, retry]);
 
   const loadPopular = useCallback(async () => {
-    if (!api) return;
     try {
-      const entries = await api.getPopular(POPULAR_LIMIT);
+      const entries = await readPopular(shared, POPULAR_LIMIT);
       const resolved = entries
         .map((e) => {
           const collection = known.get(e.collectionId);
@@ -208,18 +222,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       // Popular is a nice-to-have; never block the page on it.
       setPopular([]);
     }
-  }, [api, known]);
-
-  const loadBalance = useCallback(async () => {
-    if (!api) return;
-    if (!viewer) return;
-    try {
-      const b = await api.getBuzzBalance();
-      setBalance(b.balance);
-    } catch {
-      setBalance(null);
-    }
-  }, [api, viewer]);
+  }, [shared, known]);
 
   // ---- effects ---- (all gated on `canFetch`: don't fetch until the host
   // origin + token are established, or the loop's root cause returns)
@@ -234,11 +237,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
     // collections appear without a manual refresh.
     if (tab === 'mine') void loadMine();
   }, [ready, canFetch, tab, loadMine, hasPrivateScope]);
-
-  useEffect(() => {
-    if (!ready || !canFetch) return;
-    void loadBalance();
-  }, [ready, canFetch, loadBalance]);
 
   // Recompute the popular rail whenever the known-collections map changes.
   useEffect(() => {
@@ -256,9 +254,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       try {
         const page = await api.getCollection(summary.id, { limit: 200 });
         setOpen({ detail: page.collection, items: page.items, followed: page.collection.followed });
-        // Fire-and-forget the play-count bump; a failure never blocks playback.
-        api
-          .incrementPlayCount(summary.id)
+        // Fire-and-forget the shared play-count vote; a failure never blocks
+        // playback (anon viewers reject on the write path — that's fine).
+        recordPlay(shared, summary)
           .then(() => loadPopular())
           .catch(() => {});
       } catch (err) {
@@ -267,7 +265,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setOpenLoading(false);
       }
     },
-    [api, loadPopular, toasts],
+    [api, shared, loadPopular, toasts],
   );
 
   const exitPlayer = useCallback(() => setOpen(null), []);
@@ -324,7 +322,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           entityId: target.entityId,
         });
         toasts.push('success', `Sent ${amount.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
-        void loadBalance();
+        refetchBalance();
         return true;
       } catch (err) {
         if (err instanceof ApiError && err.code === 'insufficient_balance') {
@@ -339,7 +337,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setTipping(false);
       }
     },
-    [viewer, api, requestSignIn, toasts, loadBalance],
+    [viewer, api, requestSignIn, toasts, refetchBalance],
   );
 
   // ---- render ----

@@ -86,12 +86,11 @@ export interface TipResult {
   tip?: { id?: number; amount: number; toUserId: number };
 }
 
-/** The viewer's spendable Buzz balance (buzz:read:self). */
-export interface BuzzBalance {
-  balance: number;
-}
-
-/** One entry of the cross-user "popular collections" rail (shared storage). */
+/**
+ * One entry of the cross-user "popular collections" rail. Backed by App Blocks
+ * SHARED storage (`useSharedStorage()`), NOT an HTTP endpoint — `count` is the
+ * collection's distinct-viewer play vote total. See lib/popular.ts.
+ */
 export interface PopularEntry {
   collectionId: number;
   count: number;

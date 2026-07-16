@@ -17,12 +17,10 @@
 //   - deleted / hidden resource   -> 404
 
 import type {
-  BuzzBalance,
   CollectionPage,
   CollectionSummary,
   ListCollectionsParams,
   Page,
-  PopularEntry,
   TipInput,
   TipResult,
 } from '../types.js';
@@ -63,13 +61,13 @@ export interface ApiClient {
   setFollow(id: number, follow: boolean): Promise<{ followed: boolean }>;
   /** POST /blocks/tip — scope social:tip:self */
   tip(input: TipInput): Promise<TipResult>;
-  /** GET the viewer's spendable Buzz balance — scope buzz:read:self */
-  getBuzzBalance(): Promise<BuzzBalance>;
-  /** Increment the shared play-count for a collection — scope apps:storage:shared:write */
-  incrementPlayCount(collectionId: number): Promise<{ count: number }>;
-  /** Read the top-N most-played collections — scope apps:storage:shared:read */
-  getPopular(limit: number): Promise<PopularEntry[]>;
 }
+// NOTE: the viewer's Buzz balance and the cross-user "popular" play-counts are
+// NOT part of this HTTP client. They go through the host-mediated postMessage
+// bridges instead: `useBuzzBalance()` (scope-free GET_BUZZ_BALANCE) and
+// `useSharedStorage()` (apps:storage:shared:*). See ./popular.ts + App.tsx.
+// The retired `/api/v1/blocks/buzz` (civitai #3144) and the never-real guessed
+// `/api/v1/blocks/shared-storage/{increment,top}` routes were removed here.
 
 export interface HttpApiClientOptions {
   /** API origin. Empty string = same origin as the host page (default). */
@@ -93,15 +91,6 @@ const PATHS = {
   collection: (id: number) => `/api/v1/blocks/collections/${id}`,
   follow: (id: number) => `/api/v1/blocks/collections/${id}/follow`,
   tip: '/api/v1/blocks/tip',
-  // NOTE(wave1a): the plan lists buzz:read:self for the balance readout but does
-  // not pin an endpoint. `/api/v1/blocks/me` intentionally omits balance (see
-  // me.ts), so a dedicated buzz route is required. Reconcile the exact path.
-  buzz: '/api/v1/blocks/buzz',
-  // NOTE(wave1a): shared play-counts "reuse the EXISTING apps:storage:shared:*
-  // endpoints (apps-shared.router)". That router's concrete REST shape is not in
-  // the plan's contract; these two paths are our best-guess surface. Reconcile.
-  sharedIncrement: '/api/v1/blocks/shared-storage/increment',
-  sharedTop: '/api/v1/blocks/shared-storage/top',
 } as const;
 
 /**
@@ -117,13 +106,6 @@ export const SORT_PARAM: Record<'newest' | 'popular', string> = {
   newest: 'Newest',
   popular: 'Most Followers',
 };
-
-/** Shared-storage key convention for a collection's play-count. */
-export function playCountKey(collectionId: number): string {
-  return `playcount:${collectionId}`;
-}
-
-const PLAYCOUNT_PREFIX = 'playcount:';
 
 export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
   const baseUrl = opts.baseUrl ?? '';
@@ -209,29 +191,6 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
 
     async tip(input) {
       return request<TipResult>(PATHS.tip, { method: 'POST', body: input });
-    },
-
-    async getBuzzBalance() {
-      return request<BuzzBalance>(PATHS.buzz, {});
-    },
-
-    async incrementPlayCount(collectionId) {
-      return request<{ count: number }>(PATHS.sharedIncrement, {
-        method: 'POST',
-        body: { key: playCountKey(collectionId) },
-      });
-    },
-
-    async getPopular(limit) {
-      const res = await request<{ items: Array<{ key: string; count: number }> }>(PATHS.sharedTop, {
-        query: { prefix: PLAYCOUNT_PREFIX, limit },
-      });
-      return res.items
-        .map((row) => ({
-          collectionId: Number(row.key.slice(PLAYCOUNT_PREFIX.length)),
-          count: row.count,
-        }))
-        .filter((e) => Number.isFinite(e.collectionId));
     },
   };
 }

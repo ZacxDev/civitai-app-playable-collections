@@ -1,14 +1,18 @@
 // In-memory fake of `ApiClient` for TESTS and the DEV HARNESS ONLY. The SDK's
-// mock host does not answer any of the block HTTP endpoints (collections, tip,
-// follow, buzz, shared storage), so there is no real backend in a vitest/jsdom
-// run or a local dev harness. This double implements the SAME `ApiClient`
-// interface the real `createHttpApiClient()` returns, so the app's network
-// boundary is exercised end-to-end without a live server.
+// mock host does not answer the block HTTP endpoints (collections, tip, follow),
+// so there is no real backend in a vitest/jsdom run or a local dev harness. This
+// double implements the SAME `ApiClient` interface the real
+// `createHttpApiClient()` returns, so the app's network boundary is exercised
+// end-to-end without a live server.
 //
 // NOT imported by production code — `App.tsx` builds the real HTTP client from
 // `useBlockToken()`. It mirrors the documented endpoint semantics the app relies
-// on: self-tip rejection, insufficient-balance rejection, follow toggling, and a
-// per-collection shared play-count that the "popular" rail reads back.
+// on: self-tip rejection, insufficient-balance rejection, and follow toggling.
+//
+// NOTE: Buzz balance and the cross-user "popular" play-counts are NO LONGER part
+// of the ApiClient — they go through the host bridges (`useBuzzBalance()` /
+// `useSharedStorage()`), which the SDK mock host answers directly (seed via the
+// `<Harness buzzBalance=… shared=…>` props in tests). So the fake models neither.
 
 import { ApiError, type ApiClient } from './lib/api.js';
 import type {
@@ -17,7 +21,6 @@ import type {
   ListCollectionsParams,
   MediaItem,
   Page,
-  PopularEntry,
   TipInput,
   TipResult,
 } from './types.js';
@@ -49,7 +52,6 @@ export interface SeedCollection {
 /** Extra test hooks exposed alongside the ApiClient surface. */
 export interface FakeApi extends ApiClient {
   __balance(): number;
-  __playCount(collectionId: number): number;
   __isFollowed(collectionId: number): boolean;
   __tips(): TipInput[];
 }
@@ -110,7 +112,6 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
   const seeds = opts.collections ?? makeSeed();
   const byId = new Map<number, SeedCollection>(seeds.map((s) => [s.summary.id, s]));
   const followed = new Map<number, boolean>(seeds.map((s) => [s.summary.id, s.summary.followed]));
-  const playCounts = new Map<number, number>();
   const tips: TipInput[] = [];
   const fail = opts.failMode ?? 'none';
   const privateGranted = opts.collectionsPrivateGranted ?? (() => true);
@@ -148,12 +149,9 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
         list = list.filter((s) => s.summary.name.toLowerCase().includes(q));
       }
       // The fake keeps taking the friendly UI sort values ('newest'/'popular');
-      // only the real HTTP client translates to the server's enum.
-      if (params.sort === 'popular') {
-        list = [...list].sort(
-          (a, b) => (playCounts.get(b.summary.id) ?? 0) - (playCounts.get(a.summary.id) ?? 0),
-        );
-      }
+      // only the real HTTP client translates to the server's enum. The server's
+      // 'popular' = "Most Followers"; the fake has no follower data, so it keeps
+      // insertion order (no test asserts the fake's popular ordering).
       return { items: list.map(summaryFor) };
     },
 
@@ -201,25 +199,7 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
       return { ok: true, tip: { amount: input.amount, toUserId: input.toUserId } };
     },
 
-    async getBuzzBalance() {
-      return { balance };
-    },
-
-    async incrementPlayCount(collectionId: number): Promise<{ count: number }> {
-      const nextCount = (playCounts.get(collectionId) ?? 0) + 1;
-      playCounts.set(collectionId, nextCount);
-      return { count: nextCount };
-    },
-
-    async getPopular(limit: number): Promise<PopularEntry[]> {
-      return Array.from(playCounts.entries())
-        .map(([collectionId, count]) => ({ collectionId, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, limit);
-    },
-
     __balance: () => balance,
-    __playCount: (id: number) => playCounts.get(id) ?? 0,
     __isFollowed: (id: number) => followed.get(id) ?? false,
     __tips: () => tips,
   };
