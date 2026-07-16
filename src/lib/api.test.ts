@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  ApiError,
-  asMessageString,
-  createHttpApiClient,
-  parseRetryAfter,
-  playCountKey,
-} from './api.js';
+import { ApiError, asMessageString, createHttpApiClient, parseRetryAfter } from './api.js';
 
 interface MockCall {
   url: string;
@@ -158,47 +152,15 @@ describe('tip', () => {
   });
 });
 
-describe('getBuzzBalance', () => {
-  it('returns the balance', async () => {
-    const { api, calls } = makeClient([jsonResponse(200, { balance: 4200 })]);
-    expect(await api.getBuzzBalance()).toEqual({ balance: 4200 });
-    expect(calls[0].url).toContain('/api/v1/blocks/buzz');
-  });
-});
-
-describe('shared storage (play-counts + popular)', () => {
-  it('increments a play-count keyed by collectionId', async () => {
-    const { api, calls } = makeClient([jsonResponse(200, { count: 4 })]);
-    const res = await api.incrementPlayCount(101);
-    expect(res.count).toBe(4);
-    expect(calls[0].method).toBe('POST');
-    expect(calls[0].body).toEqual({ key: playCountKey(101) });
-    expect(playCountKey(101)).toBe('playcount:101');
-  });
-
-  it('reads top-N and parses collectionId out of the key', async () => {
-    const { api, calls } = makeClient([
-      jsonResponse(200, { items: [{ key: 'playcount:101', count: 9 }, { key: 'playcount:102', count: 3 }] }),
-    ]);
-    const popular = await api.getPopular(5);
-    expect(popular).toEqual([
-      { collectionId: 101, count: 9 },
-      { collectionId: 102, count: 3 },
-    ]);
-    expect(calls[0].url).toContain('prefix=playcount');
-    expect(calls[0].url).toContain('limit=5');
-  });
-});
-
 describe('401 re-mint + retry', () => {
   it('refreshes the token once on a 401 then retries', async () => {
     const refreshToken = vi.fn(async () => {});
     const { api, fetchImpl } = makeClient(
-      [jsonResponse(401, { error: 'expired' }), jsonResponse(200, { balance: 1 })],
+      [jsonResponse(401, { error: 'expired' }), jsonResponse(200, { followed: true })],
       { refreshToken },
     );
-    const res = await api.getBuzzBalance();
-    expect(res.balance).toBe(1);
+    const res = await api.setFollow(1, true);
+    expect(res.followed).toBe(true);
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
@@ -209,7 +171,7 @@ describe('401 re-mint + retry', () => {
       [jsonResponse(401, { error: 'expired' }), jsonResponse(401, { error: 'still expired' })],
       { refreshToken },
     );
-    await expect(api.getBuzzBalance()).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
+    await expect(api.setFollow(1, true)).rejects.toMatchObject({ code: 'unauthorized', status: 401 });
   });
 });
 
@@ -219,7 +181,7 @@ describe('network + parse helpers', () => {
       throw new Error('offline');
     }) as unknown as typeof fetch;
     const api = createHttpApiClient({ getToken: () => 't', fetchImpl });
-    await expect(api.getBuzzBalance()).rejects.toMatchObject({ code: 'network', status: 0 });
+    await expect(api.getCollection(1)).rejects.toMatchObject({ code: 'network', status: 0 });
   });
 
   it('parseRetryAfter handles seconds and dates', () => {
@@ -267,8 +229,8 @@ describe('toApiError robustness — a NON-STRING error body must not crash the c
 
   it('handles a numeric error body `{ error: 123 }` without throwing', async () => {
     const { api } = makeClient([jsonResponse(400, { error: 123 })]);
-    const err = await api.getBuzzBalance().catch((e) => e);
+    const err = await api.getCollection(1).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(400);
+    expect((err as ApiError).status).toBe(400);
   });
 });

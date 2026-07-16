@@ -21,6 +21,10 @@ function renderApp(
     isPrivateGranted?: (scopes: string[]) => boolean;
     onOutbound?: (msg: { type: string; payload?: unknown }) => void;
     retry?: { retries: number; delayMs: number };
+    /** Seed the mock host's per-pool Buzz wallet (GET_BUZZ_BALANCE bridge). */
+    buzzBalance?: { blue: number; green: number; yellow: number };
+    /** Seed the mock host's SHARED store (the apps:storage:shared:* bridge). */
+    shared?: { seed?: Array<{ value: { title: string; body?: string; data?: unknown }; authorUserId?: number; voters?: number[] }> };
   } = {},
 ) {
   return render(
@@ -29,6 +33,8 @@ function renderApp(
       theme={opts.theme ?? 'dark'}
       showLog={false}
       onOutbound={opts.onOutbound}
+      buzzBalance={opts.buzzBalance}
+      shared={opts.shared}
     >
       <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} />
     </Harness>,
@@ -120,9 +126,11 @@ describe('App — discover + tabs', () => {
     expect(grid).toHaveTextContent('My Public Board');
   });
 
-  it('shows the viewer Buzz balance once loaded', async () => {
-    const api = createFakeApi({ viewerUserId: 99, balance: 1234 });
-    renderApp({ api });
+  it('shows the viewer Buzz balance once loaded (summed from the useBuzzBalance host bridge)', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    // Balance now comes from the host-mediated GET_BUZZ_BALANCE bridge (per-pool),
+    // NOT the block HTTP client. The pill shows the summed spendable figure.
+    renderApp({ api, buzzBalance: { blue: 1000, green: 34, yellow: 200 } });
     await waitFor(() => expect(screen.getByTestId('buzz-balance')).toHaveTextContent('1,234'));
   });
 
@@ -423,9 +431,9 @@ describe('App — host-origin gating (real HTTP client)', () => {
   it('once useHostOrigin returns, fetches ABSOLUTE URLs against the validated host (not same-origin)', async () => {
     const host = window.location.origin;
     const { urls } = stubFetch((url) => {
+      // Buzz + shared play-counts no longer touch the HTTP client (they go via
+      // the postMessage bridge), so collections is the only fetch the app makes.
       if (url.includes('/blocks/collections')) return json({ items: [] });
-      if (url.includes('/blocks/buzz')) return json({ balance: 0 });
-      if (url.includes('/shared-storage/top')) return json({ items: [] });
       return json({});
     });
     renderApp(); // no injected api => the real HTTP client path
@@ -453,7 +461,7 @@ describe('App — bounded retry / no infinite loop', () => {
           headers: { 'Content-Type': 'text/html' },
         });
       }
-      return json({ items: [], balance: 0 });
+      return json({ items: [] });
     });
     renderApp(); // real client path against `host`
     // Parse error is NON-retryable => error surfaces, bounded to a single call.

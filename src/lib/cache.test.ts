@@ -42,9 +42,6 @@ function makeInner() {
     getCollection: getImpl,
     setFollow: setFollowImpl,
     tip: vi.fn(),
-    getBuzzBalance: vi.fn(),
-    incrementPlayCount: vi.fn(),
-    getPopular: vi.fn(),
   } as unknown as ApiClient;
   return { inner, listImpl, getImpl, setFollowImpl };
 }
@@ -95,9 +92,6 @@ describe('createCachedApiClient', () => {
       getCollection: vi.fn(),
       setFollow: vi.fn(),
       tip: vi.fn(),
-      getBuzzBalance: vi.fn(),
-      incrementPlayCount: vi.fn(),
-      getPopular: vi.fn(),
     } as unknown as ApiClient;
     const api = createCachedApiClient(inner);
     await expect(api.listCollections({ mode: 'public' })).rejects.toThrow('boom');

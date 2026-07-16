@@ -15,7 +15,9 @@
 // - A `setFollow` mutation clears the caches (a collection's `followed` flag lives
 //   in both the list and detail payloads), so post-follow reads are fresh.
 // - Entries expire after `ttlMs` (default 5 min) to bound staleness.
-// - All other methods (tip, buzz, shared storage, popular) pass straight through.
+// - The one remaining write method (`tip`) passes straight through. Buzz balance
+//   and shared play-counts are no longer on this client — they go through the
+//   `useBuzzBalance()` / `useSharedStorage()` host bridges (see lib/popular.ts).
 
 import type { ApiClient } from './api.js';
 import type {
@@ -96,8 +98,5 @@ export function createCachedApiClient(inner: ApiClient, opts: CacheOptions = {})
     },
 
     tip: (input) => inner.tip(input),
-    getBuzzBalance: () => inner.getBuzzBalance(),
-    incrementPlayCount: (collectionId) => inner.incrementPlayCount(collectionId),
-    getPopular: (limit) => inner.getPopular(limit),
   };
 }
