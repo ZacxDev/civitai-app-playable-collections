@@ -7,6 +7,11 @@ tips**, on-site **collection bookmark (follow)**, configurable pacing, discovery
 of public + your own collections, and a cross-user **"Popular"** rail backed by
 App Blocks shared storage.
 
+> This is a Civitai **onsite App Block** — it runs in-platform at
+> `playable-collections.civit.ai`, embedded by the Civitai host. Open it via
+> [`civitai.com/apps/run/playable-collections`](https://civitai.com/apps/run/playable-collections),
+> not the bare subdomain. See the [Civitai developer docs](https://developer.civitai.com).
+
 This is **Wave 1B** of `plan-app-playable-collections-2026-07-13.md` (the app
 scaffold). The server foundation (Wave 1A: the `collections:*` scopes + the
 `/api/v1/blocks/{collections,tip}` endpoints) lands separately; this app talks
@@ -147,3 +152,11 @@ reconcile when Wave 1A lands:
   translates on the wire via `SORT_PARAM` (there is no name-sort on the service).
   `toApiError` also coerces any non-string error body to a string, so a server
   validation error (a `ZodError` object) can never crash the client.
+
+## Links
+
+- Developer docs — [developer.civitai.com](https://developer.civitai.com)
+- Live app — [playable-collections.civit.ai](https://playable-collections.civit.ai)
+- SDK contract — [`@civitai/app-sdk`](https://www.npmjs.com/package/@civitai/app-sdk)
+- React hooks + UI pack — [`@civitai/blocks-react`](https://www.npmjs.com/package/@civitai/blocks-react)
+- CLI — [`github.com/civitai/cli`](https://github.com/civitai/cli)
