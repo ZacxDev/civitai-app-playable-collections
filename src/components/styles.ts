@@ -1,89 +1,24 @@
-// Reusable inline-style builders keyed off the resolved Palette. Shared by the
-// grid, player, and modals so button/card/input styling stays consistent.
+// Media-player overlay chrome. The round transport/overlay buttons sit on top of
+// arbitrary user media (images/videos), so — like every video player — they are
+// deliberately white-on-scrim and theme-INVARIANT (they must read against the
+// media, not the page background), sourced from the `stage.*` chrome constants,
+// not the theme tokens. Every page-surface control uses the `@civitai/blocks-react`
+// pack instead; this is the one carve-out the pack doesn't cover.
 
 import type { CSSProperties } from 'react';
 
-import type { Palette } from '../theme.js';
-
-export function primaryBtn(c: Palette, disabled = false): CSSProperties {
-  return {
-    padding: '10px 16px',
-    border: 'none',
-    borderRadius: 8,
-    background: disabled ? c.border : c.accent,
-    color: disabled ? c.muted : c.accentFg,
-    fontWeight: 700,
-    fontSize: 14,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    fontFamily: 'inherit',
-  };
-}
-
-export function ghostBtn(c: Palette, disabled = false): CSSProperties {
-  return {
-    padding: '8px 12px',
-    borderRadius: 8,
-    border: '1px solid ' + c.border,
-    background: 'transparent',
-    color: disabled ? c.muted : c.fg,
-    fontSize: 13,
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    fontFamily: 'inherit',
-  };
-}
-
-export function dangerText(c: Palette): CSSProperties {
-  return { color: c.danger };
-}
-
-export function inputStyle(c: Palette): CSSProperties {
-  return {
-    padding: 10,
-    borderRadius: 8,
-    border: '1px solid ' + c.border,
-    background: c.inputBg,
-    color: c.fg,
-    fontSize: 14,
-    fontFamily: 'inherit',
-    boxSizing: 'border-box',
-    width: '100%',
-  };
-}
-
-export function cardStyle(c: Palette): CSSProperties {
-  return {
-    background: c.card,
-    border: '1px solid ' + c.border,
-    borderRadius: 10,
-    padding: 12,
-    display: 'grid',
-    gap: 8,
-  };
-}
-
-export function chipStyle(c: Palette, active: boolean): CSSProperties {
-  return {
-    padding: '6px 12px',
-    borderRadius: 999,
-    border: '1px solid ' + (active ? c.chipActiveBg : c.border),
-    background: active ? c.chipActiveBg : c.chipBg,
-    color: active ? c.accentFg : c.fg,
-    fontSize: 13,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-  };
-}
+import { stage, token } from '../theme.js';
 
 /** A round icon control used for the player overlay chrome. */
-export function iconBtn(c: Palette, active = false, disabled = false): CSSProperties {
+export function iconBtn(active = false, disabled = false): CSSProperties {
   return {
     width: 44,
     height: 44,
     minWidth: 44,
     borderRadius: 999,
-    border: '1px solid rgba(255,255,255,0.25)',
-    background: active ? c.accent : 'rgba(0,0,0,0.45)',
-    color: active ? c.accentFg : '#fff',
+    border: `1px solid ${active ? token.primary : stage.chromeBtnBorder}`,
+    background: active ? token.primary : stage.chromeBtnBg,
+    color: active ? token.primaryFg : stage.chromeFg,
     fontSize: 18,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.4 : 1,
@@ -92,5 +27,6 @@ export function iconBtn(c: Palette, active = false, disabled = false): CSSProper
     justifyContent: 'center',
     fontFamily: 'inherit',
     lineHeight: 1,
+    transition: 'background 120ms ease, border-color 120ms ease, transform 80ms ease',
   };
 }

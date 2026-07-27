@@ -16,5 +16,13 @@ import { Harness as SdkHarness } from '@civitai/blocks-react/testing';
  * (createHttpApiClient) is used only against a live civitai host.
  */
 export function Harness({ children }: { children: ReactNode }) {
-  return <SdkHarness viewer={{ id: 99, username: 'me' }}>{children}</SdkHarness>;
+  // Dev-only: let `?theme=light|dark` on the harness URL drive the mock host's
+  // theme so both themes can be exercised (and screenshotted) with no code change.
+  const params = new URLSearchParams(window.location.search);
+  const theme = params.get('theme') === 'light' ? 'light' : 'dark';
+  return (
+    <SdkHarness viewer={{ id: 99, username: 'me' }} theme={theme}>
+      {children}
+    </SdkHarness>
+  );
 }

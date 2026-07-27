@@ -5,7 +5,7 @@
 import { useCallback, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import type { Palette } from '../theme.js';
+import { token } from '../theme.js';
 
 export type ToastKind = 'success' | 'error' | 'info';
 
@@ -47,11 +47,9 @@ export function useToasts(): UseToasts {
 export function ToastHost({
   toasts,
   onDismiss,
-  c,
 }: {
   toasts: Toast[];
   onDismiss: (id: number) => void;
-  c: Palette;
 }) {
   return (
     <div style={hostStyle} aria-live="polite">
@@ -60,7 +58,7 @@ export function ToastHost({
           key={t.id}
           role={t.kind === 'error' ? 'alert' : 'status'}
           data-testid={`toast-${t.kind}`}
-          style={toastStyle(c, t.kind)}
+          style={toastStyle(t.kind)}
           onClick={() => onDismiss(t.id)}
         >
           {t.message}
@@ -81,19 +79,19 @@ const hostStyle: CSSProperties = {
   width: 'min(92vw, 420px)',
 };
 
-function toastStyle(c: Palette, kind: ToastKind): CSSProperties {
-  const border =
-    kind === 'error' ? c.danger : kind === 'success' ? c.success : c.border;
+function toastStyle(kind: ToastKind): CSSProperties {
+  const accent =
+    kind === 'error' ? token.error : kind === 'success' ? token.success : token.border;
   return {
-    background: c.card,
-    color: c.fg,
-    border: '1px solid ' + border,
-    borderLeft: '4px solid ' + border,
-    borderRadius: 8,
+    background: token.surface,
+    color: token.text,
+    border: `1px solid ${token.border}`,
+    borderLeft: `4px solid ${accent}`,
+    borderRadius: 'var(--civitai-radius)',
     padding: '10px 14px',
     fontSize: 13,
     lineHeight: 1.4,
     cursor: 'pointer',
-    boxShadow: '0 6px 20px rgba(0,0,0,0.25)',
+    boxShadow: '0 6px 20px rgba(0, 0, 0, 0.25)',
   };
 }

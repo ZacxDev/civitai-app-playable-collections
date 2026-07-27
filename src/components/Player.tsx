@@ -7,9 +7,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
+import { Button, Slider } from '@civitai/blocks-react/ui';
+
 import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
-import type { Palette } from '../theme.js';
+import { mutedText, stage, token, type Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
 import { iconBtn } from './styles.js';
 import { TipModal, type TipTarget } from './TipModal.js';
@@ -189,10 +191,10 @@ export function Player(props: PlayerProps) {
   if (items.length === 0) {
     return (
       <div style={emptyStage(c)} data-testid="player-empty">
-        <p>This collection has no playable media.</p>
-        <button type="button" onClick={onExit} style={backBtn(c)} data-testid="player-exit">
-          ← Back to collections
-        </button>
+        <p style={{ margin: 0, ...mutedText }}>This collection has no playable media.</p>
+        <Button variant="light" onClick={onExit} data-testid="player-exit" leftSection="←">
+          Back to collections
+        </Button>
       </div>
     );
   }
@@ -276,7 +278,7 @@ export function Player(props: PlayerProps) {
       {/* ---- top overlay: title + exit + buzz ---- */}
       {chromeVisible && (
         <div style={topBar(c)}>
-          <button type="button" onClick={onExit} style={iconBtn(c)} aria-label="Back to collections" data-testid="player-exit">
+          <button type="button" onClick={onExit} style={iconBtn()} aria-label="Back to collections" data-testid="player-exit">
             ←
           </button>
           <div style={titleWrap}>
@@ -295,7 +297,6 @@ export function Player(props: PlayerProps) {
       {chromeVisible && (
         <div style={rightRail} data-testid="overlay-chrome">
           <ChromeButton
-            c={c}
             glyph={creatorTipped ? '✓' : '💸'}
             label={creatorTipped ? 'Tipped creator' : 'Tip creator'}
             disabled={!current || creatorIsSelf || tipping}
@@ -304,7 +305,6 @@ export function Player(props: PlayerProps) {
             testid="tip-creator"
           />
           <ChromeButton
-            c={c}
             glyph={curatorTipped ? '✓' : '🎁'}
             label={curatorTipped ? 'Tipped curator' : 'Tip curator'}
             disabled={curatorIsSelf || tipping}
@@ -313,7 +313,6 @@ export function Player(props: PlayerProps) {
             testid="tip-curator"
           />
           <ChromeButton
-            c={c}
             glyph={followed ? '★' : '☆'}
             label={followed ? 'Following' : 'Follow collection'}
             disabled={followPending}
@@ -328,26 +327,26 @@ export function Player(props: PlayerProps) {
       {chromeVisible && (
         <div style={bottomBar(c)}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
-            <button type="button" onClick={player.prev} style={iconBtn(c)} aria-label="Previous" data-testid="ctrl-prev">
+            <button type="button" onClick={player.prev} style={iconBtn()} aria-label="Previous" data-testid="ctrl-prev">
               ⏮
             </button>
             <button
               type="button"
               onClick={player.toggle}
-              style={iconBtn(c, player.playing)}
+              style={iconBtn(player.playing)}
               aria-label={player.playing ? 'Pause' : 'Play'}
               aria-pressed={player.playing}
               data-testid="ctrl-play"
             >
               {player.playing ? '⏸' : '▶'}
             </button>
-            <button type="button" onClick={player.next} style={iconBtn(c)} aria-label="Next" data-testid="ctrl-next">
+            <button type="button" onClick={player.next} style={iconBtn()} aria-label="Next" data-testid="ctrl-next">
               ⏭
             </button>
             <button
               type="button"
               onClick={player.toggleShuffle}
-              style={iconBtn(c, player.state.shuffled)}
+              style={iconBtn(player.state.shuffled)}
               aria-label="Shuffle"
               aria-pressed={player.state.shuffled}
               data-testid="ctrl-shuffle"
@@ -357,7 +356,7 @@ export function Player(props: PlayerProps) {
             <button
               type="button"
               onClick={toggleFullscreen}
-              style={iconBtn(c, isFullscreen)}
+              style={iconBtn(isFullscreen)}
               aria-label="Fullscreen"
               aria-pressed={isFullscreen}
               data-testid="ctrl-fullscreen"
@@ -367,7 +366,7 @@ export function Player(props: PlayerProps) {
             <button
               type="button"
               onClick={() => setShowSettings((v) => !v)}
-              style={iconBtn(c, showSettings)}
+              style={iconBtn(showSettings)}
               aria-label="Playback settings"
               aria-pressed={showSettings}
               aria-expanded={showSettings}
@@ -386,18 +385,18 @@ export function Player(props: PlayerProps) {
               onVideoLoopCountChange={onVideoLoopCountChange}
             />
           )}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input
-              type="range"
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <Slider
               min={0}
               max={Math.max(0, player.state.order.length - 1)}
               value={player.state.position}
-              onChange={(e) => player.seekToPosition(Number(e.target.value))}
+              onChange={player.seekToPosition}
+              className="pc-scrubber"
               style={{ flex: 1 }}
               aria-label="Seek"
               data-testid="scrubber"
             />
-            <span style={progressText(c)} data-testid="progress-label">
+            <span style={progressText()} data-testid="progress-label">
               {player.progressLabel}
             </span>
           </div>
@@ -411,7 +410,6 @@ export function Player(props: PlayerProps) {
           submitting={tipping}
           onConfirm={confirmTip}
           onClose={() => setTipTarget(null)}
-          c={c}
         />
       )}
     </div>
@@ -419,7 +417,6 @@ export function Player(props: PlayerProps) {
 }
 
 function ChromeButton({
-  c,
   glyph,
   label,
   disabled,
@@ -427,7 +424,6 @@ function ChromeButton({
   onClick,
   testid,
 }: {
-  c: Palette;
   glyph: string;
   label: string;
   disabled: boolean;
@@ -436,19 +432,19 @@ function ChromeButton({
   testid: string;
 }) {
   return (
-    <div style={{ display: 'grid', justifyItems: 'center', gap: 2 }}>
+    <div style={{ display: 'grid', justifyItems: 'center', gap: 3 }}>
       <button
         type="button"
         onClick={onClick}
         disabled={disabled}
-        style={iconBtn(c, active, disabled)}
+        style={iconBtn(active, disabled)}
         aria-label={label}
         aria-pressed={active}
         data-testid={testid}
       >
         {glyph}
       </button>
-      <span style={{ fontSize: 10, color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
+      <span style={{ fontSize: 10, color: stage.chromeFg, textShadow: stage.textShadow }}>
         {label.split(' ')[0]}
       </span>
     </div>
@@ -475,16 +471,15 @@ function SettingsPanel({
 }) {
   return (
     <div style={settingsPanel(c)} data-testid="settings-panel" role="group" aria-label="Playback settings">
-      <label style={settingsRow}>
+      <div style={settingsRow}>
         <span style={settingsLabel}>Seconds per image</span>
-        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="range"
+        <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <Slider
             min={SECONDS_PER_IMAGE.min}
             max={SECONDS_PER_IMAGE.max}
             step={1}
             value={secondsPerImage}
-            onChange={(e) => onSecondsPerImageChange(Number(e.target.value))}
+            onChange={onSecondsPerImageChange}
             aria-label="Seconds per image"
             data-testid="set-seconds-per-image"
             style={{ flex: 1 }}
@@ -493,17 +488,16 @@ function SettingsPanel({
             {secondsPerImage}s
           </span>
         </span>
-      </label>
-      <label style={settingsRow}>
+      </div>
+      <div style={settingsRow}>
         <span style={settingsLabel}>Video loop count</span>
-        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="range"
+        <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <Slider
             min={VIDEO_LOOP_COUNT.min}
             max={VIDEO_LOOP_COUNT.max}
             step={1}
             value={videoLoopCount}
-            onChange={(e) => onVideoLoopCountChange(Number(e.target.value))}
+            onChange={onVideoLoopCountChange}
             aria-label="Video loop count"
             data-testid="set-video-loop-count"
             style={{ flex: 1 }}
@@ -512,7 +506,7 @@ function SettingsPanel({
             {videoLoopCount}×
           </span>
         </span>
-      </label>
+      </div>
     </div>
   );
 }
@@ -563,20 +557,21 @@ function topBar(c: Palette): CSSProperties {
 }
 const titleWrap: CSSProperties = { display: 'grid', flex: 1, minWidth: 0 };
 const titleText: CSSProperties = {
-  color: '#fff',
+  color: stage.chromeFg,
   fontWeight: 700,
   fontSize: 15,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-  textShadow: '0 1px 3px rgba(0,0,0,0.8)',
+  textShadow: stage.textShadow,
 };
-const subText: CSSProperties = { color: 'rgba(255,255,255,0.8)', fontSize: 12, textShadow: '0 1px 3px rgba(0,0,0,0.8)' };
+const subText: CSSProperties = { color: stage.chromeFgDim, fontSize: 12, textShadow: stage.textShadow };
 function buzzReadout(c: Palette): CSSProperties {
   return {
-    color: '#fff',
+    color: stage.chromeFg,
     fontWeight: 700,
     fontSize: 13,
+    fontVariantNumeric: 'tabular-nums',
     background: c.overlay,
     padding: '6px 10px',
     borderRadius: 999,
@@ -607,8 +602,15 @@ function bottomBar(c: Palette): CSSProperties {
     zIndex: 5,
   };
 }
-function progressText(c: Palette): CSSProperties {
-  return { color: '#fff', fontSize: 12, minWidth: 54, textAlign: 'right', textShadow: '0 1px 2px ' + c.stageBg };
+function progressText(): CSSProperties {
+  return {
+    color: stage.chromeFg,
+    fontSize: 12,
+    minWidth: 54,
+    textAlign: 'right',
+    fontVariantNumeric: 'tabular-nums',
+    textShadow: stage.textShadow,
+  };
 }
 
 function settingsPanel(c: Palette): CSSProperties {
@@ -622,9 +624,15 @@ function settingsPanel(c: Palette): CSSProperties {
     color: c.fg,
   };
 }
-const settingsRow: CSSProperties = { display: 'grid', gap: 4 };
-const settingsLabel: CSSProperties = { fontSize: 13, fontWeight: 600 };
-const settingsValue: CSSProperties = { fontSize: 13, minWidth: 34, textAlign: 'right' };
+const settingsRow: CSSProperties = { display: 'grid', gap: 6 };
+const settingsLabel: CSSProperties = { fontSize: 13, fontWeight: 600, color: token.text };
+const settingsValue: CSSProperties = {
+  fontSize: 13,
+  minWidth: 34,
+  textAlign: 'right',
+  fontVariantNumeric: 'tabular-nums',
+  color: token.dimmed,
+};
 
 function emptyStage(c: Palette): CSSProperties {
   return {
@@ -637,17 +645,5 @@ function emptyStage(c: Palette): CSSProperties {
     gap: 12,
     padding: 24,
     textAlign: 'center',
-  };
-}
-function backBtn(c: Palette): CSSProperties {
-  return {
-    padding: '8px 14px',
-    borderRadius: 8,
-    border: '1px solid ' + c.border,
-    background: c.card,
-    color: c.fg,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    justifySelf: 'center',
   };
 }
