@@ -6,7 +6,7 @@ import { usePlayerSettings, STORAGE_KEYS } from './settings.js';
 import { palette } from './theme.js';
 import type { CollectionDetail, MediaItem } from './types.js';
 
-const c = palette(true);
+const c = palette();
 
 function img(id: number): MediaItem {
   return { mediaId: id, type: 'image', url: `i/${id}`, width: 1, height: 1, creator: { userId: 1, username: 'a' }, nsfwLevel: 1 };

@@ -38,7 +38,7 @@ function renderApp(
   );
 }
 
-const c = palette(true);
+const c = palette();
 
 const sampleCollection = (over: Partial<CollectionSummary> = {}): CollectionSummary => ({
   id: 1,
@@ -144,7 +144,7 @@ describe('App — discover + tabs', () => {
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api, isPrivateGranted: () => true });
     await screen.findByTestId('collection-grid');
-    await userEvent.click(screen.getByTestId('tab-mine'));
+    await userEvent.click(screen.getByRole('tab', { name: 'My collections' }));
     const grid = await screen.findByTestId('collection-grid');
     await waitFor(() => expect(within(grid).getAllByTestId('collection-card')).toHaveLength(2));
     expect(grid).toHaveTextContent('My Public Board');
@@ -157,7 +157,7 @@ describe('App — discover + tabs', () => {
     const api = createFakeApi();
     renderApp({ api, viewer: null });
     await screen.findByTestId('collection-grid');
-    await userEvent.click(screen.getByTestId('tab-mine'));
+    await userEvent.click(screen.getByRole('tab', { name: 'My collections' }));
     expect(await screen.findByTestId('mine-anon')).toBeInTheDocument();
   });
 
@@ -198,7 +198,7 @@ describe('App — responsive root branch', () => {
 describe('App — private collections consent gate', () => {
   async function gotoMine() {
     await screen.findByTestId('collection-grid');
-    await userEvent.click(screen.getByTestId('tab-mine'));
+    await userEvent.click(screen.getByRole('tab', { name: 'My collections' }));
     // wait for the mine list to load (public own board present)
     await screen.findByText('My Public Board');
   }

@@ -21,3 +21,38 @@ img,
 video {
   max-width: 100%;
 }
+
+/* Interaction states for the app's own custom controls (media cards) that the
+   `@civitai/blocks-react` pack doesn't cover. Bundled INTO the iframe app (not
+   host CSS), and driven entirely by `--civitai-*` tokens so they flip with
+   [data-theme]. Pack components (Button/Badge/…) bring their own states. */
+.pc-card {
+  transition: border-color 130ms ease, transform 130ms ease, box-shadow 130ms ease;
+}
+.pc-card:hover {
+  border-color: var(--civitai-color-primary);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--civitai-color-text) 12%, transparent);
+}
+.pc-card:focus-visible {
+  outline: 2px solid var(--civitai-color-primary);
+  outline-offset: 2px;
+  border-color: var(--civitai-color-primary);
+}
+.pc-card .pc-cover-img {
+  transition: transform 220ms ease;
+}
+.pc-card:hover .pc-cover-img {
+  transform: scale(1.04);
+}
+
+/* Respect reduced-motion. */
+@media (prefers-reduced-motion: reduce) {
+  .pc-card,
+  .pc-card .pc-cover-img {
+    transition: none;
+  }
+  .pc-card:hover {
+    transform: none;
+  }
+}

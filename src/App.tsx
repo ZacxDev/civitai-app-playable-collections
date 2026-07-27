@@ -20,12 +20,30 @@ import {
   useSharedStorage,
 } from '@civitai/blocks-react';
 
+import {
+  Badge,
+  Button,
+  Loader,
+  SegmentedControl,
+  Select,
+  TextInput,
+} from '@civitai/blocks-react/ui';
+
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
 import { readPopular, recordPlay, totalBuzz } from './lib/popular.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
-import { palette, type Palette } from './theme.js';
+import {
+  contentStyle,
+  metaText,
+  mutedText,
+  pageStyle,
+  palette,
+  radius,
+  token as tk,
+  type Palette,
+} from './theme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import type {
   CollectionDetail,
@@ -34,10 +52,10 @@ import type {
   MediaItem,
 } from './types.js';
 import { CollectionGrid, PopularRail } from './components/CollectionGrid.js';
+import { EmptyState } from './components/EmptyState.js';
 import { Player } from './components/Player.js';
 import type { TipTarget } from './components/TipModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
-import { inputStyle, chipStyle, ghostBtn } from './components/styles.js';
 
 const POPULAR_LIMIT = 10;
 const PAGE_LIMIT = 24;
@@ -100,7 +118,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
 
-  const c = palette(theme === 'dark');
+  const c = palette();
 
   // Has the viewer granted the consent-gated private-collections scope? The
   // block-token mint withholds it until consent, so it appears on the token's
@@ -347,7 +365,14 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   if (!ready || !canFetch) {
     return (
       <div ref={rootRef} data-theme={theme} style={pageStyle(c)}>
-        <div style={{ margin: 'auto', opacity: 0.7 }}>Loading Playable Collections…</div>
+        <div
+          role="status"
+          aria-live="polite"
+          style={{ margin: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}
+        >
+          <Loader size="sm" />
+          <span style={mutedText}>Loading Playable Collections…</span>
+        </div>
       </div>
     );
   }
@@ -372,7 +397,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           c={c}
           onExit={exitPlayer}
         />
-        <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} c={c} />
+        <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} />
       </div>
     );
   }
@@ -382,74 +407,75 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   return (
     <div ref={rootRef} data-theme={theme} data-layout={isMobile ? 'mobile' : 'desktop'} style={pageStyle(c)}>
       <div style={contentStyle}>
-        <header style={{ display: 'grid', gap: 6 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-            <h1 style={{ fontSize: 22, margin: 0 }}>Playable Collections</h1>
-            {viewer && (
-              <span style={buzzPill(c)} data-testid="buzz-balance">
-                ⚡ {balance != null ? balance.toLocaleString() : '—'}
-              </span>
-            )}
+        <header style={headerStyle(c)}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+            <span style={brandMark} aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" role="img">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </span>
+            <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+              <h1 style={titleStyle}>Playable Collections</h1>
+              <p style={{ margin: 0, ...metaText }}>
+                Sit back and play through a collection's images and videos.
+              </p>
+            </div>
           </div>
-          <p style={{ margin: 0, fontSize: 13, color: c.muted }}>
-            Sit back and play through a collection's images and videos.
-          </p>
+          {viewer && (
+            <Badge
+              variant="light"
+              color="warning"
+              size="lg"
+              data-testid="buzz-balance"
+              aria-label={balance != null ? `${balance.toLocaleString()} Buzz` : 'Buzz balance'}
+              style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+            >
+              ⚡ {balance != null ? balance.toLocaleString() : '—'}
+            </Badge>
+          )}
         </header>
 
         {/* tabs */}
-        <div style={{ display: 'flex', gap: 8 }} role="tablist" aria-label="Collection source">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'discover'}
-            onClick={() => setTab('discover')}
-            style={chipStyle(c, tab === 'discover')}
-            data-testid="tab-discover"
-          >
-            Discover
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'mine'}
-            onClick={() => setTab('mine')}
-            style={chipStyle(c, tab === 'mine')}
-            data-testid="tab-mine"
-          >
-            My collections
-          </button>
-        </div>
+        <SegmentedControl
+          data={[
+            { value: 'discover', label: 'Discover' },
+            { value: 'mine', label: 'My collections' },
+          ]}
+          value={tab}
+          onChange={(v) => setTab(v as Tab)}
+          aria-label="Collection source"
+        />
 
         {/* search + sort */}
         <form
-          style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}
+          style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}
           onSubmit={(e) => {
             e.preventDefault();
             if (tab === 'discover') void loadDiscover();
             else void loadMine();
           }}
         >
-          <input
+          <TextInput
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search collections…"
             aria-label="Search collections"
-            style={{ ...inputStyle(c), flex: 1, minWidth: 160 }}
+            style={{ flex: '1 1 200px', minWidth: 0 }}
             data-testid="search-input"
           />
-          <select
+          <Select
             value={sort}
-            onChange={(e) => setSort(e.target.value as CollectionSort)}
+            onChange={(v) => setSort(v as CollectionSort)}
+            options={[
+              { value: 'newest', label: 'Newest' },
+              { value: 'popular', label: 'Popular' },
+            ]}
             aria-label="Sort collections"
-            style={{ ...inputStyle(c), width: 'auto' }}
             data-testid="sort-select"
-          >
-            <option value="newest">Newest</option>
-            <option value="popular">Popular</option>
-          </select>
-          <button type="submit" style={ghostBtn(c)} data-testid="search-submit">
+          />
+          <Button type="submit" variant="light" data-testid="search-submit">
             Search
-          </button>
+          </Button>
         </form>
 
         {/* popular rail (discover only) */}
@@ -457,14 +483,16 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
 
         {/* the grid */}
         {tab === 'mine' && !viewer ? (
-          <div style={{ display: 'grid', gap: 10, justifyItems: 'start' }}>
-            <p style={{ margin: 0, fontSize: 14, color: c.muted }} data-testid="mine-anon">
-              Sign in to see the collections you've created and bookmarked.
-            </p>
-            <button type="button" onClick={() => requestSignIn()} style={chipStyle(c, true)} data-testid="mine-signin">
-              Sign in
-            </button>
-          </div>
+          <EmptyState
+            data-testid="mine-anon"
+            title="Sign in to see your collections"
+            body="The collections you've created and bookmarked show up here."
+            action={
+              <Button onClick={() => requestSignIn()} data-testid="mine-signin">
+                Sign in
+              </Button>
+            }
+          />
         ) : (
           <>
             {/* Private-collections consent affordance (mine tab, signed in, not
@@ -472,20 +500,17 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
                 viewer opts in to reveal private ones. Never a hard error. */}
             {tab === 'mine' && viewer && !hasPrivateScope && (
               <div style={consentBox(c)} data-testid="private-consent">
-                <div style={{ display: 'grid', gap: 2 }}>
-                  <span style={{ fontWeight: 600, fontSize: 14 }}>Your private collections are hidden</span>
-                  <span style={{ fontSize: 13, color: c.muted }}>
+                <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+                  <span style={{ fontWeight: 600, fontSize: 14, color: tk.text }}>
+                    Your private collections are hidden
+                  </span>
+                  <span style={metaText}>
                     Grant access to include the collections you keep private.
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={requestPrivateConsent}
-                  style={chipStyle(c, true)}
-                  data-testid="enable-private"
-                >
+                <Button onClick={requestPrivateConsent} data-testid="enable-private">
                   Show my private collections
-                </button>
+                </Button>
               </div>
             )}
             <CollectionGrid
@@ -505,7 +530,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           </>
         )}
       </div>
-      <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} c={c} />
+      <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} />
     </div>
   );
 }
@@ -515,39 +540,35 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong.';
 }
 
-// ---- styles ----
-function pageStyle(c: Palette): CSSProperties {
+// ---- styles ---- (pageStyle / contentStyle / metaText live in ./theme)
+function headerStyle(c: Palette): CSSProperties {
   return {
-    fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-    background: c.bg,
-    color: c.fg,
-    width: '100%',
-    minHeight: '100dvh',
     display: 'flex',
-    boxSizing: 'border-box',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
+    paddingBottom: 14,
+    borderBottom: `1px solid ${c.border}`,
   };
 }
-const contentStyle: CSSProperties = {
-  margin: '0 auto',
-  width: '100%',
-  maxWidth: 960,
-  padding: 20,
-  display: 'grid',
-  gap: 16,
-  alignContent: 'start',
-  boxSizing: 'border-box',
+const brandMark: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 38,
+  height: 38,
+  flex: '0 0 auto',
+  borderRadius: radius.md,
+  background: tk.primaryLight,
+  color: tk.primary,
 };
-function buzzPill(c: Palette): CSSProperties {
-  return {
-    fontSize: 13,
-    fontWeight: 700,
-    background: c.chipBg,
-    color: c.fg,
-    padding: '6px 12px',
-    borderRadius: 999,
-    whiteSpace: 'nowrap',
-  };
-}
+const titleStyle: CSSProperties = {
+  fontSize: 19,
+  lineHeight: 1.2,
+  margin: 0,
+  letterSpacing: '-0.02em',
+  color: tk.text,
+};
 function consentBox(c: Palette): CSSProperties {
   return {
     display: 'flex',
@@ -555,9 +576,9 @@ function consentBox(c: Palette): CSSProperties {
     alignItems: 'center',
     justifyContent: 'space-between',
     flexWrap: 'wrap',
-    background: c.card,
-    border: '1px dashed ' + c.border,
-    borderRadius: 10,
-    padding: 12,
+    background: tk.surface,
+    border: `1px dashed ${c.border}`,
+    borderRadius: radius.md,
+    padding: 14,
   };
 }
