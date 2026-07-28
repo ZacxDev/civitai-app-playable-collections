@@ -2,15 +2,18 @@
 // a custom amount, client-side amount validation, and a self-tip guard (the
 // trigger is already disabled for self, but the modal double-checks). The
 // actual POST /blocks/tip happens in the caller so this stays presentation +
-// input validation only. Chrome is the design-system pack Modal + Button +
-// TextInput (focus trap, overlay/esc close, themed states for free).
+// input validation only.
+//
+// v0.1.5: rebuilt on the `@civitai/blocks-react/ui` pack — `Modal` shell,
+// `Button` presets + actions, `TextInput` for the custom amount. Auto-themed
+// (light/dark) via the app's `data-theme` root.
 
 import { useState } from 'react';
 import type { CSSProperties } from 'react';
 
 import { Button, Modal, TextInput } from '@civitai/blocks-react/ui';
 
-import { metaText, token } from '../theme.js';
+import { mutedText } from '../theme.js';
 
 export const TIP_PRESETS = [10, 50, 100, 500] as const;
 export const TIP_MIN = 1;
@@ -48,7 +51,6 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose }: Ti
 
   const error = touched ? validateTipAmount(amount, balance) : null;
   const label = target.kind === 'creator' ? 'creator' : 'curator';
-  const heading = target.username ? `Tip @${target.username}` : `Tip the ${label}`;
 
   const submit = () => {
     setTouched(true);
@@ -58,46 +60,40 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose }: Ti
   };
 
   return (
-    <Modal opened onClose={onClose} title={heading} size="sm" closeButtonLabel="Close">
-      <div style={{ display: 'grid', gap: 12 }} data-testid="tip-modal">
-        <p style={{ margin: 0, ...metaText }}>
+    <Modal
+      opened
+      onClose={onClose}
+      title={`Tip ${target.username ? `@${target.username}` : `the ${label}`}`}
+      size="sm"
+    >
+      <div data-testid="tip-modal" aria-label={`Tip ${label}`} style={bodyStyle}>
+        <p style={leadText}>
           {target.kind === 'creator'
             ? 'Send Buzz to the creator of this media.'
             : 'Send Buzz to the collection curator.'}
-          {balance != null && (
-            <>
-              {' · You have '}
-              <span style={{ fontVariantNumeric: 'tabular-nums', color: token.text }}>
-                {balance.toLocaleString()}
-              </span>
-              {' Buzz.'}
-            </>
-          )}
+          {balance != null && ` · You have ${balance.toLocaleString()} Buzz.`}
         </p>
 
         <div style={presetRow} role="group" aria-label="Preset amounts">
-          {TIP_PRESETS.map((p) => {
-            const selected = amount === String(p);
-            return (
-              <Button
-                key={p}
-                variant={selected ? 'filled' : 'light'}
-                color="primary"
-                size="sm"
-                onClick={() => {
-                  setAmount(String(p));
-                  setTouched(true);
-                }}
-                aria-pressed={selected}
-                data-testid={`tip-preset-${p}`}
-              >
-                {p}
-              </Button>
-            );
-          })}
+          {TIP_PRESETS.map((p) => (
+            <Button
+              key={p}
+              size="sm"
+              variant={amount === String(p) ? 'filled' : 'light'}
+              onClick={() => {
+                setAmount(String(p));
+                setTouched(true);
+              }}
+              aria-pressed={amount === String(p)}
+              data-testid={`tip-preset-${p}`}
+            >
+              {p}
+            </Button>
+          ))}
         </div>
 
         <TextInput
+          id="tip-amount"
           label="Custom amount (Buzz)"
           inputMode="numeric"
           value={amount}
@@ -105,28 +101,22 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose }: Ti
             setAmount(e.target.value);
             setTouched(true);
           }}
+          error={error ? <span data-testid="tip-error">{error}</span> : undefined}
           data-testid="tip-amount-input"
           aria-label="Tip amount in Buzz"
-          aria-invalid={error ? true : undefined}
         />
-        {error && (
-          <p role="alert" data-testid="tip-error" style={{ margin: 0, fontSize: 13, color: token.error }}>
-            {error}
-          </p>
-        )}
 
         <div style={actionRow}>
           <Button variant="subtle" onClick={onClose} data-testid="tip-cancel">
             Cancel
           </Button>
           <Button
-            color="primary"
             onClick={submit}
             loading={submitting}
-            disabled={submitting || Boolean(error)}
+            disabled={Boolean(error)}
             data-testid="tip-confirm"
           >
-            {`Send ${amount || '0'} Buzz`}
+            {submitting ? 'Sending…' : `Send ${amount || '0'} Buzz`}
           </Button>
         </div>
       </div>
@@ -134,5 +124,7 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose }: Ti
   );
 }
 
+const bodyStyle: CSSProperties = { display: 'grid', gap: 12 };
+const leadText: CSSProperties = { margin: 0, ...mutedText };
 const presetRow: CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap' };
 const actionRow: CSSProperties = { display: 'flex', gap: 8, justifyContent: 'flex-end' };

@@ -229,8 +229,8 @@ describe('toApiError robustness — a NON-STRING error body must not crash the c
 
   it('handles a numeric error body `{ error: 123 }` without throwing', async () => {
     const { api } = makeClient([jsonResponse(400, { error: 123 })]);
-    const err = await api.getCollection(1).catch((e) => e);
+    const err = await api.getCollection(1).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(400);
+    expect((err as ApiError).status).toBe(400);
   });
 });

@@ -23,6 +23,7 @@ import {
   peekNext,
   prev as enginePrev,
   progressLabel,
+  shuffleIndices,
   toggleShuffle as engineToggleShuffle,
   type PlaylistState,
   type Rng,
@@ -40,6 +41,9 @@ export interface UsePlayerOptions {
   rng?: Rng;
   /** Called whenever the current item changes (for analytics / preload logging). */
   onItemChange?: (item: MediaItem | null) => void;
+  /** Start at this playback position (clamped). Used to RESTORE a remembered
+   * spot when reopening a collection, or to open the lightbox on a tapped tile. */
+  initialPosition?: number;
 }
 
 export interface UsePlayer {
@@ -76,20 +80,52 @@ export function usePlayer(opts: UsePlayerOptions): UsePlayer {
   const wrap = opts.wrap ?? true;
   const autoPlay = opts.autoPlay ?? true;
 
-  const [state, setState] = useState<PlaylistState>(() => createPlaylist(items, { rng: opts.rng }));
+  const [state, setState] = useState<PlaylistState>(() => {
+    const base = createPlaylist(items, { rng: opts.rng });
+    const start = opts.initialPosition;
+    if (start != null && base.order.length > 0) {
+      return { ...base, position: Math.max(0, Math.min(Math.floor(start), base.order.length - 1)) };
+    }
+    return base;
+  });
   const [playing, setPlaying] = useState(autoPlay);
 
   // Loop counter for the currently-showing video. Reset whenever the item changes.
   const videoLoopRef = useRef(0);
   const [videoLoop, setVideoLoop] = useState(0);
 
-  // Rebuild the playlist when the item set identity changes (new collection /
-  // more pages appended). Preserve shuffle preference across the rebuild.
+  // React to an `items` identity change. Two distinct cases:
+  //   - APPEND (progressive load): the new array is the old one with more items
+  //     tacked on the end (same prefix by mediaId). Extend the order in place and
+  //     KEEP the current position + video-loop counter so streaming in the next
+  //     page doesn't yank the viewer back to item 0 or restart the current video.
+  //   - REBUILD (a different collection): start fresh at position 0.
+  const prevItemsRef = useRef<readonly MediaItem[]>(items);
   useEffect(() => {
-    setState((prev) => {
-      const rebuilt = createPlaylist(items, { shuffle: prev.shuffled, rng: opts.rng });
-      return rebuilt;
-    });
+    const prevItems = prevItemsRef.current;
+    prevItemsRef.current = items;
+    // Same reference (mount, or a re-render that didn't change items): do nothing
+    // — rebuilding here would clobber an `initialPosition` restore/lightbox seek.
+    if (items === prevItems) return;
+    const prevLen = prevItems.length;
+    const isAppend =
+      items !== prevItems &&
+      items.length > prevLen &&
+      prevLen > 0 &&
+      prevItems.every((it, i) => items[i]?.mediaId === it.mediaId);
+    if (isAppend) {
+      setState((prev) => {
+        const newIndices = Array.from({ length: items.length - prev.items.length }, (_, k) => prev.items.length + k);
+        // Preserve the shuffled feel: shuffle only the freshly-added block and
+        // append it after the existing order (natural order appends verbatim).
+        const extra = prev.shuffled
+          ? shuffleIndices(newIndices.length, opts.rng).map((k) => newIndices[k])
+          : newIndices;
+        return { ...prev, items, order: [...prev.order, ...extra] };
+      });
+      return; // keep position + video-loop counter
+    }
+    setState((prev) => createPlaylist(items, { shuffle: prev.shuffled, rng: opts.rng }));
     videoLoopRef.current = 0;
     setVideoLoop(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps

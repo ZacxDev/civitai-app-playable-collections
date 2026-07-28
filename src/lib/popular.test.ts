@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { SharedAppendValue, SharedListItem } from '@civitai/blocks-react';
 
@@ -89,6 +89,36 @@ describe('recordPlay', () => {
     const shared = makeFakeShared(99);
     await recordPlay(shared, { id: 7, name: '   ' });
     expect(shared.entries[0].value.title).toBe('Collection 7');
+  });
+});
+
+/**
+ * REGRESSION GUARD (the whole reason for v0.1.7): the OLD code posted a GUESSED
+ * `{ key: "playcount:<id>" }` counter shape to a shared-storage/increment route.
+ * The real SHARED store is a votable-entry model — `append({ value: { title,
+ * data } })` then `vote(key)`. These tests PIN the exact method + payload so the
+ * guessed-`{key}` shape can never silently come back.
+ */
+describe('recordPlay — pins the SHARED-store call shape (no more guessed {key})', () => {
+  it('appends { title, data: { collectionId } } then votes the minted key — never a raw counter key', async () => {
+    const append = vi.fn(async (_value: SharedAppendValue) => ({ key: 'entry-key-1' }));
+    const vote = vi.fn(async () => 1);
+    const list = vi.fn(async () => ({ items: [] as SharedListItem[] }));
+    const shared: SharedStore = { append, vote, list };
+
+    await recordPlay(shared, { id: 101, name: 'Neon Cities' });
+
+    // The entry is the votable `{ title, body?, data }` record — the moderated
+    // human title in `title`, the app's opaque collectionId in `data`.
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledWith({ title: 'Neon Cities', data: { collectionId: 101 } });
+    // NOT the retired guessed counter shape.
+    expect(append).not.toHaveBeenCalledWith(expect.objectContaining({ key: expect.anything() }));
+
+    // Then an idempotent up-vote on the host-minted key (not a synthesized
+    // "playcount:101" string).
+    expect(vote).toHaveBeenCalledTimes(1);
+    expect(vote).toHaveBeenCalledWith('entry-key-1');
   });
 });
 

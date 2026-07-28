@@ -5,6 +5,19 @@
 // the injectable `ApiClient` (props.api in tests/dev; a real block-token HTTP
 // client in production). Buzz balance, follow state, and tips are owned here so
 // the Player stays presentation + local interaction.
+//
+// v0.1.5 feedback:
+//   #1 the discover/mine lists PAGINATE — an infinite-scroll sentinel appends the
+//      next page via the response `nextCursor` (dedupe by id — the public-mode
+//      cursor is inclusive and can re-emit the last row). Off-screen cover
+//      thumbnails load lazily (CollectionGrid).
+//   #2 opening a collection loads ONLY page 1 (one fetch) then streams the rest
+//      on demand as the player nears the tail (see openCollection / loadMoreOpen).
+//   #3 the sort control is an explicit Popular ↔ Newest toggle, Popular labelled
+//      "Most followed".
+//   #4 every surface is built from `@civitai/blocks-react/ui`; the pack styles
+//      itself, and the app themes itself by setting `data-theme` on its own root
+//      (the host can't reach inside the iframe — gotcha #60).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -19,18 +32,21 @@ import {
   useRequestSignIn,
   useSharedStorage,
 } from '@civitai/blocks-react';
-
 import {
+  Alert,
   Badge,
   Button,
+  Group,
   Loader,
-  SegmentedControl,
-  Select,
+  Stack,
   TextInput,
+  injectBlocksStyles,
 } from '@civitai/blocks-react/ui';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
+import { createCachedApiClient } from './lib/cache.js';
 import { readPopular, recordPlay, totalBuzz } from './lib/popular.js';
+import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
@@ -42,7 +58,6 @@ import {
   palette,
   radius,
   token as tk,
-  type Palette,
 } from './theme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import type {
@@ -52,8 +67,8 @@ import type {
   MediaItem,
 } from './types.js';
 import { CollectionGrid, PopularRail } from './components/CollectionGrid.js';
+import { CollectionViewer } from './components/CollectionViewer.js';
 import { EmptyState } from './components/EmptyState.js';
-import { Player } from './components/Player.js';
 import type { TipTarget } from './components/TipModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
 
@@ -66,12 +81,29 @@ interface ListState {
   items: CollectionSummary[];
   loading: boolean;
   error: string | null;
+  /** Cursor for the next page; undefined when the list is fully loaded. */
+  nextCursor?: string;
+  /** A next-page (infinite-scroll) fetch is in flight. */
+  loadingMore: boolean;
 }
+
+const EMPTY_LIST: ListState = { items: [], loading: false, error: null, nextCursor: undefined, loadingMore: false };
 
 interface OpenCollection {
   detail: CollectionDetail;
   items: MediaItem[];
   followed: boolean;
+  /** Cursor for the next detail page; undefined when fully loaded. */
+  nextCursor?: string;
+  /** Pages fetched so far (safety ceiling = MAX_DETAIL_PAGES). */
+  pages: number;
+}
+
+/** Append `incoming` onto `existing`, dropping ids already present (inclusive-cursor re-emit). */
+function mergeSummaries(existing: CollectionSummary[], incoming: CollectionSummary[]): CollectionSummary[] {
+  const seen = new Set(existing.map((s) => s.id));
+  const add = incoming.filter((s) => !seen.has(s.id));
+  return add.length ? [...existing, ...add] : existing;
 }
 
 export interface AppProps {
@@ -101,15 +133,21 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   // Buzz balance via the host-mediated GET_BUZZ_BALANCE bridge (scope-free) —
   // NOT a block HTTP endpoint (the old `/api/v1/blocks/buzz` was retired by
   // civitai #3144). Returns per-pool { blue, green, yellow }; we sum to one
-  // spendable figure for the pill + tip modal.
+  // spendable figure for the header pill + the tip modal's soft ceiling.
   const { balance: buzzPools, refetch: refetchBalance } = useBuzzBalance();
   const balance = totalBuzz(buzzPools);
 
   // Cross-user "popular" play-counts via App Blocks SHARED storage
   // (apps:storage:shared:* postMessage bridge) — replaces the guessed
-  // `/api/v1/blocks/shared-storage/{increment,top}` REST routes. Stable
-  // identity across renders, so it's safe in the effect/callback deps below.
+  // `/api/v1/blocks/shared-storage/{increment,top}` REST routes. Stable identity
+  // across renders, so it's safe in the effect/callback deps below.
   const shared = useSharedStorage();
+
+  // Inject the component-pack stylesheet into the block document once (gotcha
+  // #60). Themed via `data-theme` on the app's own root below.
+  useEffect(() => {
+    injectBlocksStyles();
+  }, []);
 
   // Device-local playback prefs (localStorage) — the host does not deliver
   // viewer settings on a page app (see settings.ts).
@@ -119,6 +157,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   useBlockResize(rootRef);
 
   const c = palette();
+  const dataTheme = theme === 'dark' ? 'dark' : 'light';
 
   // Has the viewer granted the consent-gated private-collections scope? The
   // block-token mint withholds it until consent, so it appears on the token's
@@ -152,14 +191,21 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const tokenRef = useRef(token);
   tokenRef.current = token;
   const tokenRaw = token.raw;
+  // Wrapped in a session cache (feedback #3): the collections-list + collection-
+  // detail responses are memoized in-memory so switching tabs / re-opening a
+  // collection is instant and doesn't re-hit the private,no-store origin. The
+  // cache is bound to this memo (per host+token), and follow mutations clear it.
+  // Media/CDN image URLs still browser-cache normally (untouched).
   const realApi = useMemo<ApiClient | null>(
     () =>
       host && tokenRaw
-        ? createHttpApiClient({
-            baseUrl: host,
-            getToken: () => tokenRef.current.raw,
-            refreshToken: () => tokenRef.current.refresh(),
-          })
+        ? createCachedApiClient(
+            createHttpApiClient({
+              baseUrl: host,
+              getToken: () => tokenRef.current.raw,
+              refreshToken: () => tokenRef.current.refresh(),
+            }),
+          )
         : null,
     [host, tokenRaw],
   );
@@ -171,14 +217,30 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   // ---- browse state ----
   const [tab, setTab] = useState<Tab>('discover');
   const [search, setSearch] = useState('');
-  const [sort, setSort] = useState<CollectionSort>('newest');
-  const [discover, setDiscover] = useState<ListState>({ items: [], loading: true, error: null });
-  const [mine, setMine] = useState<ListState>({ items: [], loading: false, error: null });
+  // Default the discovery sort to popular (feedback #3). On the wire this becomes
+  // the deployed server's `Most Followers` (CollectionSort.MostContributors) via
+  // SORT_PARAM in lib/api.ts — no dependency on any undeployed server enum.
+  const [sort, setSort] = useState<CollectionSort>('popular');
+  const [discover, setDiscover] = useState<ListState>({ ...EMPTY_LIST, loading: true });
+  const [mine, setMine] = useState<ListState>(EMPTY_LIST);
   const [popular, setPopular] = useState<Array<{ collection: CollectionSummary; count: number }>>([]);
+
+  // Live refs so the infinite-scroll `onLoadMore` (called from an observer
+  // callback) always reads the latest cursor / in-flight flag, never a stale
+  // closure.
+  const discoverRef = useRef(discover);
+  discoverRef.current = discover;
+  const mineRef = useRef(mine);
+  mineRef.current = mine;
 
   // ---- player state ----
   const [open, setOpen] = useState<OpenCollection | null>(null);
+  const openRef = useRef<OpenCollection | null>(null);
+  openRef.current = open;
   const [openLoading, setOpenLoading] = useState(false);
+  const [openMorePending, setOpenMorePending] = useState(false);
+  const openMorePendingRef = useRef(false);
+  openMorePendingRef.current = openMorePending;
   const [followPending, setFollowPending] = useState(false);
   const [tipping, setTipping] = useState(false);
 
@@ -202,16 +264,16 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         () => api.listCollections({ mode: 'public', query: search, sort, limit: PAGE_LIMIT }),
         retry,
       );
-      setDiscover({ items: page.items, loading: false, error: null });
+      setDiscover({ items: page.items, loading: false, error: null, nextCursor: page.nextCursor, loadingMore: false });
     } catch (err) {
-      setDiscover({ items: [], loading: false, error: errMessage(err) });
+      setDiscover({ ...EMPTY_LIST, error: errMessage(err) });
     }
   }, [api, search, sort, retry]);
 
   const loadMine = useCallback(async () => {
     if (!api) return;
     if (!viewer) {
-      setMine({ items: [], loading: false, error: null });
+      setMine(EMPTY_LIST);
       return;
     }
     setMine((s) => ({ ...s, loading: true, error: null }));
@@ -220,11 +282,51 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         () => api.listCollections({ mode: 'mine', query: search, sort, limit: PAGE_LIMIT }),
         retry,
       );
-      setMine({ items: page.items, loading: false, error: null });
+      setMine({ items: page.items, loading: false, error: null, nextCursor: page.nextCursor, loadingMore: false });
     } catch (err) {
-      setMine({ items: [], loading: false, error: errMessage(err) });
+      setMine({ ...EMPTY_LIST, error: errMessage(err) });
     }
   }, [api, viewer, search, sort, retry]);
+
+  // Infinite-scroll page loaders (feedback #1): fetch the next page via the
+  // stored `nextCursor` and append, deduping the inclusive-cursor re-emit.
+  const loadMoreDiscover = useCallback(async () => {
+    if (!api) return;
+    const s = discoverRef.current;
+    if (!s.nextCursor || s.loadingMore) return;
+    const cursor = s.nextCursor;
+    setDiscover((p) => ({ ...p, loadingMore: true }));
+    try {
+      const page = await api.listCollections({ mode: 'public', query: search, sort, cursor, limit: PAGE_LIMIT });
+      setDiscover((p) => ({
+        ...p,
+        items: mergeSummaries(p.items, page.items),
+        nextCursor: page.nextCursor,
+        loadingMore: false,
+      }));
+    } catch {
+      setDiscover((p) => ({ ...p, loadingMore: false }));
+    }
+  }, [api, search, sort]);
+
+  const loadMoreMine = useCallback(async () => {
+    if (!api || !viewer) return;
+    const s = mineRef.current;
+    if (!s.nextCursor || s.loadingMore) return;
+    const cursor = s.nextCursor;
+    setMine((p) => ({ ...p, loadingMore: true }));
+    try {
+      const page = await api.listCollections({ mode: 'mine', query: search, sort, cursor, limit: PAGE_LIMIT });
+      setMine((p) => ({
+        ...p,
+        items: mergeSummaries(p.items, page.items),
+        nextCursor: page.nextCursor,
+        loadingMore: false,
+      }));
+    } catch {
+      setMine((p) => ({ ...p, loadingMore: false }));
+    }
+  }, [api, viewer, search, sort]);
 
   const loadPopular = useCallback(async () => {
     try {
@@ -264,14 +366,21 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   }, [ready, canFetch, known]);
 
   // ---- open a collection into the player (+ increment shared play-count) ----
+  // Loads ONLY the first page (one fetch); the player streams the rest on demand.
   const openCollection = useCallback(
     async (summary: CollectionSummary) => {
       if (!api) return;
       setOpenLoading(true);
       setOpen(null);
       try {
-        const page = await api.getCollection(summary.id, { limit: 200 });
-        setOpen({ detail: page.collection, items: page.items, followed: page.collection.followed });
+        const page = await loadCollectionFirstPage(api, summary.id);
+        setOpen({
+          detail: page.collection,
+          items: page.items,
+          followed: page.collection.followed,
+          nextCursor: page.nextCursor,
+          pages: 1,
+        });
         // Fire-and-forget the shared play-count vote; a failure never blocks
         // playback (anon viewers reject on the write path — that's fine).
         recordPlay(shared, summary)
@@ -285,6 +394,36 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
     },
     [api, shared, loadPopular, toasts],
   );
+
+  // Progressive detail load: fetch the next page on demand (player nears the
+  // tail). Bounded by MAX_DETAIL_PAGES so a pathological collection can't loop.
+  const loadMoreOpen = useCallback(async () => {
+    if (!api) return;
+    const o = openRef.current;
+    if (!o || !o.nextCursor || o.pages >= MAX_DETAIL_PAGES) return;
+    if (openMorePendingRef.current) return;
+    const cursor = o.nextCursor;
+    const id = o.detail.id;
+    setOpenMorePending(true);
+    try {
+      const more = await loadMoreItems(api, id, cursor);
+      setOpen((prev) => {
+        if (!prev || prev.detail.id !== id) return prev;
+        const seen = new Set(prev.items.map((i) => i.mediaId));
+        const add = more.items.filter((i) => !seen.has(i.mediaId));
+        return {
+          ...prev,
+          items: add.length ? [...prev.items, ...add] : prev.items,
+          nextCursor: more.nextCursor,
+          pages: prev.pages + 1,
+        };
+      });
+    } catch {
+      // Keep what's already loaded; the player still plays it.
+    } finally {
+      setOpenMorePending(false);
+    }
+  }, [api]);
 
   const exitPlayer = useCallback(() => setOpen(null), []);
 
@@ -364,11 +503,11 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   // fetch, so the same-origin/no-host loop can't start.
   if (!ready || !canFetch) {
     return (
-      <div ref={rootRef} data-theme={theme} style={pageStyle(c)}>
+      <div ref={rootRef} data-theme={dataTheme} style={pageStyle(c)}>
         <div
           role="status"
           aria-live="polite"
-          style={{ margin: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}
+          style={{ margin: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}
         >
           <Loader size="sm" />
           <span style={mutedText}>Loading Playable Collections…</span>
@@ -379,8 +518,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
 
   if (open) {
     return (
-      <div ref={rootRef} data-theme={theme}>
-        <Player
+      <div ref={rootRef} data-theme={dataTheme}>
+        <CollectionViewer
+          key={open.detail.id}
           detail={open.detail}
           items={open.items}
           settings={playerSettings}
@@ -396,6 +536,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           isMobile={isMobile}
           c={c}
           onExit={exitPlayer}
+          hasMore={open.nextCursor != null && open.pages < MAX_DETAIL_PAGES}
+          loadingMore={openMorePending}
+          onLoadMore={loadMoreOpen}
         />
         <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} />
       </div>
@@ -405,130 +548,163 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const activeList = tab === 'discover' ? discover : mine;
 
   return (
-    <div ref={rootRef} data-theme={theme} data-layout={isMobile ? 'mobile' : 'desktop'} style={pageStyle(c)}>
+    <div ref={rootRef} data-theme={dataTheme} data-layout={isMobile ? 'mobile' : 'desktop'} style={pageStyle(c)}>
       <div style={contentStyle}>
-        <header style={headerStyle(c)}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-            <span style={brandMark} aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" role="img">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            </span>
-            <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
-              <h1 style={titleStyle}>Playable Collections</h1>
-              <p style={{ margin: 0, ...metaText }}>
-                Sit back and play through a collection's images and videos.
-              </p>
-            </div>
-          </div>
-          {viewer && (
-            <Badge
-              variant="light"
-              color="warning"
-              size="lg"
-              data-testid="buzz-balance"
-              aria-label={balance != null ? `${balance.toLocaleString()} Buzz` : 'Buzz balance'}
-              style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
-            >
-              ⚡ {balance != null ? balance.toLocaleString() : '—'}
-            </Badge>
-          )}
-        </header>
-
-        {/* tabs */}
-        <SegmentedControl
-          data={[
-            { value: 'discover', label: 'Discover' },
-            { value: 'mine', label: 'My collections' },
-          ]}
-          value={tab}
-          onChange={(v) => setTab(v as Tab)}
-          aria-label="Collection source"
-        />
-
-        {/* search + sort */}
-        <form
-          style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (tab === 'discover') void loadDiscover();
-            else void loadMine();
-          }}
-        >
-          <TextInput
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search collections…"
-            aria-label="Search collections"
-            style={{ flex: '1 1 200px', minWidth: 0 }}
-            data-testid="search-input"
-          />
-          <Select
-            value={sort}
-            onChange={(v) => setSort(v as CollectionSort)}
-            options={[
-              { value: 'newest', label: 'Newest' },
-              { value: 'popular', label: 'Popular' },
-            ]}
-            aria-label="Sort collections"
-            data-testid="sort-select"
-          />
-          <Button type="submit" variant="light" data-testid="search-submit">
-            Search
-          </Button>
-        </form>
-
-        {/* popular rail (discover only) */}
-        {tab === 'discover' && <PopularRail entries={popular} onOpen={openCollection} c={c} />}
-
-        {/* the grid */}
-        {tab === 'mine' && !viewer ? (
-          <EmptyState
-            data-testid="mine-anon"
-            title="Sign in to see your collections"
-            body="The collections you've created and bookmarked show up here."
-            action={
-              <Button onClick={() => requestSignIn()} data-testid="mine-signin">
-                Sign in
-              </Button>
-            }
-          />
-        ) : (
-          <>
-            {/* Private-collections consent affordance (mine tab, signed in, not
-                yet granted). Public own collections are always shown above; the
-                viewer opts in to reveal private ones. Never a hard error. */}
-            {tab === 'mine' && viewer && !hasPrivateScope && (
-              <div style={consentBox(c)} data-testid="private-consent">
-                <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
-                  <span style={{ fontWeight: 600, fontSize: 14, color: tk.text }}>
-                    Your private collections are hidden
-                  </span>
-                  <span style={metaText}>
-                    Grant access to include the collections you keep private.
-                  </span>
-                </div>
-                <Button onClick={requestPrivateConsent} data-testid="enable-private">
-                  Show my private collections
-                </Button>
+        <Stack gap={16}>
+          <header style={headerStyle}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+              <span style={brandMark} aria-hidden="true">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" role="img">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </span>
+              <div style={{ display: 'grid', gap: 2, minWidth: 0 }}>
+                <h1 style={titleStyle}>Playable Collections</h1>
+                <p style={{ margin: 0, ...metaText }}>
+                  Sit back and play through a collection's images and videos.
+                </p>
               </div>
+            </div>
+            {viewer && (
+              <Badge
+                size="lg"
+                variant="light"
+                color="warning"
+                data-testid="buzz-balance"
+                aria-label={balance != null ? `${balance.toLocaleString()} Buzz` : 'Buzz balance'}
+                style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+              >
+                ⚡ {balance != null ? balance.toLocaleString() : '—'}
+              </Badge>
             )}
-            <CollectionGrid
-              collections={activeList.items}
-              loading={activeList.loading || (tab === 'discover' && openLoading)}
-              error={activeList.error}
-              emptyLabel={
-                tab === 'discover'
-                  ? 'No public collections match your search yet.'
-                  : "You haven't created or bookmarked any collections yet."
+          </header>
+
+          {/* tabs */}
+          <Group gap={8} role="tablist" aria-label="Collection source">
+            <Button
+              role="tab"
+              aria-selected={tab === 'discover'}
+              variant={tab === 'discover' ? 'filled' : 'light'}
+              onClick={() => setTab('discover')}
+              data-testid="tab-discover"
+            >
+              Discover
+            </Button>
+            <Button
+              role="tab"
+              aria-selected={tab === 'mine'}
+              variant={tab === 'mine' ? 'filled' : 'light'}
+              onClick={() => setTab('mine')}
+              data-testid="tab-mine"
+            >
+              My collections
+            </Button>
+          </Group>
+
+          {/* search + sort */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (tab === 'discover') void loadDiscover();
+              else void loadMine();
+            }}
+          >
+            <Stack gap={10}>
+              <Group gap={8} align="center">
+                <TextInput
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search collections…"
+                  aria-label="Search collections"
+                  data-testid="search-input"
+                  style={{ flex: 1, minWidth: 160 }}
+                />
+                <Button type="submit" variant="outline" data-testid="search-submit">
+                  Search
+                </Button>
+              </Group>
+
+              {/* sort toggle — Popular ("Most followed") ↔ Newest (feedback #3) */}
+              <Group gap={8} align="center">
+                <span style={{ fontSize: 13, fontWeight: 600, color: tk.dimmed }}>Sort</span>
+                <Group gap={4} role="group" aria-label="Sort collections">
+                  <Button
+                    size="sm"
+                    variant={sort === 'popular' ? 'filled' : 'light'}
+                    aria-pressed={sort === 'popular'}
+                    onClick={() => setSort('popular')}
+                    data-testid="sort-popular"
+                    title="Most followed"
+                  >
+                    Popular
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={sort === 'newest' ? 'filled' : 'light'}
+                    aria-pressed={sort === 'newest'}
+                    onClick={() => setSort('newest')}
+                    data-testid="sort-newest"
+                  >
+                    Newest
+                  </Button>
+                </Group>
+                <span style={{ ...metaText }} data-testid="sort-hint">
+                  {sort === 'popular' ? 'Most followed' : 'Newest first'}
+                </span>
+              </Group>
+            </Stack>
+          </form>
+
+          {/* popular rail (discover only) */}
+          {tab === 'discover' && <PopularRail entries={popular} onOpen={openCollection} c={c} />}
+
+          {/* the grid */}
+          {tab === 'mine' && !viewer ? (
+            <EmptyState
+              data-testid="mine-anon"
+              title="Sign in to see your collections"
+              body="The collections you've created and bookmarked show up here."
+              action={
+                <Button onClick={() => requestSignIn()} data-testid="mine-signin">
+                  Sign in
+                </Button>
               }
-              onOpen={openCollection}
-              onRetry={tab === 'discover' ? loadDiscover : loadMine}
-              c={c}
-              isMobile={isMobile}
             />
-          </>
-        )}
+          ) : (
+            <>
+              {/* Private-collections consent affordance (mine tab, signed in, not
+                  yet granted). Public own collections are always shown above; the
+                  viewer opts in to reveal private ones. Never a hard error. */}
+              {tab === 'mine' && viewer && !hasPrivateScope && (
+                <Alert color="info" title="Your private collections are hidden" data-testid="private-consent">
+                  <div style={{ display: 'grid', gap: 8, justifyItems: 'start' }}>
+                    <span>Grant access to include the collections you keep private.</span>
+                    <Button size="sm" onClick={requestPrivateConsent} data-testid="enable-private">
+                      Show my private collections
+                    </Button>
+                  </div>
+                </Alert>
+              )}
+              <CollectionGrid
+                collections={activeList.items}
+                loading={activeList.loading || (tab === 'discover' && openLoading)}
+                error={activeList.error}
+                emptyLabel={
+                  tab === 'discover'
+                    ? 'No public collections match your search yet.'
+                    : "You haven't created or bookmarked any collections yet."
+                }
+                onOpen={openCollection}
+                onRetry={tab === 'discover' ? loadDiscover : loadMine}
+                c={c}
+                isMobile={isMobile}
+                hasMore={activeList.nextCursor != null}
+                loadingMore={activeList.loadingMore}
+                onLoadMore={tab === 'discover' ? loadMoreDiscover : loadMoreMine}
+              />
+            </>
+          )}
+        </Stack>
       </div>
       <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} />
     </div>
@@ -541,16 +717,14 @@ function errMessage(err: unknown): string {
 }
 
 // ---- styles ---- (pageStyle / contentStyle / metaText live in ./theme)
-function headerStyle(c: Palette): CSSProperties {
-  return {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 12,
-    paddingBottom: 14,
-    borderBottom: `1px solid ${c.border}`,
-  };
-}
+const headerStyle: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 12,
+  paddingBottom: 14,
+  borderBottom: `1px solid ${tk.border}`,
+};
 const brandMark: CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -569,16 +743,3 @@ const titleStyle: CSSProperties = {
   letterSpacing: '-0.02em',
   color: tk.text,
 };
-function consentBox(c: Palette): CSSProperties {
-  return {
-    display: 'flex',
-    gap: 12,
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    background: tk.surface,
-    border: `1px dashed ${c.border}`,
-    borderRadius: radius.md,
-    padding: 14,
-  };
-}

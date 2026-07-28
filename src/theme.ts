@@ -3,12 +3,15 @@
 // Every value resolves to a `@civitai/theme` CSS custom property (`--civitai-*`)
 // so there are ZERO hardcoded theme colors and light/dark is driven entirely by
 // the `[data-theme]` attribute the host sets on the block root (see App.tsx /
-// Player.tsx). The `@civitai/blocks-react/ui` pack (Button/Badge/Modal/…) is
-// self-themed off the same tokens, so the app's own chrome reads as one system.
+// CollectionViewer.tsx / Player.tsx). The `@civitai/blocks-react/ui` pack
+// (Button/Badge/Modal/…) is self-themed off the same tokens, so the app's own
+// chrome reads as one system.
 //
 // Token source: `@civitai/theme@0.2.0` — imported once in main.tsx via
 // `@civitai/theme/styles.css` (and also injected at runtime by the pack's
-// injectBlocksStyles()).
+// injectBlocksStyles()). The pre-0.35 pack emitted `--ci-*` tokens; 0.35.2 emits
+// `--civitai-*` and nothing at `--ci-*`, so every legacy `--ci-*` reference has
+// been migrated here (a bare `--ci-*` now resolves to NOTHING → invisible chrome).
 //
 // 🔴 Two token traps this module deliberately avoids:
 //   1. The `--civitai-color-gray-*` ramp is theme-INVARIANT (not redefined under
@@ -137,9 +140,6 @@ export const contentStyle: CSSProperties = {
   width: '100%',
   maxWidth: 980,
   padding: 'clamp(14px, 3vw, 24px)',
-  display: 'grid',
-  gap: 18,
-  alignContent: 'start',
   boxSizing: 'border-box',
 };
 
