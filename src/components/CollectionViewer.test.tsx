@@ -64,6 +64,32 @@ function renderViewer(over: Partial<React.ComponentProps<typeof CollectionViewer
   return render(<CollectionViewer {...props} />);
 }
 
+function mature(id: number, nsfwLevel = 4): MediaItem {
+  return { ...img(id), nsfwLevel };
+}
+
+describe('CollectionViewer — content maturity (badge + blur-until-tap, ship-blocker #3)', () => {
+  it('blurs a mature current item and reveals it on tap (classic Player)', async () => {
+    renderViewer({ items: [mature(1, 4), img(2)] });
+    // PG-13 app default: an R item is badged + blurred until revealed.
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R');
+    const image = screen.getByTestId('media-image');
+    expect(image).toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('maturity-reveal'));
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('does NOT blur or badge a PG item', () => {
+    renderViewer({ items: [img(1)] });
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+});
+
 describe('CollectionViewer — default mode + mode switching', () => {
   it('defaults to the classic slideshow (Player)', () => {
     renderViewer();

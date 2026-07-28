@@ -93,6 +93,20 @@ describe('ContinuousView — capped video autoplay (🔴 perf guard)', () => {
   });
 });
 
+describe('ContinuousView — content maturity (badge + blur, ship-blocker #3)', () => {
+  it('badges and blurs a mature tile; leaves PG tiles untouched', () => {
+    const matureImg: MediaItem = { ...img(1), nsfwLevel: 8 }; // X
+    renderView({ items: [matureImg, img(2)], reducedMotion: true });
+    // The mature tile carries a rating badge and its media is blurred.
+    const badges = screen.getAllByTestId('maturity-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('X');
+    const images = screen.getAllByTestId('continuous-image');
+    expect(images[0]).toHaveStyle({ filter: 'blur(20px)' });
+    expect(images[1]).not.toHaveStyle({ filter: 'blur(20px)' });
+  });
+});
+
 describe('ContinuousView — page-ahead + tap', () => {
   it('calls onLoadMore when the tail sentinel intersects', async () => {
     const onLoadMore = vi.fn();

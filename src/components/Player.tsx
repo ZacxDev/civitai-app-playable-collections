@@ -13,7 +13,9 @@ import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
 import type { Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
+import { shouldBlur } from '../lib/maturity.js';
 import { iconBtn } from './styles.js';
+import { MaturityBadge, MaturityRevealOverlay, MATURITY_BLUR_PX } from './Maturity.js';
 import { TipModal, type TipTarget } from './TipModal.js';
 
 const SWIPE_THRESHOLD = 48;
@@ -120,6 +122,18 @@ export function Player(props: PlayerProps) {
 
   const [tipTarget, setTipTarget] = useState<TipTarget | null>(null);
   const [tippedKeys, setTippedKeys] = useState<Set<string>>(new Set());
+  // Maturity blur-until-tap: mature items render blurred until the viewer reveals
+  // them (per media id, so advancing to a new mature item re-gates it).
+  const [revealedIds, setRevealedIds] = useState<Set<number>>(() => new Set());
+  const blurCurrent = current != null && shouldBlur(current.nsfwLevel) && !revealedIds.has(current.mediaId);
+  const revealCurrent = useCallback(() => {
+    if (!current) return;
+    setRevealedIds((prev) => {
+      const next = new Set(prev);
+      next.add(current.mediaId);
+      return next;
+    });
+  }, [current]);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -268,7 +282,7 @@ export function Player(props: PlayerProps) {
             ref={videoRef}
             key={current.mediaId}
             src={current.url}
-            style={mediaEl}
+            style={blurCurrent ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl}
             autoPlay={player.playing}
             muted={muted}
             playsInline
@@ -288,8 +302,23 @@ export function Player(props: PlayerProps) {
             }}
           />
         ) : current ? (
-          <img src={current.url} alt="" style={mediaEl} data-testid="media-image" />
+          <img
+            src={current.url}
+            alt=""
+            style={blurCurrent ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl}
+            data-testid="media-image"
+          />
         ) : null}
+
+        {/* maturity badge (top-left of the stage, above media) */}
+        {current && (
+          <span style={maturityBadgeSlot}>
+            <MaturityBadge nsfwLevel={current.nsfwLevel} />
+          </span>
+        )}
+
+        {/* blur-until-tap reveal gate for mature media */}
+        {blurCurrent && current && <MaturityRevealOverlay nsfwLevel={current.nsfwLevel} onReveal={revealCurrent} />}
 
         {/* preload next */}
         {player.upcoming?.type === 'image' && (
@@ -578,6 +607,14 @@ function stageStyle(c: Palette): CSSProperties {
   };
 }
 const mediaWrap: CSSProperties = { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const maturityBadgeSlot: CSSProperties = {
+  position: 'absolute',
+  top: 12,
+  left: '50%',
+  transform: 'translateX(-50%)',
+  zIndex: 6,
+  pointerEvents: 'none',
+};
 const mediaEl: CSSProperties = { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' };
 
 function clickZone(which: 'left' | 'center' | 'right'): CSSProperties {
