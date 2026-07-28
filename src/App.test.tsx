@@ -448,6 +448,58 @@ describe('App — host-origin gating (real HTTP client)', () => {
   });
 });
 
+describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', () => {
+  it('shows a popular collection that is NOT on the current discover/mine page', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const api: ApiClient = {
+      ...base,
+      async getCollection(id, opts) {
+        if (id === 999) {
+          return {
+            collection: { id: 999, name: 'Hidden Gem', description: null, curator: { userId: 3, username: 'zed' }, isPublic: true, followed: false },
+            items: [{ mediaId: 5, type: 'image', url: 'https://x/5.jpg', width: 1, height: 1, creator: { userId: 3, username: 'zed' }, nsfwLevel: 1 }],
+          };
+        }
+        return base.getCollection(id, opts);
+      },
+    };
+    renderApp({
+      api,
+      shared: { seed: [{ value: { title: 'Hidden Gem', data: { collectionId: 999 } }, voters: [1, 2, 3, 4, 5] }] },
+    });
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    expect(rail).toHaveTextContent('Hidden Gem');
+    expect(within(rail).getByTestId('popular-card')).toHaveAttribute('aria-label', 'Play Hidden Gem — played 5 times');
+  });
+
+  it('drops an unresolvable popular id (getCollection 404) — rail hidden, not crashed', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const api: ApiClient = {
+      ...base,
+      async getCollection(id, opts) {
+        if (id === 888) throw new ApiError('not_found', 404, 'gone');
+        return base.getCollection(id, opts);
+      },
+    };
+    renderApp({
+      api,
+      shared: { seed: [{ value: { title: 'Ghost', data: { collectionId: 888 } }, voters: [1, 2] }] },
+    });
+    await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(screen.queryByTestId('popular-rail')).toBeNull());
+    expect(screen.getByTestId('collection-grid')).toBeInTheDocument();
+    expect(screen.queryByTestId('grid-error')).toBeNull();
+  });
+
+  it('hides the rail (no crash) when the shared store is empty', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    renderApp({ api, shared: { seed: [] } });
+    await screen.findByTestId('collection-grid');
+    expect(screen.queryByTestId('popular-rail')).toBeNull();
+  });
+});
+
 describe('App — bounded retry / no infinite loop', () => {
   it('a non-JSON (HTML) response lands in the error state after ONE attempt, not a loop', async () => {
     const host = window.location.origin;

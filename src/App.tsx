@@ -46,7 +46,7 @@ import {
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
 import { createCachedApiClient } from './lib/cache.js';
-import { readPopular, recordPlay, totalBuzz } from './lib/popular.js';
+import { readPopular, recordPlay, resolvePopularEntries, summaryFromPage, totalBuzz, type ResolvedPopular } from './lib/popular.js';
 import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
@@ -215,7 +215,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const [sort, setSort] = useState<CollectionSort>('popular');
   const [discover, setDiscover] = useState<ListState>({ ...EMPTY_LIST, loading: true });
   const [mine, setMine] = useState<ListState>(EMPTY_LIST);
-  const [popular, setPopular] = useState<Array<{ collection: CollectionSummary; count: number }>>([]);
+  const [popular, setPopular] = useState<ResolvedPopular[]>([]);
 
   // Live refs so the infinite-scroll `onLoadMore` (called from an observer
   // callback) always reads the latest cursor / in-flight flag, never a stale
@@ -323,18 +323,25 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   const loadPopular = useCallback(async () => {
     try {
       const entries = await readPopular(shared, POPULAR_LIMIT);
-      const resolved = entries
-        .map((e) => {
-          const collection = known.get(e.collectionId);
-          return collection ? { collection, count: e.count } : null;
-        })
-        .filter((x): x is { collection: CollectionSummary; count: number } => x !== null);
+      // Resolve each ranked entry to a full card. An id already on a loaded list
+      // is used directly; an id that ISN'T (a popular collection not on the
+      // current page) is fetched by id so the rail always shows the true top-N
+      // (v0.1.9 fix). A resolve failure drops that one entry, never the rail.
+      const resolved = await resolvePopularEntries(entries, known, async (id) => {
+        if (!api) return null;
+        try {
+          const page = await api.getCollection(id, { limit: 1 });
+          return summaryFromPage(page);
+        } catch {
+          return null;
+        }
+      });
       setPopular(resolved);
     } catch {
       // Popular is a nice-to-have; never block the page on it.
       setPopular([]);
     }
-  }, [shared, known]);
+  }, [shared, known, api]);
 
   // ---- effects ---- (all gated on `canFetch`: don't fetch until the host
   // origin + token are established, or the loop's root cause returns)

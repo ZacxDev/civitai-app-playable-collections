@@ -21,7 +21,7 @@
 
 import type { SharedAppendValue, SharedListItem, UseSharedStorage } from '@civitai/blocks-react';
 
-import type { PopularEntry } from '../types.js';
+import type { CollectionPage, CollectionSummary, PopularEntry } from '../types.js';
 
 /** The SHARED-store surface the popularity helpers need (subset of the hook). */
 export type SharedStore = Pick<UseSharedStorage, 'list' | 'append' | 'vote'>;
@@ -92,6 +92,66 @@ export async function readPopular(shared: SharedReadStore, limit: number): Promi
     .filter((e): e is PopularEntry => e.collectionId != null && e.count > 0)
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
+}
+
+/** One resolved rail entry: a full collection card + its distinct-viewer play count. */
+export interface ResolvedPopular {
+  collection: CollectionSummary;
+  count: number;
+}
+
+/**
+ * Synthesize a grid `CollectionSummary` from a collection-DETAIL page. Used to
+ * resolve a popular id that isn't on any loaded list (the detail endpoint is the
+ * only by-id read). The rail card shows name + cover + play count only, so a
+ * cover derived from the first item and an approximate `itemCount` (the loaded
+ * page length — the resolver fetches with `limit: 1`) are sufficient; the exact
+ * count is never displayed on the rail.
+ */
+export function summaryFromPage(page: CollectionPage): CollectionSummary {
+  const { collection, items } = page;
+  return {
+    id: collection.id,
+    name: collection.name,
+    description: collection.description,
+    coverImageUrl: items[0]?.url ?? null,
+    itemCount: items.length,
+    curator: collection.curator,
+    isPublic: collection.isPublic,
+    followed: collection.followed,
+  };
+}
+
+/**
+ * Resolve ranked popular entries to full collection cards.
+ *
+ * 🔴 THE FIX (v0.1.9): the old resolver looked ids up ONLY in the already-loaded
+ * discover/mine map (`known`), so a genuinely popular collection that happened
+ * not to be on the current page was silently dropped from the rail — the
+ * headline cross-user signal quietly degrading. Now an id absent from `known` is
+ * fetched via `fetchSummary` (the by-id detail endpoint), so the rail always
+ * shows the TRUE top-N. Rank order (the input order — already count-desc) is
+ * preserved; an id that can't be resolved (404 / hidden / fetch error →
+ * `fetchSummary` returns null or throws) is dropped, never crashes the rail.
+ */
+export async function resolvePopularEntries(
+  entries: PopularEntry[],
+  known: Map<number, CollectionSummary>,
+  fetchSummary: (id: number) => Promise<CollectionSummary | null>,
+): Promise<ResolvedPopular[]> {
+  const settled = await Promise.all(
+    entries.map(async (e): Promise<ResolvedPopular | null> => {
+      const hit = known.get(e.collectionId);
+      if (hit) return { collection: hit, count: e.count };
+      try {
+        const summary = await fetchSummary(e.collectionId);
+        return summary ? { collection: summary, count: e.count } : null;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return settled.filter((x): x is ResolvedPopular => x !== null);
 }
 
 /**
