@@ -122,6 +122,32 @@ describe('tip flow', () => {
   });
 });
 
+describe('tip caps + rate limiting (ship-blocker #2)', () => {
+  it('surfaces the server Retry-After on a rate-limited tip', async () => {
+    const api = createFakeApi({ viewerUserId: 99, failMode: 'rate_limited' });
+    await openNeon(api);
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    const modal = await screen.findByTestId('tip-modal');
+    await userEvent.click(within(modal).getByTestId('tip-confirm'));
+    // The fake throws rate_limited with retryAfterMs 2000 → surfaced as "2s".
+    expect(await screen.findByTestId('toast-error')).toHaveTextContent(/try again in 2s/);
+  });
+
+  it('reduces the displayed daily allowance after a successful tip', async () => {
+    const api = createFakeApi({ viewerUserId: 99, balance: 100000 }) as FakeApi;
+    await openNeon(api);
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    expect(screen.getByTestId('tip-allowance')).toHaveTextContent('25,000 of 25,000 Buzz left today');
+    await userEvent.click(within(await screen.findByTestId('tip-modal')).getByTestId('tip-confirm')); // tips 50
+    await waitFor(() => expect(api.__tips()).toHaveLength(1));
+    // Reopen the tip modal — the app-local allowance now reflects the 50 spent.
+    await userEvent.click(screen.getByTestId('tip-curator'));
+    await waitFor(() =>
+      expect(screen.getByTestId('tip-allowance')).toHaveTextContent('24,950 of 25,000 Buzz left today'),
+    );
+  });
+});
+
 describe('follow toggle', () => {
   it('optimistically follows then confirms', async () => {
     const api = createFakeApi({ viewerUserId: 99 }) as FakeApi;

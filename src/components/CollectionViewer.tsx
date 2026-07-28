@@ -51,6 +51,8 @@ export interface CollectionViewerProps {
   onToggleFollow: () => void;
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
   tipping: boolean;
+  /** Estimated remaining daily tip allowance (app-local) for the tip modals. */
+  dailyTipRemaining?: number;
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
@@ -81,6 +83,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
     onToggleFollow,
     onTip,
     tipping,
+    dailyTipRemaining,
     isMobile,
     c,
     onExit,
@@ -394,6 +397,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onToggleFollow={onToggleFollow}
             onTip={onTip}
             tipping={tipping}
+            dailyTipRemaining={dailyTipRemaining}
             isMobile={isMobile}
             c={c}
             onExit={exit}
@@ -446,6 +450,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onToggleFollow={onToggleFollow}
             onTip={onTip}
             tipping={tipping}
+            dailyTipRemaining={dailyTipRemaining}
             isMobile={isMobile}
             c={c}
             onExit={() => setLightboxIndex(null)}
@@ -465,6 +470,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
           }}
           balance={buzzBalance}
           submitting={tipping}
+          dailyRemaining={dailyTipRemaining}
           onConfirm={doCuratorTip}
           onClose={() => setTipCuratorOpen(false)}
         />

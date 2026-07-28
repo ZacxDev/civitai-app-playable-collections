@@ -50,6 +50,7 @@ import { readPopular, recordPlay, resolvePopularEntries, summaryFromPage, totalB
 import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
+import { useDailyTipAllowance } from './lib/tip-allowance.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
 import { palette } from './theme.js';
 import { useIsMobile } from './useMediaQuery.js';
@@ -144,6 +145,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   // Device-local playback prefs (localStorage) — the host does not deliver
   // viewer settings on a page app (see settings.ts).
   const { settings: playerSettings, setSecondsPerImage, setVideoLoopCount } = usePlayerSettings();
+
+  // Estimated remaining daily tip allowance (app-local; the server is the real
+  // gate). Surfaced in the tip modal and pre-blocks an over-allowance amount.
+  const tipAllowance = useDailyTipAllowance();
 
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
@@ -477,6 +482,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           entityType: target.entityType,
           entityId: target.entityId,
         });
+        // Record against today's app-local allowance so the next modal reflects it.
+        tipAllowance.record(amount);
         toasts.push('success', `Sent ${amount.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
         refetchBalance();
         return true;
@@ -484,7 +491,14 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         if (err instanceof ApiError && err.code === 'insufficient_balance') {
           toasts.push('error', "You don't have enough Buzz for that tip.");
         } else if (err instanceof ApiError && err.code === 'rate_limited') {
-          toasts.push('error', 'Slow down a moment before tipping again.');
+          // Surface the server's Retry-After (daily-cap / burst back-off) when present.
+          const secs = err.retryAfterMs != null ? Math.ceil(err.retryAfterMs / 1000) : null;
+          toasts.push(
+            'error',
+            secs != null
+              ? `You've hit your tip limit — try again in ${secs}s.`
+              : "You've hit your tip limit — please slow down before tipping again.",
+          );
         } else {
           toasts.push('error', errMessage(err));
         }
@@ -493,7 +507,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setTipping(false);
       }
     },
-    [viewer, api, requestSignIn, toasts, refetchBalance],
+    [viewer, api, requestSignIn, toasts, refetchBalance, tipAllowance],
   );
 
   // ---- render ----
@@ -528,6 +542,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           onToggleFollow={toggleFollow}
           onTip={doTip}
           tipping={tipping}
+          dailyTipRemaining={tipAllowance.remaining}
           isMobile={isMobile}
           c={c}
           onExit={exitPlayer}

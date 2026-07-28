@@ -49,6 +49,8 @@ export interface PlayerProps {
   /** Perform the tip. Resolves true on success (Player then marks it tipped). */
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
   tipping: boolean;
+  /** Estimated remaining daily tip allowance (app-local) for the tip modal. */
+  dailyTipRemaining?: number;
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
@@ -78,6 +80,7 @@ export function Player(props: PlayerProps) {
     onToggleFollow,
     onTip,
     tipping,
+    dailyTipRemaining,
     isMobile,
     c,
     onExit,
@@ -454,6 +457,7 @@ export function Player(props: PlayerProps) {
           target={tipTarget}
           balance={buzzBalance}
           submitting={tipping}
+          dailyRemaining={dailyTipRemaining}
           onConfirm={confirmTip}
           onClose={() => setTipTarget(null)}
         />
