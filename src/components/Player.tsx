@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Button, Loader } from '@civitai/blocks-react/ui';
+import { Button, Loader, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
@@ -489,12 +489,11 @@ export function Player(props: PlayerProps) {
             />
           )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input
-              type="range"
+            <Slider
               min={0}
               max={Math.max(0, player.state.order.length - 1)}
               value={player.state.position}
-              onChange={(e) => player.seekToPosition(Number(e.target.value))}
+              onChange={player.seekToPosition}
               style={{ flex: 1 }}
               aria-label="Seek"
               data-testid="scrubber"
@@ -585,13 +584,12 @@ function SettingsPanel({
       <label style={settingsRow}>
         <span style={settingsLabel}>Seconds per image</span>
         <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="range"
+          <Slider
             min={SECONDS_PER_IMAGE.min}
             max={SECONDS_PER_IMAGE.max}
             step={1}
             value={secondsPerImage}
-            onChange={(e) => onSecondsPerImageChange(Number(e.target.value))}
+            onChange={onSecondsPerImageChange}
             aria-label="Seconds per image"
             data-testid="set-seconds-per-image"
             style={{ flex: 1 }}
@@ -604,13 +602,12 @@ function SettingsPanel({
       <label style={settingsRow}>
         <span style={settingsLabel}>Video loop count</span>
         <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="range"
+          <Slider
             min={VIDEO_LOOP_COUNT.min}
             max={VIDEO_LOOP_COUNT.max}
             step={1}
             value={videoLoopCount}
-            onChange={(e) => onVideoLoopCountChange(Number(e.target.value))}
+            onChange={onVideoLoopCountChange}
             aria-label="Video loop count"
             data-testid="set-video-loop-count"
             style={{ flex: 1 }}

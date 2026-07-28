@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Badge, Button, Card } from '@civitai/blocks-react/ui';
+import { Badge, Button, Card, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
@@ -395,13 +395,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
             <label style={settingRow}>
               <span style={settingLabel}>Scroll speed</span>
               <span style={sliderWrap}>
-                <input
-                  type="range"
+                <Slider
                   min={SCROLL_SPEED.min}
                   max={SCROLL_SPEED.max}
                   step={5}
                   value={prefs.scrollSpeed}
-                  onChange={(e) => setScrollSpeed(Number(e.target.value))}
+                  onChange={setScrollSpeed}
                   aria-label="Auto-scroll speed"
                   data-testid="set-scroll-speed"
                   style={{ flex: 1 }}
@@ -416,13 +415,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
               <label style={settingRow}>
                 <span style={settingLabel}>Seconds / image</span>
                 <span style={sliderWrap}>
-                  <input
-                    type="range"
+                  <Slider
                     min={SECONDS_PER_IMAGE.min}
                     max={SECONDS_PER_IMAGE.max}
                     step={1}
                     value={settings.secondsPerImage}
-                    onChange={(e) => onSecondsPerImageChange(Number(e.target.value))}
+                    onChange={onSecondsPerImageChange}
                     aria-label="Seconds per image"
                     data-testid="set-seconds-per-image"
                     style={{ flex: 1 }}
@@ -435,13 +433,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
               <label style={settingRow}>
                 <span style={settingLabel}>Video loops</span>
                 <span style={sliderWrap}>
-                  <input
-                    type="range"
+                  <Slider
                     min={VIDEO_LOOP_COUNT.min}
                     max={VIDEO_LOOP_COUNT.max}
                     step={1}
                     value={settings.videoLoopCount}
-                    onChange={(e) => onVideoLoopCountChange(Number(e.target.value))}
+                    onChange={onVideoLoopCountChange}
                     aria-label="Video loop count"
                     data-testid="set-video-loop-count"
                     style={{ flex: 1 }}
