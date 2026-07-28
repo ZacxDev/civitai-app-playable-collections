@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -104,6 +104,23 @@ describe('ContinuousView — content maturity (badge + blur, ship-blocker #3)', 
     const images = screen.getAllByTestId('continuous-image');
     expect(images[0]).toHaveStyle({ filter: 'blur(20px)' });
     expect(images[1]).not.toHaveStyle({ filter: 'blur(20px)' });
+  });
+});
+
+describe('ContinuousView — brittle poster fallback (ship-blocker #5)', () => {
+  it('falls back to a placeholder when a video poster 404s', () => {
+    renderView({ items: [vid(1)], reducedMotion: true });
+    const poster = screen.getByTestId('continuous-poster');
+    fireEvent.error(poster);
+    expect(screen.getByTestId('continuous-placeholder')).toBeInTheDocument();
+    expect(screen.queryByTestId('continuous-poster')).toBeNull();
+  });
+
+  it('falls back to a placeholder when a lazy image errors', async () => {
+    renderView({ items: [img(1)], reducedMotion: true });
+    await act(async () => flushIntersections(true)); // swap data-src → src
+    fireEvent.error(screen.getByTestId('continuous-image'));
+    expect(screen.getByTestId('continuous-placeholder')).toBeInTheDocument();
   });
 });
 

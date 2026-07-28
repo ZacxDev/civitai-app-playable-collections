@@ -253,6 +253,10 @@ function Tile({
   // classic lightbox where the full blur-until-reveal gate applies.
   const blur = shouldBlur(item.nsfwLevel);
   const media = blur ? { ...mediaEl, filter: 'blur(20px)' } : mediaEl;
+  // The poster URL is derived by string-replacing `.mp4→.jpg` (brittle); if it
+  // or a lazy cover 404s, fall back to a neutral placeholder instead of a broken
+  // image icon.
+  const [broken, setBroken] = useState(false);
   return (
     <button
       type="button"
@@ -268,7 +272,11 @@ function Tile({
       ref={clone ? undefined : (el) => registerTile(el, item.mediaId)}
       style={tileStyle(c)}
     >
-      {item.type === 'video' ? (
+      {broken ? (
+        <div style={{ ...mediaEl, ...tilePlaceholder(c) }} data-testid={clone ? undefined : 'continuous-placeholder'} aria-hidden="true">
+          ▶
+        </div>
+      ) : item.type === 'video' ? (
         // Poster (first-frame/transcoded still) mirrors the server cover approach;
         // the video only mounts/plays when it wins an autoplay slot.
         play ? (
@@ -283,7 +291,14 @@ function Tile({
             data-testid={clone ? undefined : 'continuous-video'}
           />
         ) : (
-          <img src={posterFor(item)} alt="" style={media} data-testid={clone ? undefined : 'continuous-poster'} loading="lazy" />
+          <img
+            src={posterFor(item)}
+            alt=""
+            style={media}
+            data-testid={clone ? undefined : 'continuous-poster'}
+            loading="lazy"
+            onError={() => !clone && setBroken(true)}
+          />
         )
       ) : (
         // Lazy image: data-src until the shared observer swaps it in near view.
@@ -295,6 +310,7 @@ function Tile({
           style={media}
           loading="lazy"
           data-testid={clone ? undefined : 'continuous-image'}
+          onError={() => !clone && setBroken(true)}
         />
       )}
       {!clone && (
@@ -456,6 +472,18 @@ function wallStyle(cols: number): CSSProperties {
 const colStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 };
 
 const tileBadgeSlot: CSSProperties = { position: 'absolute', top: 6, left: 6, zIndex: 2, pointerEvents: 'none' };
+
+function tilePlaceholder(c: Palette): CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 120,
+    color: c.muted,
+    fontSize: 28,
+    background: c.card,
+  };
+}
 
 function tileStyle(c: Palette): CSSProperties {
   return {

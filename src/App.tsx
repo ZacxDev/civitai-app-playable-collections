@@ -251,6 +251,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   openMorePendingRef.current = openMorePending;
   const [followPending, setFollowPending] = useState(false);
   const [tipping, setTipping] = useState(false);
+  // A failed collection-open keeps a retry affordance (the grid already has one).
+  const [openError, setOpenError] = useState<{ summary: CollectionSummary; message: string } | null>(null);
 
   // Known-collection lookup (for resolving popular ids to cards).
   const known = useMemo(() => {
@@ -387,6 +389,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       if (!api) return;
       setOpenLoading(true);
       setOpen(null);
+      setOpenError(null);
       try {
         const page = await loadCollectionFirstPage(api, summary.id);
         setOpen({
@@ -402,13 +405,19 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           .then(() => loadPopular())
           .catch(() => {});
       } catch (err) {
-        toasts.push('error', errMessage(err));
+        // Keep a retry affordance (the grid has one for the list; this covers the
+        // open path, which previously only flashed a transient toast).
+        setOpenError({ summary, message: errMessage(err) });
       } finally {
         setOpenLoading(false);
       }
     },
-    [api, shared, loadPopular, toasts],
+    [api, shared, loadPopular],
   );
+
+  const retryOpen = useCallback(() => {
+    if (openError) void openCollection(openError.summary);
+  }, [openError, openCollection]);
 
   // Progressive detail load: fetch the next page on demand (player nears the
   // tail). Bounded by MAX_DETAIL_PAGES so a pathological collection can't loop.
@@ -601,6 +610,18 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
               Sit back and play through a collection's images and videos.
             </p>
           </header>
+
+          {/* failed collection-open → retry affordance (#5) */}
+          {openError && (
+            <Alert color="error" title="Couldn't open that collection" data-testid="open-error">
+              <div style={{ display: 'grid', gap: 8, justifyItems: 'start' }}>
+                <span>{openError.message}</span>
+                <Button size="sm" variant="outline" color="error" onClick={retryOpen} data-testid="open-retry">
+                  Try again
+                </Button>
+              </div>
+            </Alert>
+          )}
 
           {/* tabs — WAI-ARIA roving tablist (#4): only the selected tab is
               tabbable; Arrow/Home/End move selection+focus; each tab controls the

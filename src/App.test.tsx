@@ -448,6 +448,30 @@ describe('App — host-origin gating (real HTTP client)', () => {
   });
 });
 
+describe('App — failed collection-open retry (ship-blocker #5)', () => {
+  it('shows a retry affordance when opening fails, and a retry can succeed', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    let fail = true;
+    const api: ApiClient = {
+      ...base,
+      async getCollection(id, opts) {
+        if (fail) throw new ApiError('unknown', 500, 'open boom');
+        return base.getCollection(id, opts);
+      },
+    };
+    renderApp({ api });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    // Open failed → a retry affordance (not the player, not a bare toast).
+    expect(await screen.findByTestId('open-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('player')).toBeNull();
+    // Retry after the server recovers → the player opens.
+    fail = false;
+    await userEvent.click(screen.getByTestId('open-retry'));
+    await screen.findByTestId('player');
+  });
+});
+
 describe('App — keyboard-operable tablist (ship-blocker #4)', () => {
   it('wires a roving tablist: selected tab tabbable + aria-controls a tabpanel', async () => {
     renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
