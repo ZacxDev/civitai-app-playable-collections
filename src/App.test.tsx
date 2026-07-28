@@ -25,6 +25,8 @@ function renderApp(
     buzzBalance?: { blue: number; green: number; yellow: number };
     /** Seed the mock host's SHARED store (the apps:storage:shared:* bridge). */
     shared?: { seed?: Array<{ value: { title: string; body?: string; data?: unknown }; authorUserId?: number; voters?: number[] }> };
+    /** Analytics sink (Feature #10). */
+    onEvent?: (e: { type: string; [k: string]: unknown }) => void;
   } = {},
 ) {
   return render(
@@ -36,7 +38,7 @@ function renderApp(
       buzzBalance={opts.buzzBalance}
       shared={opts.shared}
     >
-      <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} />
+      <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} onEvent={opts.onEvent} />
     </Harness>,
   );
 }
@@ -74,6 +76,12 @@ describe('CollectionGrid states (deterministic)', () => {
   it('renders an empty state', () => {
     render(<CollectionGrid collections={[]} loading={false} error={null} emptyLabel="Nothing here" onOpen={() => {}} c={c} isMobile={false} />);
     expect(screen.getByTestId('grid-empty')).toHaveTextContent('Nothing here');
+  });
+
+  it('renders a loading SKELETON grid (not a spinner row) while first-loading (#10)', () => {
+    render(<CollectionGrid collections={[]} loading error={null} emptyLabel="none" onOpen={() => {}} c={c} isMobile={false} />);
+    const loading = screen.getByTestId('grid-loading');
+    expect(within(loading).getAllByTestId('skeleton-card').length).toBeGreaterThan(1);
   });
 
   it('renders cards and fires onOpen', async () => {
@@ -445,6 +453,45 @@ describe('App — host-origin gating (real HTTP client)', () => {
     // Absolute, against the validated host origin — NOT a same-origin relative path.
     expect(collectionsCall!.startsWith(`${host}/api/v1/blocks/collections`)).toBe(true);
     expect(collectionsCall!.startsWith('/api')).toBe(false);
+  });
+});
+
+describe('App — analytics events (Feature #10)', () => {
+  it('emits play, mode_switch, follow and tip events', async () => {
+    const events: Array<{ type: string; [k: string]: unknown }> = [];
+    renderApp({ api: createFakeApi({ viewerUserId: 99, balance: 100000 }), onEvent: (e) => events.push(e) });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101)
+    await screen.findByTestId('collection-viewer');
+    expect(events).toContainEqual(expect.objectContaining({ type: 'play', collectionId: 101 }));
+
+    // Mode switch → continuous chrome.
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    expect(events).toContainEqual(expect.objectContaining({ type: 'mode_switch', collectionId: 101, mode: 'continuous-horizontal' }));
+
+    // Follow (continuous chrome).
+    await userEvent.click(screen.getByTestId('chrome-follow'));
+    await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'follow', collectionId: 101, followed: true })));
+
+    // Tip the curator.
+    await userEvent.click(screen.getByTestId('chrome-tip-curator'));
+    const modal = await screen.findByTestId('tip-modal');
+    await userEvent.click(within(modal).getByTestId('tip-confirm'));
+    await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'tip', kind: 'curator', amount: 50 })));
+  });
+
+  it('emits popular_open when opening from the Popular rail', async () => {
+    const events: Array<{ type: string; [k: string]: unknown }> = [];
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
+      onEvent: (e) => events.push(e),
+      shared: { seed: [{ value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] }] },
+    });
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    await userEvent.click(within(rail).getByTestId('popular-card'));
+    await screen.findByTestId('collection-viewer');
+    expect(events).toContainEqual(expect.objectContaining({ type: 'popular_open', collectionId: 101 }));
   });
 });
 

@@ -27,6 +27,8 @@ import type { RecentEntry } from '../lib/recent.js';
 
 /** ~150px prefetch margin so a cover loads just before it enters the viewport. */
 const COVER_PREFETCH_MARGIN = '150px';
+/** Number of skeleton placeholder cards shown while the first page loads (#10). */
+const SKELETON_COUNT = 8;
 /** Fire the next-page load a little before the sentinel is fully visible. */
 const SENTINEL_MARGIN = '200px';
 
@@ -112,6 +114,19 @@ export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
   );
 }
 
+/** A single loading-skeleton card (cover + two text lines), theme-token styled. */
+export function SkeletonCard() {
+  return (
+    <div style={cardBtn} data-testid="skeleton-card" aria-hidden="true">
+      <div className="pc-skeleton" style={{ ...coverWrap, aspectRatio: '1 / 1' }} />
+      <div style={{ ...cardBody, gap: 6 }}>
+        <span className="pc-skeleton" style={{ height: 12, borderRadius: 4, width: '80%' }} />
+        <span className="pc-skeleton" style={{ height: 10, borderRadius: 4, width: '55%' }} />
+      </div>
+    </div>
+  );
+}
+
 export interface CollectionGridProps {
   collections: CollectionSummary[];
   loading: boolean;
@@ -145,11 +160,15 @@ export function CollectionGrid({
   const register = useCoverObserver();
 
   if (loading && collections.length === 0) {
+    // Loading skeleton grid (#10) — placeholder cards instead of a spinner row.
     return (
-      <Card padding="lg" data-testid="grid-loading" role="status" style={centerNote}>
-        <Loader size="sm" />
-        <span style={{ color: 'var(--civitai-color-text-dimmed)' }}>Loading collections…</span>
-      </Card>
+      <ul style={gridStyle(isMobile)} data-testid="grid-loading" data-layout={isMobile ? 'mobile' : 'desktop'} role="status" aria-label="Loading collections">
+        {Array.from({ length: SKELETON_COUNT }, (_, i) => (
+          <li key={i} style={{ listStyle: 'none' }}>
+            <SkeletonCard />
+          </li>
+        ))}
+      </ul>
     );
   }
   if (error) {

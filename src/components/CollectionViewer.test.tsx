@@ -68,6 +68,21 @@ function mature(id: number, nsfwLevel = 4): MediaItem {
   return { ...img(id), nsfwLevel };
 }
 
+describe('CollectionViewer — onboarding coach (Feature #10)', () => {
+  it('shows the coach on first open and hides it (persisted) after dismiss', async () => {
+    const storage = memStorage();
+    const { unmount } = renderViewer({ storage });
+    expect(screen.getByTestId('onboarding-coach')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('onboarding-dismiss'));
+    expect(screen.queryByTestId('onboarding-coach')).toBeNull();
+    unmount();
+
+    // Reopen with the SAME storage → the coach does not return.
+    renderViewer({ storage });
+    expect(screen.queryByTestId('onboarding-coach')).toBeNull();
+  });
+});
+
 describe('CollectionViewer — cast / ambient mode (Feature #8)', () => {
   it('toggling cast hides the chrome, marks the surface, and offers an exit', async () => {
     renderViewer({ items: [img(1), img(2), img(3)] });

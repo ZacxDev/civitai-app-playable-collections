@@ -38,6 +38,7 @@ import { ContinuousView } from './ContinuousView.js';
 import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
 import { TipModal, type TipTarget } from './TipModal.js';
 import { FocusTrap } from './FocusTrap.js';
+import { useOnboarding } from '../lib/onboarding.js';
 
 export interface CollectionViewerProps {
   detail: CollectionDetail;
@@ -128,6 +129,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Ambient "cast" mode (#8): full-bleed, chrome hidden, passive auto-advance.
   const [cast, setCast] = useState(false);
+  // One-time controls coach (#10).
+  const onboarding = useOnboarding(storage);
 
   // ---- lightbox + curator tip ----
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -281,6 +284,25 @@ export function CollectionViewer(props: CollectionViewerProps) {
           )}
         </div>
       </div>
+      )}
+
+      {/* ---- one-time controls coach (#10) ---- */}
+      {!cast && onboarding.show && (
+        <Card padding="md" data-testid="onboarding-coach" style={coachCard}>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <strong style={{ fontSize: 14 }}>How to play</strong>
+            <ul style={coachList}>
+              <li>Switch between Slideshow, Ticker, and Wall with the mode buttons.</li>
+              <li>In the continuous modes, press &amp; hold to pause the drift.</li>
+              <li>Tap any tile to open it full-screen (tip the creator there).</li>
+            </ul>
+            <div>
+              <Button size="sm" onClick={onboarding.dismiss} data-testid="onboarding-dismiss">
+                Got it
+              </Button>
+            </div>
+          </div>
+        </Card>
       )}
 
       {/* ---- cast mode: a single floating exit affordance (chrome is hidden) ---- */}
@@ -583,6 +605,8 @@ const lightboxOverlay: CSSProperties = {
   zIndex: 50,
   background: '#000',
 };
+const coachCard: CSSProperties = { margin: '10px 14px' };
+const coachList: CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, display: 'grid', gap: 3, color: 'var(--civitai-color-text-dimmed)' };
 const castExitStyle: CSSProperties = {
   position: 'absolute',
   top: 12,

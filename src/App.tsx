@@ -67,6 +67,7 @@ import type {
 } from './types.js';
 import { CollectionGrid, PopularRail, RecentRail } from './components/CollectionGrid.js';
 import { useRecent, type RecentEntry } from './lib/recent.js';
+import { useAnalytics, type AnalyticsSink } from './lib/analytics.js';
 import { CollectionViewer } from './components/CollectionViewer.js';
 import type { TipTarget } from './components/TipModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
@@ -124,9 +125,11 @@ export interface AppProps {
   isPrivateGranted?: (tokenScopes: string[]) => boolean;
   /** Bounded-retry config for the auto-run data loaders (test seam). */
   retry?: RetryConfig;
+  /** Analytics sink (Feature #10). A test injects one; prod plugs a transport. */
+  onEvent?: AnalyticsSink;
 }
 
-export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY }: AppProps = {}) {
+export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
   const host = useHostOrigin();
@@ -164,6 +167,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
 
   // Recently-played collections (Feature #7) — the "Continue watching" rail.
   const { recent, record: recordRecentPlay } = useRecent();
+
+  // Product analytics (Feature #10).
+  const analytics = useAnalytics(onEvent);
+  const prevModeRef = useRef<ViewMode | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
@@ -405,6 +412,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       setOpenLoading(true);
       setOpen(null);
       setOpenError(null);
+      prevModeRef.current = null; // reset mode-switch tracking for the new collection
       try {
         const page = await loadCollectionFirstPage(api, summary.id);
         setOpen({
@@ -414,6 +422,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           nextCursor: page.nextCursor,
           pages: 1,
         });
+        analytics.track({ type: 'play', collectionId: summary.id });
         // Add to the device-local "Continue watching" rail (#7).
         recordRecentPlay({ id: summary.id, name: summary.name, coverImageUrl: summary.coverImageUrl });
         // Fire-and-forget the shared play-count vote; a failure never blocks
@@ -429,7 +438,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setOpenLoading(false);
       }
     },
-    [api, shared, loadPopular, recordRecentPlay],
+    [api, shared, loadPopular, recordRecentPlay, analytics],
   );
 
   const retryOpen = useCallback(() => {
@@ -443,10 +452,12 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       setOpenLoading(true);
       setOpen(null);
       setOpenError(null);
+      prevModeRef.current = null;
       try {
         const page = await loadCollectionFirstPage(api, id);
         setOpen({ detail: page.collection, items: page.items, followed: page.collection.followed, nextCursor: page.nextCursor, pages: 1 });
         const s = summaryFromPage(page);
+        analytics.track({ type: 'play', collectionId: s.id });
         recordRecentPlay({ id: s.id, name: s.name, coverImageUrl: s.coverImageUrl });
         recordPlay(shared, s)
           .then(() => loadPopular())
@@ -468,7 +479,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setOpenLoading(false);
       }
     },
-    [api, shared, loadPopular, recordRecentPlay],
+    [api, shared, loadPopular, recordRecentPlay, analytics],
   );
 
   // Reopen a recently-played collection (#7). Reuses the id-based open; the saved
@@ -526,10 +537,33 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       mode: viewStateRef.current.mode,
       index: viewStateRef.current.index,
     });
+    analytics.track({ type: 'share', collectionId: o.detail.id });
     const result = await shareLink({ title: o.detail.name, text: `Play "${o.detail.name}" on Civitai`, url });
     if (result.method === 'copy' && result.ok) toasts.push('success', 'Link copied to clipboard.');
     else if (result.method === 'none') toasts.push('info', `Share link: ${url}`);
-  }, [toasts]);
+  }, [toasts, analytics]);
+
+  // Track a view-mode switch (skip the initial report per opened collection).
+  const handleViewStateChange = useCallback(
+    (s: { mode: ViewMode; index: number }) => {
+      setViewState(s);
+      if (prevModeRef.current != null && s.mode !== prevModeRef.current) {
+        const id = openRef.current?.detail.id;
+        if (id != null) analytics.track({ type: 'mode_switch', collectionId: id, mode: s.mode });
+      }
+      prevModeRef.current = s.mode;
+    },
+    [analytics],
+  );
+
+  // Open a collection from the Popular rail (tracks popular_open, then opens).
+  const openPopular = useCallback(
+    (summary: CollectionSummary) => {
+      analytics.track({ type: 'popular_open', collectionId: summary.id });
+      void openCollection(summary);
+    },
+    [analytics, openCollection],
+  );
 
   // Progressive detail load: fetch the next page on demand (player nears the
   // tail). Bounded by MAX_DETAIL_PAGES so a pathological collection can't loop.
@@ -576,6 +610,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
     try {
       const res = await api.setFollow(open.detail.id, nextFollowed);
       setOpen((o) => (o ? { ...o, followed: res.followed } : o));
+      analytics.track({ type: 'follow', collectionId: open.detail.id, followed: res.followed });
       // Keep the grid card badge in sync.
       applyFollowedToLists(open.detail.id, res.followed);
       toasts.push('success', res.followed ? 'Added to your collections.' : 'Removed the bookmark.');
@@ -587,7 +622,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       setFollowPending(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, viewer, api, requestSignIn, toasts]);
+  }, [open, viewer, api, requestSignIn, toasts, analytics]);
 
   const applyFollowedToLists = useCallback((id: number, followed: boolean) => {
     const patch = (s: ListState): ListState => ({
@@ -616,6 +651,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         });
         // Record against today's app-local allowance so the next modal reflects it.
         tipAllowance.record(amount);
+        analytics.track({ type: 'tip', kind: target.kind, amount });
         toasts.push('success', `Sent ${amount.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
         refetchBalance();
         return true;
@@ -639,7 +675,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setTipping(false);
       }
     },
-    [viewer, api, requestSignIn, toasts, refetchBalance, tipAllowance],
+    [viewer, api, requestSignIn, toasts, refetchBalance, tipAllowance, analytics],
   );
 
   // ---- render ----
@@ -676,7 +712,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           tipping={tipping}
           dailyTipRemaining={tipAllowance.remaining}
           onShare={onShareCollection}
-          onViewStateChange={setViewState}
+          onViewStateChange={handleViewStateChange}
           initialMode={deepLinkRestore?.id === open.detail.id ? deepLinkRestore.mode : undefined}
           initialIndex={deepLinkRestore?.id === open.detail.id ? deepLinkRestore.index : undefined}
           isMobile={isMobile}
@@ -823,7 +859,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           {tab === 'discover' && <RecentRail entries={recent} onOpen={openRecent} c={c} />}
 
           {/* popular rail (discover only) */}
-          {tab === 'discover' && <PopularRail entries={popular} onOpen={openCollection} c={c} />}
+          {tab === 'discover' && <PopularRail entries={popular} onOpen={openPopular} c={c} />}
 
           {/* the grid */}
           {tab === 'mine' && !viewer ? (
