@@ -23,6 +23,7 @@ import { Alert, Badge, Button, Card, Loader } from '@civitai/blocks-react/ui';
 
 import type { CollectionSummary } from '../types.js';
 import type { Palette } from '../theme.js';
+import type { RecentEntry } from '../lib/recent.js';
 
 /** ~150px prefetch margin so a cover loads just before it enters the viewport. */
 const COVER_PREFETCH_MARGIN = '150px';
@@ -297,6 +298,49 @@ export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
               <span style={cardMeta}>
                 <Badge size="sm" variant="light">
                   {count} {count === 1 ? 'play' : 'plays'}
+                </Badge>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </CoverObserverContext.Provider>
+  );
+}
+
+export interface RecentRailProps {
+  entries: RecentEntry[];
+  onOpen: (entry: RecentEntry) => void;
+  c: Palette;
+}
+
+/** "Continue watching" rail — recently-played collections that reopen at their
+ * saved mode + position (Feature #7). */
+export function RecentRail({ entries, onOpen, c }: RecentRailProps) {
+  const register = useCoverObserver();
+  if (entries.length === 0) return null;
+  return (
+    <CoverObserverContext.Provider value={register}>
+      <section aria-label="Continue watching" data-testid="recent-rail" style={{ display: 'grid', gap: 8 }}>
+        <h2 style={railHeading}>⏳ Continue watching</h2>
+        <div style={railScroller}>
+          {entries.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              onClick={() => onOpen(entry)}
+              style={railCard}
+              data-testid="recent-card"
+              data-collection-id={entry.id}
+              aria-label={`Resume ${entry.name}`}
+            >
+              <div style={railCover}>
+                <CoverImage src={entry.coverImageUrl} c={c} />
+              </div>
+              <span style={railTitle}>{entry.name}</span>
+              <span style={cardMeta}>
+                <Badge size="sm" variant="light">
+                  Resume
                 </Badge>
               </span>
             </button>

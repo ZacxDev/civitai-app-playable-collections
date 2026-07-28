@@ -448,6 +448,34 @@ describe('App — host-origin gating (real HTTP client)', () => {
   });
 });
 
+describe('App — Continue-watching rail (Feature #7)', () => {
+  it('lists a played collection and reopens it at the saved position', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101), 3 items
+    await screen.findByTestId('collection-viewer');
+    // Seek to the last item, then exit (saves mode + position).
+    fireEvent.change(screen.getByTestId('scrubber'), { target: { value: '2' } });
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('3 / 3'));
+    await userEvent.click(screen.getByTestId('viewer-exit'));
+
+    // Back on discover, the Continue-watching rail lists the collection.
+    const rail = await screen.findByTestId('recent-rail');
+    expect(rail).toHaveTextContent('Neon Cities');
+
+    // Reopening from the rail resumes at the saved position.
+    await userEvent.click(within(rail).getByTestId('recent-card'));
+    await screen.findByTestId('collection-viewer');
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('3 / 3'));
+  });
+
+  it('does not show the rail before anything has been played', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    expect(screen.queryByTestId('recent-rail')).toBeNull();
+  });
+});
+
 describe('App — deep-link / shareable URLs (Feature #6)', () => {
   afterEach(() => {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);

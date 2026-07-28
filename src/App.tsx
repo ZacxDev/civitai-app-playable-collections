@@ -65,7 +65,8 @@ import type {
   CollectionSummary,
   MediaItem,
 } from './types.js';
-import { CollectionGrid, PopularRail } from './components/CollectionGrid.js';
+import { CollectionGrid, PopularRail, RecentRail } from './components/CollectionGrid.js';
+import { useRecent, type RecentEntry } from './lib/recent.js';
 import { CollectionViewer } from './components/CollectionViewer.js';
 import type { TipTarget } from './components/TipModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
@@ -160,6 +161,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   // Estimated remaining daily tip allowance (app-local; the server is the real
   // gate). Surfaced in the tip modal and pre-blocks an over-allowance amount.
   const tipAllowance = useDailyTipAllowance();
+
+  // Recently-played collections (Feature #7) — the "Continue watching" rail.
+  const { recent, record: recordRecentPlay } = useRecent();
 
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
@@ -410,6 +414,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           nextCursor: page.nextCursor,
           pages: 1,
         });
+        // Add to the device-local "Continue watching" rail (#7).
+        recordRecentPlay({ id: summary.id, name: summary.name, coverImageUrl: summary.coverImageUrl });
         // Fire-and-forget the shared play-count vote; a failure never blocks
         // playback (anon viewers reject on the write path — that's fine).
         recordPlay(shared, summary)
@@ -423,7 +429,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setOpenLoading(false);
       }
     },
-    [api, shared, loadPopular],
+    [api, shared, loadPopular, recordRecentPlay],
   );
 
   const retryOpen = useCallback(() => {
@@ -440,7 +446,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
       try {
         const page = await loadCollectionFirstPage(api, id);
         setOpen({ detail: page.collection, items: page.items, followed: page.collection.followed, nextCursor: page.nextCursor, pages: 1 });
-        recordPlay(shared, summaryFromPage(page))
+        const s = summaryFromPage(page);
+        recordRecentPlay({ id: s.id, name: s.name, coverImageUrl: s.coverImageUrl });
+        recordPlay(shared, s)
           .then(() => loadPopular())
           .catch(() => {});
       } catch (err) {
@@ -460,7 +468,26 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
         setOpenLoading(false);
       }
     },
-    [api, shared, loadPopular],
+    [api, shared, loadPopular, recordRecentPlay],
+  );
+
+  // Reopen a recently-played collection (#7). Reuses the id-based open; the saved
+  // mode+position are restored by CollectionViewer's loadCollectionState.
+  const openRecent = useCallback(
+    (entry: RecentEntry) => {
+      const summary: CollectionSummary = {
+        id: entry.id,
+        name: entry.name,
+        description: null,
+        coverImageUrl: entry.coverImageUrl,
+        itemCount: 0,
+        curator: { userId: 0, username: null },
+        isPublic: true,
+        followed: false,
+      };
+      void openCollection(summary);
+    },
+    [openCollection],
   );
 
   // Restore from the URL hash ONCE, when data-fetching becomes possible.
@@ -792,6 +819,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
 
           {/* the tabpanel the Discover/Mine tabs control (#4) */}
           <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={activeTabId} tabIndex={0} style={{ display: 'grid', gap: 16, outline: 'none' }}>
+          {/* continue-watching rail (discover only, #7) */}
+          {tab === 'discover' && <RecentRail entries={recent} onOpen={openRecent} c={c} />}
+
           {/* popular rail (discover only) */}
           {tab === 'discover' && <PopularRail entries={popular} onOpen={openCollection} c={c} />}
 
