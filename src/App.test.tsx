@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Harness } from '@civitai/blocks-react/testing';
 import type { ViewerInfo } from '@civitai/app-sdk/blocks';
@@ -445,6 +445,59 @@ describe('App — host-origin gating (real HTTP client)', () => {
     // Absolute, against the validated host origin — NOT a same-origin relative path.
     expect(collectionsCall!.startsWith(`${host}/api/v1/blocks/collections`)).toBe(true);
     expect(collectionsCall!.startsWith('/api')).toBe(false);
+  });
+});
+
+describe('App — deep-link / shareable URLs (Feature #6)', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  });
+
+  it('restores an open collection + view mode from the URL hash on load', async () => {
+    window.history.replaceState(null, '', '#c=101&mode=continuous-horizontal');
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    const viewer = await screen.findByTestId('collection-viewer');
+    expect(viewer).toHaveAttribute('data-mode', 'continuous-horizontal');
+  });
+
+  it('restores the classic playback position from the hash', async () => {
+    window.history.replaceState(null, '', '#c=101&i=2');
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('player');
+    // Neon Cities (101) has 3 items → index 2 is item 3/3.
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('3 / 3');
+  });
+
+  it('writes the open collection to the URL hash, and clears it on exit', async () => {
+    window.history.replaceState(null, '', window.location.pathname);
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101)
+    await screen.findByTestId('collection-viewer');
+    await waitFor(() => expect(window.location.hash).toContain('c=101'));
+    await userEvent.click(screen.getByTestId('viewer-exit'));
+    await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(window.location.hash).toBe(''));
+  });
+
+  it('the Share button copies a deep link to the clipboard', async () => {
+    const writeText = vi.fn(async () => {});
+    const prevClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    try {
+      window.history.replaceState(null, '', window.location.pathname);
+      renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+      const grid = await screen.findByTestId('collection-grid');
+      await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+      await screen.findByTestId('collection-viewer');
+      await userEvent.click(screen.getByTestId('viewer-share'));
+      await waitFor(() => expect(writeText).toHaveBeenCalled());
+      expect(String(writeText.mock.calls[0][0])).toContain('#c=101');
+      expect(await screen.findByTestId('toast-success')).toHaveTextContent(/copied/i);
+    } finally {
+      if (prevClipboard) Object.defineProperty(navigator, 'clipboard', prevClipboard);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    }
   });
 });
 

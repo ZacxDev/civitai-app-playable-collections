@@ -111,6 +111,14 @@ beforeEach(() => {
     /* ignore */
   }
 
+  // The deep-link (Feature #6) reads/writes window.location.hash; reset it so a
+  // hash written by one test can't auto-open a collection in the next.
+  try {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  } catch {
+    /* ignore */
+  }
+
   // jsdom has no matchMedia; default to a DESKTOP viewport, motion allowed. Tests
   // override via setViewport('mobile') / setReducedMotion(true).
   reducedMotion = false;

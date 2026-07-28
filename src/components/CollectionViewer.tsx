@@ -60,6 +60,15 @@ export interface CollectionViewerProps {
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  // ---- deep-link (Feature #6) ----
+  /** Deep-link override for the starting view mode (else localStorage restore). */
+  initialMode?: ViewMode;
+  /** Deep-link override for the starting item index (else localStorage restore). */
+  initialIndex?: number;
+  /** Reports the current {mode, index} up so App can keep the URL hash in sync. */
+  onViewStateChange?: (state: { mode: ViewMode; index: number }) => void;
+  /** Share the current collection/position (Web Share / copy-link). */
+  onShare?: () => void;
   // ---- test seams ----
   /** localStorage handle for view prefs + per-collection state. `undefined` →
    * the real device storage; pass an in-memory Storage (or null) in tests. */
@@ -103,10 +112,13 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const { prefs, toggleMuted, setScrollSpeed } = useViewPrefs(storage);
 
   // ---- per-collection restore (mode + position), once, keyed by detail.id ----
+  // A deep-link (Feature #6) override wins over the localStorage restore.
   const restored = useMemo(() => loadCollectionState(detail.id, storage), [detail.id, storage]);
-  const [mode, setMode] = useState<ViewMode>(restored.mode);
+  const initMode = props.initialMode ?? restored.mode;
+  const initPosition = props.initialIndex ?? restored.position;
+  const [mode, setMode] = useState<ViewMode>(initMode);
   const [switchedMode, setSwitchedMode] = useState(false); // true after a manual switch
-  const positionRef = useRef(restored.position);
+  const positionRef = useRef(initPosition);
 
   // ---- ephemeral per-session lenses ----
   const [filter, setFilter] = useState<MediaFilter>('all');
@@ -128,7 +140,14 @@ export function CollectionViewer(props: CollectionViewerProps) {
   );
 
   // Restore position only for the initial mode, and only until the user switches.
-  const initialPosition = !switchedMode && mode === restored.mode ? restored.position : 0;
+  const initialPosition = !switchedMode && mode === initMode ? initPosition : 0;
+
+  // Report {mode, index} up so App can keep the shareable URL hash in sync (#6).
+  const onViewStateChangeRef = useRef(props.onViewStateChange);
+  onViewStateChangeRef.current = props.onViewStateChange;
+  const reportViewState = useCallback((m: ViewMode, idx: number) => {
+    onViewStateChangeRef.current?.({ mode: m, index: m === 'classic' ? Math.max(0, Math.floor(idx)) : 0 });
+  }, []);
 
   // ---- persist mode + position ----
   const persist = useCallback(
@@ -141,8 +160,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
       positionRef.current = 0; // position meaning differs per mode; start fresh
       setMode(next);
       persist(next);
+      reportViewState(next, 0);
     },
-    [persist],
+    [persist, reportViewState],
   );
   // Save on unmount (exit / collection switch) capturing the final position.
   const modeRef = useRef(mode);
@@ -150,6 +170,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
   useEffect(() => {
     return () => saveCollectionState(detail.id, { mode: modeRef.current, position: positionRef.current }, storage);
   }, [detail.id, storage]);
+
+  // Report the initial {mode, index} once per opened collection (deep-link sync).
+  useEffect(() => {
+    reportViewState(modeRef.current, positionRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail.id]);
 
   const exit = useCallback(() => {
     saveCollectionState(detail.id, { mode: modeRef.current, position: positionRef.current }, storage);
@@ -162,9 +188,13 @@ export function CollectionViewer(props: CollectionViewerProps) {
     if (needsMoreToFill(filter, displayItems.length, hasMore, loadingMore)) onLoadMore?.();
   }, [filter, displayItems.length, hasMore, loadingMore, onLoadMore]);
 
-  const onClassicPosition = useCallback((pos: number) => {
-    positionRef.current = pos;
-  }, []);
+  const onClassicPosition = useCallback(
+    (pos: number) => {
+      positionRef.current = pos;
+      reportViewState('classic', pos);
+    },
+    [reportViewState],
+  );
   const onContinuousOffset = useCallback((offset: number) => {
     positionRef.current = offset;
   }, []);
@@ -216,6 +246,11 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <ModeSwitcher value={mode} onChange={changeMode} />
+          {props.onShare && (
+            <Button size="sm" variant="light" onClick={props.onShare} aria-label="Share this collection" data-testid="viewer-share">
+              🔗 Share
+            </Button>
+          )}
           <Button
             size="sm"
             variant={settingsOpen ? 'filled' : 'light'}

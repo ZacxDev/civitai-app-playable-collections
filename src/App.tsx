@@ -53,6 +53,9 @@ import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { useDailyTipAllowance } from './lib/tip-allowance.js';
+import { buildShareUrl, decodeDeepLink, encodeDeepLink } from './lib/deep-link.js';
+import { shareLink } from './lib/share.js';
+import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
 import { palette } from './theme.js';
 import { useIsMobile } from './useMediaQuery.js';
@@ -254,6 +257,14 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   // A failed collection-open keeps a retry affordance (the grid already has one).
   const [openError, setOpenError] = useState<{ summary: CollectionSummary; message: string } | null>(null);
 
+  // Deep-link (Feature #6): the open collection + mode + index live in the URL
+  // hash so a reload restores playback and Share hands out a link.
+  const [viewState, setViewState] = useState<{ mode: ViewMode; index: number }>({ mode: DEFAULT_VIEW_MODE, index: 0 });
+  const viewStateRef = useRef(viewState);
+  viewStateRef.current = viewState;
+  const [deepLinkRestore, setDeepLinkRestore] = useState<{ id: number; mode: ViewMode; index: number } | null>(null);
+  const autoOpenedRef = useRef(false);
+
   // Known-collection lookup (for resolving popular ids to cards).
   const known = useMemo(() => {
     const map = new Map<number, CollectionSummary>();
@@ -419,6 +430,80 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
     if (openError) void openCollection(openError.summary);
   }, [openError, openCollection]);
 
+  // Open a collection by id (deep-link restore): fetch its first page, then open.
+  const openById = useCallback(
+    async (id: number) => {
+      if (!api) return;
+      setOpenLoading(true);
+      setOpen(null);
+      setOpenError(null);
+      try {
+        const page = await loadCollectionFirstPage(api, id);
+        setOpen({ detail: page.collection, items: page.items, followed: page.collection.followed, nextCursor: page.nextCursor, pages: 1 });
+        recordPlay(shared, summaryFromPage(page))
+          .then(() => loadPopular())
+          .catch(() => {});
+      } catch (err) {
+        // Minimal summary so the generic retry (needs only .id) still works.
+        const summary: CollectionSummary = {
+          id,
+          name: 'this collection',
+          description: null,
+          coverImageUrl: null,
+          itemCount: 0,
+          curator: { userId: 0, username: null },
+          isPublic: true,
+          followed: false,
+        };
+        setOpenError({ summary, message: errMessage(err) });
+      } finally {
+        setOpenLoading(false);
+      }
+    },
+    [api, shared, loadPopular],
+  );
+
+  // Restore from the URL hash ONCE, when data-fetching becomes possible.
+  useEffect(() => {
+    if (!ready || !canFetch || autoOpenedRef.current) return;
+    autoOpenedRef.current = true;
+    const dl = decodeDeepLink(typeof window !== 'undefined' ? window.location.hash : null);
+    if (dl) {
+      setDeepLinkRestore({ id: dl.collectionId, mode: dl.mode, index: dl.index });
+      setViewState({ mode: dl.mode, index: dl.index });
+      void openById(dl.collectionId);
+    }
+  }, [ready, canFetch, openById]);
+
+  // Keep the URL hash in sync with the open collection + view state (no reload).
+  // 🔴 Don't clear the hash until the auto-open one-shot has consumed it — this
+  // effect runs on the pre-`ready` renders too, and clearing there would wipe the
+  // deep link before restore could read it.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const { pathname, search } = window.location;
+    if (open) {
+      const hash = encodeDeepLink({ collectionId: open.detail.id, mode: viewState.mode, index: viewState.index });
+      window.history.replaceState(null, '', `${pathname}${search}#${hash}`);
+    } else if (autoOpenedRef.current && window.location.hash) {
+      window.history.replaceState(null, '', `${pathname}${search}`);
+    }
+  }, [open, viewState]);
+
+  // Share the current collection + position (Web Share sheet / copy-link).
+  const onShareCollection = useCallback(async () => {
+    const o = openRef.current;
+    if (!o || typeof window === 'undefined') return;
+    const url = buildShareUrl(window.location.href, {
+      collectionId: o.detail.id,
+      mode: viewStateRef.current.mode,
+      index: viewStateRef.current.index,
+    });
+    const result = await shareLink({ title: o.detail.name, text: `Play "${o.detail.name}" on Civitai`, url });
+    if (result.method === 'copy' && result.ok) toasts.push('success', 'Link copied to clipboard.');
+    else if (result.method === 'none') toasts.push('info', `Share link: ${url}`);
+  }, [toasts]);
+
   // Progressive detail load: fetch the next page on demand (player nears the
   // tail). Bounded by MAX_DETAIL_PAGES so a pathological collection can't loop.
   const loadMoreOpen = useCallback(async () => {
@@ -563,6 +648,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           onTip={doTip}
           tipping={tipping}
           dailyTipRemaining={tipAllowance.remaining}
+          onShare={onShareCollection}
+          onViewStateChange={setViewState}
+          initialMode={deepLinkRestore?.id === open.detail.id ? deepLinkRestore.mode : undefined}
+          initialIndex={deepLinkRestore?.id === open.detail.id ? deepLinkRestore.index : undefined}
           isMobile={isMobile}
           c={c}
           onExit={exitPlayer}
