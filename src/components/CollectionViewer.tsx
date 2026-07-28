@@ -126,6 +126,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const seed = detail.id; // stable per collection → deterministic order across reopen
   const [paused, setPaused] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Ambient "cast" mode (#8): full-bleed, chrome hidden, passive auto-advance.
+  const [cast, setCast] = useState(false);
 
   // ---- lightbox + curator tip ----
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -227,8 +229,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const isContinuous = mode !== 'classic';
 
   return (
-    <div data-testid="collection-viewer" data-mode={mode} data-layout={isMobile ? 'mobile' : 'desktop'} style={rootStyle(c)}>
-      {/* ---- control surface ---- */}
+    <div data-testid="collection-viewer" data-mode={mode} data-cast={cast ? 'on' : 'off'} data-layout={isMobile ? 'mobile' : 'desktop'} style={rootStyle(c)}>
+      {/* ---- control surface (hidden in cast mode) ---- */}
+      {!cast && (
       <div style={toolbarStyle()}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <Button size="sm" variant="subtle" onClick={exit} data-testid="viewer-exit" aria-label="Back to collections">
@@ -246,6 +249,16 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <ModeSwitcher value={mode} onChange={changeMode} />
+          <Button
+            size="sm"
+            variant="light"
+            onClick={() => setCast(true)}
+            aria-pressed={false}
+            aria-label="Cast — full-screen ambient mode"
+            data-testid="cast-toggle"
+          >
+            📺 Cast
+          </Button>
           {props.onShare && (
             <Button size="sm" variant="light" onClick={props.onShare} aria-label="Share this collection" data-testid="viewer-share">
               🔗 Share
@@ -268,9 +281,17 @@ export function CollectionViewer(props: CollectionViewerProps) {
           )}
         </div>
       </div>
+      )}
+
+      {/* ---- cast mode: a single floating exit affordance (chrome is hidden) ---- */}
+      {cast && (
+        <button type="button" onClick={() => setCast(false)} style={castExitStyle} data-testid="cast-exit" aria-label="Exit cast mode">
+          ✕ Exit cast
+        </button>
+      )}
 
       {/* ---- collection-level chrome + pause (continuous modes) ---- */}
-      {isContinuous && (
+      {isContinuous && !cast && (
         <div style={chromeRow()}>
           <Button
             size="sm"
@@ -304,7 +325,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
       )}
 
       {/* ---- settings popover ---- */}
-      {settingsOpen && (
+      {settingsOpen && !cast && (
         <Card padding="md" data-testid="viewer-settings" style={settingsCard}>
           <div style={settingRow}>
             <span style={settingLabel}>Audio</span>
@@ -434,6 +455,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onTip={onTip}
             tipping={tipping}
             dailyTipRemaining={dailyTipRemaining}
+            cast={cast}
+            reducedMotion={reducedMotion}
             isMobile={isMobile}
             c={c}
             onExit={exit}
@@ -559,4 +582,18 @@ const lightboxOverlay: CSSProperties = {
   inset: 0,
   zIndex: 50,
   background: '#000',
+};
+const castExitStyle: CSSProperties = {
+  position: 'absolute',
+  top: 12,
+  right: 12,
+  zIndex: 40,
+  padding: '6px 12px',
+  borderRadius: 999,
+  border: '1px solid rgba(255,255,255,0.25)',
+  background: 'rgba(0,0,0,0.45)',
+  color: '#fff',
+  fontSize: 13,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
 };

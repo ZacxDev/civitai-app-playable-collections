@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -67,6 +67,58 @@ function renderViewer(over: Partial<React.ComponentProps<typeof CollectionViewer
 function mature(id: number, nsfwLevel = 4): MediaItem {
   return { ...img(id), nsfwLevel };
 }
+
+describe('CollectionViewer — cast / ambient mode (Feature #8)', () => {
+  it('toggling cast hides the chrome, marks the surface, and offers an exit', async () => {
+    renderViewer({ items: [img(1), img(2), img(3)] });
+    const cv = screen.getByTestId('collection-viewer');
+    expect(cv).toHaveAttribute('data-cast', 'off');
+    expect(screen.getByTestId('viewer-exit')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('cast-toggle'));
+    expect(screen.getByTestId('collection-viewer')).toHaveAttribute('data-cast', 'on');
+    // Chrome (toolbar) is gone; the player is marked cast; an exit affordance shows.
+    expect(screen.queryByTestId('viewer-exit')).toBeNull();
+    expect(screen.queryByTestId('mode-switcher')).toBeNull();
+    expect(screen.getByTestId('player')).toHaveAttribute('data-cast', 'on');
+    expect(screen.getByTestId('cast-exit')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('cast-exit'));
+    expect(screen.getByTestId('collection-viewer')).toHaveAttribute('data-cast', 'off');
+    expect(screen.getByTestId('viewer-exit')).toBeInTheDocument();
+  });
+
+  // In cast mode the transport chrome (incl. progress-label) is hidden, so we
+  // observe advancement via the current media element's src.
+  it('cast auto-advances the slideshow when motion is allowed', () => {
+    vi.useFakeTimers();
+    try {
+      renderViewer({ items: [img(1), img(2), img(3)], reducedMotion: false, settings: { secondsPerImage: 2, videoLoopCount: 1 } });
+      fireEvent.click(screen.getByTestId('cast-toggle'));
+      expect(screen.getByTestId('media-image').getAttribute('src')).toContain('/1.jpg');
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByTestId('media-image').getAttribute('src')).toContain('/2.jpg');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('respects reduced motion in cast — does NOT auto-advance', () => {
+    vi.useFakeTimers();
+    try {
+      renderViewer({ items: [img(1), img(2)], reducedMotion: true, settings: { secondsPerImage: 1, videoLoopCount: 1 } });
+      fireEvent.click(screen.getByTestId('cast-toggle'));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.getByTestId('media-image').getAttribute('src')).toContain('/1.jpg');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('Player — global shortcuts ignored while a control is focused (ship-blocker #4)', () => {
   it('ArrowRight on the focused scrubber does NOT also advance the player (no double-fire)', async () => {

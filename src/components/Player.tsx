@@ -53,6 +53,10 @@ export interface PlayerProps {
   tipping: boolean;
   /** Estimated remaining daily tip allowance (app-local) for the tip modal. */
   dailyTipRemaining?: number;
+  /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
+  cast?: boolean;
+  /** OS reduced-motion preference — pauses cast auto-advance when set. */
+  reducedMotion?: boolean;
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
@@ -83,6 +87,8 @@ export function Player(props: PlayerProps) {
     onTip,
     tipping,
     dailyTipRemaining,
+    cast = false,
+    reducedMotion = false,
     isMobile,
     c,
     onExit,
@@ -138,6 +144,18 @@ export function Player(props: PlayerProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
+  // In cast mode all overlay chrome is hidden (passive full-bleed playback).
+  const chromeShown = chromeVisible && !cast;
+
+  // Cast auto-advance: force playback on entering cast (unless reduced-motion,
+  // which pauses it — respecting the OS preference like the continuous modes).
+  useEffect(() => {
+    if (!cast) return;
+    if (reducedMotion) player.pause();
+    else player.play();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cast, reducedMotion]);
+
   const creatorIsSelf = current != null && viewerUserId != null && current.creator.userId === viewerUserId;
   const curatorIsSelf = viewerUserId != null && detail.curator.userId === viewerUserId;
   const creatorTipped = current != null && tippedKeys.has(`Image:${current.mediaId}`);
@@ -156,6 +174,8 @@ export function Player(props: PlayerProps) {
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
         return;
       }
+      // Cast mode is passive (TV / second-screen) — swallow all shortcuts.
+      if (cast) return;
       if (tipTarget) {
         if (e.key === 'Escape') setTipTarget(null);
         return;
@@ -187,7 +207,7 @@ export function Player(props: PlayerProps) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player.next, player.prev, player.toggle, tipTarget, onExit]);
+  }, [player.next, player.prev, player.toggle, tipTarget, onExit, cast]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -278,6 +298,7 @@ export function Player(props: PlayerProps) {
       data-testid="player"
       data-layout={isMobile ? 'mobile' : 'desktop'}
       data-media-type={current?.type ?? 'none'}
+      data-cast={cast ? 'on' : 'off'}
     >
       {/* ---- media ---- */}
       <div
@@ -334,8 +355,8 @@ export function Player(props: PlayerProps) {
           <img src={player.upcoming.url} alt="" style={{ display: 'none' }} aria-hidden="true" />
         )}
 
-        {/* desktop click zones (behind chrome) */}
-        {!isMobile && (
+        {/* desktop click zones (behind chrome; disabled in passive cast mode) */}
+        {!isMobile && !cast && (
           <>
             <button
               type="button"
@@ -363,7 +384,7 @@ export function Player(props: PlayerProps) {
       </div>
 
       {/* ---- top overlay: title + exit + buzz ---- */}
-      {chromeVisible && (
+      {chromeShown && (
         <div style={topBar(c)}>
           <button type="button" onClick={onExit} style={iconBtn(c)} aria-label="Back to collections" data-testid="player-exit">
             ←
@@ -381,7 +402,7 @@ export function Player(props: PlayerProps) {
       )}
 
       {/* ---- right overlay chrome: tip/follow ---- */}
-      {chromeVisible && (
+      {chromeShown && (
         <div style={rightRail} data-testid="overlay-chrome">
           <ChromeButton
             c={c}
@@ -414,7 +435,7 @@ export function Player(props: PlayerProps) {
       )}
 
       {/* ---- bottom transport ---- */}
-      {chromeVisible && (
+      {chromeShown && (
         <div style={bottomBar(c)}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
             <button type="button" onClick={player.prev} style={iconBtn(c)} aria-label="Previous" data-testid="ctrl-prev">
