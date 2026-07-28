@@ -1,7 +1,7 @@
 {
   "name": "playable-collections",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.8",
   "type": "module",
   "description": "Playable Collections — a Civitai App Block (W10 full-page) media player that plays through a collection's images and videos. Mobile-first + desktop-responsive: auto-advancing image/video playback, per-media creator tips, curator tips, on-site collection bookmark (follow), configurable pacing, discovery of public + own collections, and a cross-user 'popular collections' rail backed by App Blocks shared storage.",
   "license": "MIT",

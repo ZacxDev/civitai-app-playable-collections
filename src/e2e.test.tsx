@@ -23,13 +23,11 @@ async function openNeon(api: ApiClient, viewer: ViewerInfo | null = { id: 99, us
 }
 
 describe('open a collection → player', () => {
-  it('renders the first media item of the opened collection', async () => {
+  it('renders the first media item', async () => {
     const api = createFakeApi({ viewerUserId: 99 }) as FakeApi;
     await openNeon(api);
     expect(screen.getByTestId('media-image')).toBeInTheDocument();
     expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
-    // The shared play-count vote (useSharedStorage) is recorded against the host
-    // store — its end-to-end effect is asserted by the "popular rail" test below.
   });
 
   it('exits back to the grid', async () => {
@@ -153,12 +151,49 @@ describe('follow toggle', () => {
 });
 
 describe('popular rail (shared play-counts)', () => {
-  it('appears on discover after a collection has been played', async () => {
+  it('appears on discover after a collection has been played (recordPlay → mock host SHARED store)', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     await openNeon(api);
     await userEvent.click(screen.getByTestId('player-exit'));
     // Back on discover, the popular rail should now include the played collection.
+    // Opening it fired `recordPlay(shared, …)` which appended + self-voted an
+    // entry in the host's SHARED store; `readPopular` reads it back (count 1).
     await waitFor(() => expect(screen.queryByTestId('popular-rail')).toBeInTheDocument());
-    expect(screen.getByTestId('popular-rail')).toHaveTextContent('Neon Cities');
+    const rail = screen.getByTestId('popular-rail');
+    expect(rail).toHaveTextContent('Neon Cities');
+    expect(within(rail).getByTestId('popular-card')).toHaveAttribute(
+      'aria-label',
+      'Play Neon Cities — played 1 times',
+    );
+  });
+
+  it('ranks the rail by distinct-viewer vote count (desc) from the seeded SHARED store', async () => {
+    // Seed the mock host's SHARED store directly with two collection entries at
+    // different vote counts — proves `readPopular` ranks by count, not insertion
+    // order, and resolves each entry's collectionId back to a known card.
+    const api = createFakeApi({ viewerUserId: 99 });
+    render(
+      <Harness
+        viewer={{ id: 99, username: 'me' }}
+        theme="dark"
+        showLog={false}
+        shared={{
+          seed: [
+            // Newest-first insertion order is [101, 102]; votes invert that so a
+            // pure insertion-order rail would be WRONG.
+            { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1] }, // count 1
+            { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] }, // count 3
+          ],
+        }}
+      >
+        <App api={api} />
+      </Harness>,
+    );
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    const cards = within(rail).getAllByTestId('popular-card');
+    // Ranked count-desc: Forest Studies (3) before Neon Cities (1).
+    expect(cards[0]).toHaveAttribute('aria-label', 'Play Forest Studies — played 3 times');
+    expect(cards[1]).toHaveAttribute('aria-label', 'Play Neon Cities — played 1 times');
   });
 });

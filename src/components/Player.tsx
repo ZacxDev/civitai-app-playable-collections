@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Button, Slider } from '@civitai/blocks-react/ui';
+import { Button, Loader, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
@@ -17,6 +17,12 @@ import { iconBtn } from './styles.js';
 import { TipModal, type TipTarget } from './TipModal.js';
 
 const SWIPE_THRESHOLD = 48;
+/**
+ * Fetch the next detail page when the viewer advances to within this many items
+ * of the end of what's loaded — so a big collection streams in progressively
+ * (feedback #2) instead of loading every page before the player renders.
+ */
+const LOAD_AHEAD = 5;
 
 export interface PlayerProps {
   detail: CollectionDetail;
@@ -28,6 +34,15 @@ export interface PlayerProps {
   onVideoLoopCountChange: (value: number) => void;
   viewerUserId: number | null;
   buzzBalance: number | null;
+  /** Global audio mute (starts muted; user opts into audio). Default true. */
+  muted?: boolean;
+  /** Start on this item index (RESTORE / open the lightbox on a tapped tile). */
+  initialItemIndex?: number;
+  /** Reports the current playback position (order index) for persistence. */
+  onPositionChange?: (position: number) => void;
+  /** Show the in-player ⚙ settings control (sec/loop sliders). Default true; the
+   * embedding viewer hides it in classic mode because its toolbar owns them. */
+  showSettingsControl?: boolean;
   followed: boolean;
   followPending: boolean;
   onToggleFollow: () => void;
@@ -37,6 +52,12 @@ export interface PlayerProps {
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
+  /** Progressive load: another detail page exists to fetch. */
+  hasMore?: boolean;
+  /** Progressive load: a next-page fetch is in flight. */
+  loadingMore?: boolean;
+  /** Progressive load: fetch + append the next page of items. */
+  onLoadMore?: () => void;
 }
 
 export function Player(props: PlayerProps) {
@@ -48,6 +69,10 @@ export function Player(props: PlayerProps) {
     onVideoLoopCountChange,
     viewerUserId,
     buzzBalance,
+    muted = true,
+    initialItemIndex,
+    onPositionChange,
+    showSettingsControl = true,
     followed,
     followPending,
     onToggleFollow,
@@ -56,13 +81,34 @@ export function Player(props: PlayerProps) {
     isMobile,
     c,
     onExit,
+    hasMore = false,
+    loadingMore = false,
+    onLoadMore,
   } = props;
 
   const player = usePlayer({
     items,
     secondsPerImage: settings.secondsPerImage,
     videoLoopCount: settings.videoLoopCount,
+    initialPosition: initialItemIndex,
   });
+
+  // Report the playback position out so the viewer can persist it (restore).
+  const reportPos = onPositionChange;
+  const playerPosition = player.state.position;
+  useEffect(() => {
+    reportPos?.(playerPosition);
+  }, [playerPosition, reportPos]);
+
+  // Progressive detail load (feedback #2): when the viewer reaches within
+  // LOAD_AHEAD of the end of what's loaded, pull the next page. Opening a big
+  // collection therefore fires ONE fetch (page 1), not one per page up front.
+  const playPosition = player.state.position;
+  const loadedCount = player.state.order.length;
+  useEffect(() => {
+    if (!hasMore || loadingMore || !onLoadMore) return;
+    if (loadedCount - 1 - playPosition <= LOAD_AHEAD) onLoadMore();
+  }, [playPosition, loadedCount, hasMore, loadingMore, onLoadMore]);
 
   const { current } = player;
   const stageRef = useRef<HTMLDivElement>(null);
@@ -192,8 +238,8 @@ export function Player(props: PlayerProps) {
     return (
       <div style={emptyStage(c)} data-testid="player-empty">
         <p style={{ margin: 0, ...mutedText }}>This collection has no playable media.</p>
-        <Button variant="light" onClick={onExit} data-testid="player-exit" leftSection="←">
-          Back to collections
+        <Button variant="outline" onClick={onExit} data-testid="player-exit">
+          ← Back to collections
         </Button>
       </div>
     );
@@ -221,7 +267,7 @@ export function Player(props: PlayerProps) {
             src={current.url}
             style={mediaEl}
             autoPlay={player.playing}
-            muted
+            muted={muted}
             playsInline
             data-testid="media-video"
             onEnded={() => {
@@ -345,16 +391,6 @@ export function Player(props: PlayerProps) {
             </button>
             <button
               type="button"
-              onClick={player.toggleShuffle}
-              style={iconBtn(player.state.shuffled)}
-              aria-label="Shuffle"
-              aria-pressed={player.state.shuffled}
-              data-testid="ctrl-shuffle"
-            >
-              🔀
-            </button>
-            <button
-              type="button"
               onClick={toggleFullscreen}
               style={iconBtn(isFullscreen)}
               aria-label="Fullscreen"
@@ -363,20 +399,22 @@ export function Player(props: PlayerProps) {
             >
               ⛶
             </button>
-            <button
-              type="button"
-              onClick={() => setShowSettings((v) => !v)}
-              style={iconBtn(showSettings)}
-              aria-label="Playback settings"
-              aria-pressed={showSettings}
-              aria-expanded={showSettings}
-              data-testid="ctrl-settings"
-            >
-              ⚙
-            </button>
+            {showSettingsControl && (
+              <button
+                type="button"
+                onClick={() => setShowSettings((v) => !v)}
+                style={iconBtn(showSettings)}
+                aria-label="Playback settings"
+                aria-pressed={showSettings}
+                aria-expanded={showSettings}
+                data-testid="ctrl-settings"
+              >
+                ⚙
+              </button>
+            )}
           </div>
 
-          {showSettings && (
+          {showSettingsControl && showSettings && (
             <SettingsPanel
               c={c}
               secondsPerImage={settings.secondsPerImage}
@@ -391,11 +429,15 @@ export function Player(props: PlayerProps) {
               max={Math.max(0, player.state.order.length - 1)}
               value={player.state.position}
               onChange={player.seekToPosition}
-              className="pc-scrubber"
               style={{ flex: 1 }}
               aria-label="Seek"
               data-testid="scrubber"
             />
+            {loadingMore && (
+              <span data-testid="player-loading-more" title="Loading more">
+                <Loader size="sm" color={stage.chromeFg} />
+              </span>
+            )}
             <span style={progressText()} data-testid="progress-label">
               {player.progressLabel}
             </span>

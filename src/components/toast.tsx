@@ -1,11 +1,15 @@
 // Minimal toast system: a hook that owns a queue + a host component that renders
 // it. Used for tip success/failure, rate-limit backoff notices, and follow
-// errors. Auto-dismisses; `role="status"`/`role="alert"` for a screen reader.
+// errors. Auto-dismisses; the pack `Alert` supplies the ARIA role
+// (error → assertive `alert`, success/info → polite `status`).
+//
+// v0.1.5: the toast surface is the `@civitai/blocks-react/ui` `Alert` so it
+// matches Civitai's callout styling (auto-themed via the app's `data-theme`).
 
 import { useCallback, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { token } from '../theme.js';
+import { Alert } from '@civitai/blocks-react/ui';
 
 export type ToastKind = 'success' | 'error' | 'info';
 
@@ -44,25 +48,22 @@ export function useToasts(): UseToasts {
   return { toasts, push, dismiss };
 }
 
-export function ToastHost({
-  toasts,
-  onDismiss,
-}: {
-  toasts: Toast[];
-  onDismiss: (id: number) => void;
-}) {
+export function ToastHost({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
     <div style={hostStyle} aria-live="polite">
       {toasts.map((t) => (
-        <div
+        <Alert
           key={t.id}
-          role={t.kind === 'error' ? 'alert' : 'status'}
+          color={t.kind}
+          withCloseButton
+          onClose={() => onDismiss(t.id)}
+          closeButtonLabel="Dismiss"
           data-testid={`toast-${t.kind}`}
-          style={toastStyle(t.kind)}
+          style={toastStyle}
           onClick={() => onDismiss(t.id)}
         >
           {t.message}
-        </div>
+        </Alert>
       ))}
     </div>
   );
@@ -75,23 +76,16 @@ const hostStyle: CSSProperties = {
   transform: 'translateX(-50%)',
   display: 'grid',
   gap: 8,
-  zIndex: 1000,
+  zIndex: 2000,
   width: 'min(92vw, 420px)',
 };
 
-function toastStyle(kind: ToastKind): CSSProperties {
-  const accent =
-    kind === 'error' ? token.error : kind === 'success' ? token.success : token.border;
-  return {
-    background: token.surface,
-    color: token.text,
-    border: `1px solid ${token.border}`,
-    borderLeft: `4px solid ${accent}`,
-    borderRadius: 'var(--civitai-radius)',
-    padding: '10px 14px',
-    fontSize: 13,
-    lineHeight: 1.4,
-    cursor: 'pointer',
-    boxShadow: '0 6px 20px rgba(0, 0, 0, 0.25)',
-  };
-}
+const toastStyle: CSSProperties = {
+  cursor: 'pointer',
+  boxShadow: '0 6px 20px rgba(0, 0, 0, 0.25)',
+  // Sit the tinted callout on an opaque surface so it reads as a floating toast
+  // over arbitrary page content (the pack Alert tint alone is near-transparent).
+  backgroundColor: 'var(--civitai-color-surface)',
+  backgroundImage:
+    'linear-gradient(color-mix(in srgb, currentColor 8%, transparent), color-mix(in srgb, currentColor 8%, transparent))',
+};

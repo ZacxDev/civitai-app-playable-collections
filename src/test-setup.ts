@@ -41,11 +41,67 @@ if (typeof globalThis !== 'undefined' && !globalThis.localStorage) {
   });
 }
 
+// jsdom ships no IntersectionObserver. Install a controllable mock so lazy-cover
+// swapping + infinite-scroll sentinel logic is deterministically testable:
+// nothing intersects until a test calls `flushIntersections()`.
+class MockIntersectionObserver implements IntersectionObserver {
+  static instances: MockIntersectionObserver[] = [];
+  readonly root: Element | Document | null = null;
+  readonly rootMargin: string = '';
+  readonly thresholds: ReadonlyArray<number> = [];
+  private cb: IntersectionObserverCallback;
+  elements = new Set<Element>();
+
+  constructor(cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
+    this.cb = cb;
+    this.rootMargin = (opts?.rootMargin as string) ?? '';
+    MockIntersectionObserver.instances.push(this);
+  }
+  observe(el: Element) {
+    this.elements.add(el);
+  }
+  unobserve(el: Element) {
+    this.elements.delete(el);
+  }
+  disconnect() {
+    this.elements.clear();
+    const i = MockIntersectionObserver.instances.indexOf(this);
+    if (i >= 0) MockIntersectionObserver.instances.splice(i, 1);
+  }
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
+  /** Deliver an intersection event for every currently-observed element. */
+  fire(isIntersecting = true) {
+    const entries = [...this.elements].map(
+      (target) =>
+        ({
+          target,
+          isIntersecting,
+          intersectionRatio: isIntersecting ? 1 : 0,
+          time: 0,
+          boundingClientRect: {} as DOMRectReadOnly,
+          intersectionRect: {} as DOMRectReadOnly,
+          rootBounds: null,
+        }) as IntersectionObserverEntry,
+    );
+    this.cb(entries, this);
+  }
+}
+
+/** Fire intersection for every live observer (lazy covers + the grid sentinel). */
+export function flushIntersections(isIntersecting = true) {
+  for (const obs of [...MockIntersectionObserver.instances]) obs.fire(isIntersecting);
+}
+
 // The SDK transport is a process-wide singleton — reset it before each test so
 // each gets a fresh instance whose allowlist contains the jsdom origin, and so
 // no BLOCK_INIT / token state leaks between tests.
 beforeEach(() => {
   resetHarnessTransport();
+  MockIntersectionObserver.instances.length = 0;
+  globalThis.IntersectionObserver =
+    MockIntersectionObserver as unknown as typeof IntersectionObserver;
 
   // Device-local player settings persist in localStorage; clear between tests so
   // a persisted pref doesn't leak into the next test's defaults.
@@ -55,11 +111,10 @@ beforeEach(() => {
     /* ignore */
   }
 
-  // jsdom has no matchMedia; default to a DESKTOP viewport. Tests that need the
-  // mobile branch override this via `setViewport('mobile')` below.
-  if (!window.matchMedia) {
-    window.matchMedia = makeMatchMedia(false) as typeof window.matchMedia;
-  }
+  // jsdom has no matchMedia; default to a DESKTOP viewport, motion allowed. Tests
+  // override via setViewport('mobile') / setReducedMotion(true).
+  reducedMotion = false;
+  window.matchMedia = makeMatchMedia(false) as typeof window.matchMedia;
 });
 
 afterEach(() => {
@@ -68,22 +123,44 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// Reduced-motion is opt-in per test (default: motion allowed). Toggled by
+// setReducedMotion() below; makeMatchMedia reads it so the same matchMedia stub
+// answers both the mobile breakpoint and the reduced-motion query.
+let reducedMotion = false;
+
+/** Force the `prefers-reduced-motion` query on/off for the auto-scroll branch. */
+export function setReducedMotion(on: boolean) {
+  reducedMotion = on;
+  // Re-install the stub at the current mobile-ness so a live query re-reads it.
+  const isMobile = window.matchMedia('(max-width: 1px)').matches; // max-width:1px → mobile-ness flag
+  window.matchMedia = makeMatchMedia(isMobile) as typeof window.matchMedia;
+}
+
 /** Build a matchMedia stub where max-width queries report the given mobile-ness. */
 export function makeMatchMedia(isMobile: boolean) {
   return (query: string) => {
+    if (/prefers-reduced-motion/.test(query)) {
+      const wantsReduce = /reduce/.test(query);
+      const matches = wantsReduce ? reducedMotion : !reducedMotion;
+      return stubMql(query, matches);
+    }
     const isMaxWidth = /max-width/.test(query);
     const matches = isMaxWidth ? isMobile : !isMobile;
-    return {
-      matches,
-      media: query,
-      onchange: null,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-      addListener: () => {},
-      removeListener: () => {},
-      dispatchEvent: () => false,
-    } as unknown as MediaQueryList;
+    return stubMql(query, matches);
   };
+}
+
+function stubMql(query: string, matches: boolean): MediaQueryList {
+  return {
+    matches,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  } as unknown as MediaQueryList;
 }
 
 /** Switch the jsdom viewport between mobile and desktop for the responsive branch. */

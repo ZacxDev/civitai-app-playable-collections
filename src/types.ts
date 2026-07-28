@@ -87,9 +87,9 @@ export interface TipResult {
 }
 
 /**
- * One entry of the cross-user "popular collections" rail. Backed by App Blocks
- * SHARED storage (`useSharedStorage()`), NOT an HTTP endpoint — `count` is the
- * collection's distinct-viewer play vote total. See lib/popular.ts.
+ * One entry of the cross-user "popular collections" rail. Derived client-side
+ * from the App Blocks SHARED store (see lib/popular.ts) — `count` is the entry's
+ * distinct-viewer vote total, NOT a raw play counter.
  */
 export interface PopularEntry {
   collectionId: number;
