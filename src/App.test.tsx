@@ -481,7 +481,7 @@ describe('App — deep-link / shareable URLs (Feature #6)', () => {
   });
 
   it('the Share button copies a deep link to the clipboard', async () => {
-    const writeText = vi.fn(async () => {});
+    const writeText = vi.fn(async (_text: string) => {});
     const prevClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     try {
