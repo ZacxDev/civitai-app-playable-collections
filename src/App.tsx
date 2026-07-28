@@ -496,7 +496,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   if (!ready || !canFetch) {
     return (
       <div ref={rootRef} data-theme={dataTheme} style={pageStyle()}>
-        <div style={{ margin: 'auto', display: 'flex', gap: 10, alignItems: 'center', color: 'var(--ci-color-text-dimmed)' }}>
+        <div style={{ margin: 'auto', display: 'flex', gap: 10, alignItems: 'center', color: 'var(--civitai-color-text-dimmed)' }}>
           <Loader size="sm" />
           Loading Playable Collections…
         </div>
@@ -548,7 +548,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
                 </Badge>
               )}
             </div>
-            <p style={{ margin: 0, fontSize: 13, color: 'var(--ci-color-text-dimmed)' }}>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--civitai-color-text-dimmed)' }}>
               Sit back and play through a collection's images and videos.
             </p>
           </header>
@@ -600,7 +600,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
 
               {/* sort toggle — Popular ("Most followed") ↔ Newest (feedback #3) */}
               <Group gap={8} align="center">
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ci-color-text-dimmed)' }}>Sort</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--civitai-color-text-dimmed)' }}>Sort</span>
                 <Group gap={4} role="group" aria-label="Sort collections">
                   <Button
                     size="sm"
@@ -622,7 +622,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
                     Newest
                   </Button>
                 </Group>
-                <span style={{ fontSize: 12, color: 'var(--ci-color-text-dimmed)' }} data-testid="sort-hint">
+                <span style={{ fontSize: 12, color: 'var(--civitai-color-text-dimmed)' }} data-testid="sort-hint">
                   {sort === 'popular' ? 'Most followed' : 'Newest first'}
                 </span>
               </Group>
@@ -635,7 +635,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
           {/* the grid */}
           {tab === 'mine' && !viewer ? (
             <Card padding="lg" style={{ display: 'grid', gap: 10, justifyItems: 'start' }}>
-              <p style={{ margin: 0, fontSize: 14, color: 'var(--ci-color-text-dimmed)' }} data-testid="mine-anon">
+              <p style={{ margin: 0, fontSize: 14, color: 'var(--civitai-color-text-dimmed)' }} data-testid="mine-anon">
                 Sign in to see the collections you've created and bookmarked.
               </p>
               <Button onClick={() => requestSignIn()} data-testid="mine-signin">
@@ -691,9 +691,9 @@ function errMessage(err: unknown): string {
 // ---- styles ----
 function pageStyle(): CSSProperties {
   return {
-    fontFamily: 'var(--ci-font)',
-    background: 'var(--ci-color-surface-2)',
-    color: 'var(--ci-color-text)',
+    fontFamily: 'var(--civitai-font)',
+    background: 'var(--civitai-color-surface-2)',
+    color: 'var(--civitai-color-text)',
     width: '100%',
     minHeight: '100dvh',
     display: 'flex',

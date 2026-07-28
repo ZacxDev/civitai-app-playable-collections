@@ -147,7 +147,7 @@ export function CollectionGrid({
     return (
       <Card padding="lg" data-testid="grid-loading" role="status" style={centerNote}>
         <Loader size="sm" />
-        <span style={{ color: 'var(--ci-color-text-dimmed)' }}>Loading collections…</span>
+        <span style={{ color: 'var(--civitai-color-text-dimmed)' }}>Loading collections…</span>
       </Card>
     );
   }
@@ -168,7 +168,7 @@ export function CollectionGrid({
   if (collections.length === 0) {
     return (
       <Card padding="lg" style={centerNote}>
-        <span data-testid="grid-empty" style={{ color: 'var(--ci-color-text-dimmed)' }}>
+        <span data-testid="grid-empty" style={{ color: 'var(--civitai-color-text-dimmed)' }}>
           {emptyLabel}
         </span>
       </Card>
@@ -332,20 +332,20 @@ const cardBtn: CSSProperties = {
   gap: 8,
   width: '100%',
   padding: 0,
-  border: '1px solid var(--ci-color-border)',
-  borderRadius: 'var(--ci-radius)',
+  border: '1px solid var(--civitai-color-border)',
+  borderRadius: 'var(--civitai-radius)',
   overflow: 'hidden',
-  background: 'var(--ci-color-surface)',
-  color: 'var(--ci-color-text)',
+  background: 'var(--civitai-color-surface)',
+  color: 'var(--civitai-color-text)',
   cursor: 'pointer',
   textAlign: 'left',
-  fontFamily: 'var(--ci-font)',
+  fontFamily: 'var(--civitai-font)',
 };
 
 const coverWrap: CSSProperties = {
   position: 'relative',
   aspectRatio: '1 / 1',
-  background: 'var(--ci-color-surface-2)',
+  background: 'var(--civitai-color-surface-2)',
   overflow: 'hidden',
 };
 
@@ -375,7 +375,7 @@ const cardTitle: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
-const cardMeta: CSSProperties = { fontSize: 12, color: 'var(--ci-color-text-dimmed)' };
+const cardMeta: CSSProperties = { fontSize: 12, color: 'var(--civitai-color-text-dimmed)' };
 
 const railHeading: CSSProperties = { fontSize: 15, margin: 0 };
 const railScroller: CSSProperties = {
@@ -391,19 +391,19 @@ const railCard: CSSProperties = {
   display: 'grid',
   gap: 4,
   padding: 8,
-  border: '1px solid var(--ci-color-border)',
-  borderRadius: 'var(--ci-radius)',
-  background: 'var(--ci-color-surface)',
-  color: 'var(--ci-color-text)',
+  border: '1px solid var(--civitai-color-border)',
+  borderRadius: 'var(--civitai-radius)',
+  background: 'var(--civitai-color-surface)',
+  color: 'var(--civitai-color-text)',
   cursor: 'pointer',
   textAlign: 'left',
-  fontFamily: 'var(--ci-font)',
+  fontFamily: 'var(--civitai-font)',
 };
 const railCover: CSSProperties = {
   aspectRatio: '1 / 1',
   borderRadius: 8,
   overflow: 'hidden',
-  background: 'var(--ci-color-surface-2)',
+  background: 'var(--civitai-color-surface-2)',
 };
 const railTitle: CSSProperties = {
   fontWeight: 600,

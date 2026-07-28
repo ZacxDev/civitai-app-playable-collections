@@ -85,7 +85,7 @@ const toastStyle: CSSProperties = {
   boxShadow: '0 6px 20px rgba(0,0,0,0.25)',
   // Sit the tinted callout on an opaque surface so it reads as a floating toast
   // over arbitrary page content (the pack Alert tint alone is near-transparent).
-  backgroundColor: 'var(--ci-color-surface)',
+  backgroundColor: 'var(--civitai-color-surface)',
   backgroundImage:
     'linear-gradient(color-mix(in srgb, currentColor 8%, transparent), color-mix(in srgb, currentColor 8%, transparent))',
 };

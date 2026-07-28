@@ -1,7 +1,7 @@
 {
   "$schema": "https://civitai.com/schemas/app-block/v1.json",
   "blockId": "playable-collections",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "name": "Playable Collections",
   "type": "block",
   "category": "discovery",

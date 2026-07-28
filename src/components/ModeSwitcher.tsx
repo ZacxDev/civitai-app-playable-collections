@@ -3,7 +3,7 @@
 // 🔴 COMPONENT-PACK GAP (rule #112): `@civitai/blocks-react/ui` ships no
 // SegmentedControl / Tabs / ToggleGroup primitive (only Button). So this is
 // hand-styled to the pack idiom — it reads the pack's CSS variables
-// (`--ci-color-*`, `--ci-radius`, `--ci-font`) so it matches the pack's look and
+// (`--civitai-color-*`, `--civitai-radius`, `--civitai-font`) so it matches the pack's look and
 // themes automatically via the app's `data-theme` root. Reported as a pack gap.
 //
 // Reused for BOTH the 3-way view-mode switch and the 3-way media-type filter, so
@@ -94,10 +94,10 @@ const trackStyle: CSSProperties = {
   display: 'inline-flex',
   gap: 2,
   padding: 3,
-  borderRadius: 'var(--ci-radius)',
-  border: '1px solid var(--ci-color-border)',
-  background: 'var(--ci-color-surface-2)',
-  fontFamily: 'var(--ci-font)',
+  borderRadius: 'var(--civitai-radius)',
+  border: '1px solid var(--civitai-color-border)',
+  background: 'var(--civitai-color-surface-2)',
+  fontFamily: 'var(--civitai-font)',
 };
 
 function segStyle(selected: boolean, size: 'sm' | 'md'): CSSProperties {
@@ -110,12 +110,12 @@ function segStyle(selected: boolean, size: 'sm' | 'md'): CSSProperties {
     fontWeight: 600,
     lineHeight: 1.2,
     border: 'none',
-    borderRadius: 'calc(var(--ci-radius) - 2px)',
+    borderRadius: 'calc(var(--civitai-radius) - 2px)',
     cursor: 'pointer',
     whiteSpace: 'nowrap',
     fontFamily: 'inherit',
-    color: selected ? 'var(--ci-color-primary-fg)' : 'var(--ci-color-text)',
-    background: selected ? 'var(--ci-color-primary)' : 'transparent',
+    color: selected ? 'var(--civitai-color-primary-fg, #fff)' : 'var(--civitai-color-text)',
+    background: selected ? 'var(--civitai-color-primary)' : 'transparent',
     transition: 'background 120ms ease',
   };
 }

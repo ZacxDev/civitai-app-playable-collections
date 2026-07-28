@@ -123,6 +123,6 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose }: Ti
 }
 
 const bodyStyle: CSSProperties = { display: 'grid', gap: 12 };
-const leadText: CSSProperties = { margin: 0, fontSize: 13, color: 'var(--ci-color-text-dimmed)' };
+const leadText: CSSProperties = { margin: 0, fontSize: 13, color: 'var(--civitai-color-text-dimmed)' };
 const presetRow: CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap' };
 const actionRow: CSSProperties = { display: 'flex', gap: 8, justifyContent: 'flex-end' };

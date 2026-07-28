@@ -475,7 +475,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
 // ---- styles ----
 function rootStyle(c: Palette): CSSProperties {
-  return { position: 'relative', width: '100%', minHeight: '100dvh', background: c.bg, color: c.fg, fontFamily: 'var(--ci-font)' };
+  return { position: 'relative', width: '100%', minHeight: '100dvh', background: c.bg, color: c.fg, fontFamily: 'var(--civitai-font)' };
 }
 function toolbarStyle(): CSSProperties {
   return {
@@ -484,21 +484,21 @@ function toolbarStyle(): CSSProperties {
     justifyContent: 'space-between',
     gap: 10,
     padding: '10px 14px',
-    borderBottom: '1px solid var(--ci-color-border)',
-    background: 'var(--ci-color-surface)',
+    borderBottom: '1px solid var(--civitai-color-border)',
+    background: 'var(--civitai-color-surface)',
     flexWrap: 'wrap',
   };
 }
 const titleStyle: CSSProperties = { fontWeight: 700, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-const subStyle: CSSProperties = { fontSize: 12, color: 'var(--ci-color-text-dimmed)' };
+const subStyle: CSSProperties = { fontSize: 12, color: 'var(--civitai-color-text-dimmed)' };
 function chromeRow(): CSSProperties {
   return {
     display: 'flex',
     gap: 8,
     padding: '8px 14px',
     alignItems: 'center',
-    borderBottom: '1px solid var(--ci-color-border)',
-    background: 'var(--ci-color-surface-2)',
+    borderBottom: '1px solid var(--civitai-color-border)',
+    background: 'var(--civitai-color-surface-2)',
     flexWrap: 'wrap',
   };
 }
