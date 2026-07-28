@@ -68,6 +68,24 @@ function mature(id: number, nsfwLevel = 4): MediaItem {
   return { ...img(id), nsfwLevel };
 }
 
+describe('Player — global shortcuts ignored while a control is focused (ship-blocker #4)', () => {
+  it('ArrowRight on the focused scrubber does NOT also advance the player (no double-fire)', async () => {
+    renderViewer({ items: [img(1), img(2), img(3), img(4)] });
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 4');
+    // Focus the scrubber (a range input) and press ArrowRight — the global player
+    // keydown must ignore it so the position does not jump.
+    const scrubber = screen.getByTestId('scrubber');
+    scrubber.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 4');
+
+    // With focus off any control, ArrowRight DOES advance (shortcut still works).
+    scrubber.blur();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 4');
+  });
+});
+
 describe('CollectionViewer — content maturity (badge + blur-until-tap, ship-blocker #3)', () => {
   it('blurs a mature current item and reveals it on tap (classic Player)', async () => {
     renderViewer({ items: [mature(1, 4), img(2)] });

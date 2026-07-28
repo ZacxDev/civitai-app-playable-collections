@@ -14,6 +14,7 @@ import type { CSSProperties } from 'react';
 import { Button, Modal, TextInput } from '@civitai/blocks-react/ui';
 
 import { TIP_DAILY_MAX, TIP_MAX_PER_TIP, effectiveTipCap } from '../lib/tip-allowance.js';
+import { FocusTrap } from './FocusTrap.js';
 
 export const TIP_PRESETS = [10, 50, 100, 500] as const;
 export const TIP_MIN = 1;
@@ -80,6 +81,7 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
       title={`Tip ${target.username ? `@${target.username}` : `the ${label}`}`}
       size="sm"
     >
+      <FocusTrap>
       <div data-testid="tip-modal" aria-label={`Tip ${label}`} style={bodyStyle}>
         <p style={leadText}>
           {target.kind === 'creator'
@@ -139,6 +141,7 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
           </Button>
         </div>
       </div>
+      </FocusTrap>
     </Modal>
   );
 }

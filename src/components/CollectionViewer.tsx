@@ -37,6 +37,7 @@ import { Player } from './Player.js';
 import { ContinuousView } from './ContinuousView.js';
 import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
 import { TipModal, type TipTarget } from './TipModal.js';
+import { FocusTrap } from './FocusTrap.js';
 
 export interface CollectionViewerProps {
   detail: CollectionDetail;
@@ -434,7 +435,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
       {/* ---- lightbox: the classic single-item view over a continuous surface ---- */}
       {lightboxIndex != null && (
-        <div style={lightboxOverlay} data-testid="lightbox">
+        <div style={lightboxOverlay} data-testid="lightbox" role="dialog" aria-modal="true" aria-label="Media viewer">
+          <FocusTrap autoFocus restoreFocus>
           <Player
             detail={detail}
             items={displayItems}
@@ -455,6 +457,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             c={c}
             onExit={() => setLightboxIndex(null)}
           />
+          </FocusTrap>
         </div>
       )}
 

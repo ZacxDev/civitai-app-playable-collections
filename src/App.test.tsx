@@ -448,6 +448,36 @@ describe('App — host-origin gating (real HTTP client)', () => {
   });
 });
 
+describe('App — keyboard-operable tablist (ship-blocker #4)', () => {
+  it('wires a roving tablist: selected tab tabbable + aria-controls a tabpanel', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    const discover = screen.getByTestId('tab-discover');
+    const mine = screen.getByTestId('tab-mine');
+    expect(discover).toHaveAttribute('role', 'tab');
+    expect(discover).toHaveAttribute('aria-selected', 'true');
+    expect(discover).toHaveAttribute('tabindex', '0');
+    expect(mine).toHaveAttribute('tabindex', '-1');
+    // aria-controls points at a real tabpanel labelled by the active tab.
+    const panelId = discover.getAttribute('aria-controls');
+    const panel = document.getElementById(panelId!);
+    expect(panel).toHaveAttribute('role', 'tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', 'tab-discover');
+  });
+
+  it('ArrowRight moves selection + focus to the next tab', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    screen.getByTestId('tab-discover').focus();
+    await userEvent.keyboard('{ArrowRight}');
+    const mine = screen.getByTestId('tab-mine');
+    expect(mine).toHaveAttribute('aria-selected', 'true');
+    expect(mine).toHaveFocus();
+    expect(mine).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('tab-discover')).toHaveAttribute('tabindex', '-1');
+  });
+});
+
 describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', () => {
   it('shows a popular collection that is NOT on the current discover/mine page', async () => {
     const base = createFakeApi({ viewerUserId: 99 });

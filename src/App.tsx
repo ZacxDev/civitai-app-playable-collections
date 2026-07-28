@@ -22,6 +22,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
+import { nextIndex, rovingAction } from './lib/roving.js';
+
 import {
   useBlockContext,
   useBlockResize,
@@ -69,6 +71,12 @@ const POPULAR_LIMIT = 10;
 const PAGE_LIMIT = 24;
 
 type Tab = 'discover' | 'mine';
+
+const TAB_PANEL_ID = 'collection-tabpanel';
+const TABS: ReadonlyArray<{ key: Tab; label: string; testid: string }> = [
+  { key: 'discover', label: 'Discover', testid: 'tab-discover' },
+  { key: 'mine', label: 'My collections', testid: 'tab-mine' },
+];
 
 interface ListState {
   items: CollectionSummary[];
@@ -152,6 +160,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
 
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
+
+  // Refs to the Discover/Mine tab buttons for roving-focus keyboard nav (#4).
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const c = palette(theme === 'dark');
   const dataTheme = theme === 'dark' ? 'dark' : 'light';
@@ -556,6 +567,22 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
   }
 
   const activeList = tab === 'discover' ? discover : mine;
+  const activeTabId = TABS.find((t) => t.key === tab)?.testid;
+
+  // Roving-focus tablist keyboard handler (ship-blocker #4): Arrow keys / Home /
+  // End move selection + focus across the Discover/Mine tabs.
+  const onTabKeyDown = (e: React.KeyboardEvent) => {
+    const action = rovingAction(e.key, 'horizontal');
+    if (!action) return;
+    e.preventDefault();
+    const cur = TABS.findIndex((t) => t.key === tab);
+    const target = nextIndex(action, cur, TABS.length);
+    const next = TABS[target];
+    if (next) {
+      setTab(next.key);
+      tabRefs.current[target]?.focus();
+    }
+  };
 
   return (
     <div ref={rootRef} data-theme={dataTheme} data-layout={isMobile ? 'mobile' : 'desktop'} style={pageStyle()}>
@@ -575,26 +602,28 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
             </p>
           </header>
 
-          {/* tabs */}
-          <Group gap={8} role="tablist" aria-label="Collection source">
-            <Button
-              role="tab"
-              aria-selected={tab === 'discover'}
-              variant={tab === 'discover' ? 'filled' : 'light'}
-              onClick={() => setTab('discover')}
-              data-testid="tab-discover"
-            >
-              Discover
-            </Button>
-            <Button
-              role="tab"
-              aria-selected={tab === 'mine'}
-              variant={tab === 'mine' ? 'filled' : 'light'}
-              onClick={() => setTab('mine')}
-              data-testid="tab-mine"
-            >
-              My collections
-            </Button>
+          {/* tabs — WAI-ARIA roving tablist (#4): only the selected tab is
+              tabbable; Arrow/Home/End move selection+focus; each tab controls the
+              tabpanel below. */}
+          <Group gap={8} role="tablist" aria-label="Collection source" onKeyDown={onTabKeyDown}>
+            {TABS.map((t, i) => (
+              <Button
+                key={t.key}
+                ref={(el) => {
+                  tabRefs.current[i] = el;
+                }}
+                id={t.testid}
+                role="tab"
+                aria-selected={tab === t.key}
+                aria-controls={TAB_PANEL_ID}
+                tabIndex={tab === t.key ? 0 : -1}
+                variant={tab === t.key ? 'filled' : 'light'}
+                onClick={() => setTab(t.key)}
+                data-testid={t.testid}
+              >
+                {t.label}
+              </Button>
+            ))}
           </Group>
 
           {/* search + sort */}
@@ -651,6 +680,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
             </Stack>
           </form>
 
+          {/* the tabpanel the Discover/Mine tabs control (#4) */}
+          <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={activeTabId} tabIndex={0} style={{ display: 'grid', gap: 16, outline: 'none' }}>
           {/* popular rail (discover only) */}
           {tab === 'discover' && <PopularRail entries={popular} onOpen={openCollection} c={c} />}
 
@@ -698,6 +729,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY 
               />
             </>
           )}
+          </div>
         </Stack>
       </div>
       <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} />

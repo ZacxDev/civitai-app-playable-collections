@@ -1,15 +1,27 @@
-// Mode switcher — a SegmentedControl / Tabs shape.
+// Mode switcher — a keyboard-operable segmented control (WAI-ARIA radiogroup).
 //
-// 🔴 COMPONENT-PACK GAP (rule #112): `@civitai/blocks-react/ui` ships no
-// SegmentedControl / Tabs / ToggleGroup primitive (only Button). So this is
-// hand-styled to the pack idiom — it reads the pack's CSS variables
-// (`--civitai-color-*`, `--civitai-radius`, `--civitai-font`) so it matches the pack's look and
-// themes automatically via the app's `data-theme` root. Reported as a pack gap.
+// It reads the pack's CSS variables (`--civitai-color-*`, `--civitai-radius`,
+// `--civitai-font`) so it matches the pack's look and themes automatically via
+// the app's `data-theme` root.
+//
+// A11y (ship-blocker #4): implements the radiogroup roving-focus pattern —
+// only the checked segment is tabbable (roving tabindex), and
+// ArrowLeft/ArrowRight/Home/End move selection + focus across segments.
+//
+// 🔴 TRACK U: blocks-react 0.36 now ships its own `SegmentedControl`
+// (`@civitai/blocks-react/ui`, role="tablist" + arrow roving). We keep this
+// hand-rolled radiogroup for now because the app + tests rely on its
+// `${testid}-${value}` ids, `data-selected`, glyph+title options, and the
+// radio semantics; adopt the pack's version (migrating those hooks) once Track U
+// settles the API. Not a blocker.
 //
 // Reused for BOTH the 3-way view-mode switch and the 3-way media-type filter, so
 // the segmented-control shape is defined once.
 
+import { useRef } from 'react';
 import type { CSSProperties } from 'react';
+
+import { nextIndex, rovingAction } from '../lib/roving.js';
 
 export interface SegmentOption<V extends string> {
   value: V;
@@ -38,18 +50,38 @@ export function SegmentedControl<V extends string>({
   testid,
   size = 'md',
 }: SegmentedControlProps<V>) {
+  const btnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const selectedIndex = Math.max(0, options.findIndex((o) => o.value === value));
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const action = rovingAction(e.key, 'horizontal');
+    if (!action) return;
+    e.preventDefault();
+    const target = nextIndex(action, selectedIndex, options.length);
+    const opt = options[target];
+    if (opt) {
+      onChange(opt.value);
+      btnRefs.current[target]?.focus();
+    }
+  };
+
   return (
-    <div role="radiogroup" aria-label={ariaLabel} data-testid={testid} style={trackStyle}>
-      {options.map((opt) => {
+    <div role="radiogroup" aria-label={ariaLabel} data-testid={testid} style={trackStyle} onKeyDown={onKeyDown}>
+      {options.map((opt, i) => {
         const selected = opt.value === value;
         return (
           <button
             key={opt.value}
+            ref={(el) => {
+              btnRefs.current[i] = el;
+            }}
             type="button"
             role="radio"
             aria-checked={selected}
             aria-label={opt.title ?? opt.label}
             title={opt.title ?? opt.label}
+            // Roving tabindex: only the checked segment is in the tab order.
+            tabIndex={selected ? 0 : -1}
             onClick={() => onChange(opt.value)}
             data-testid={`${testid}-${opt.value}`}
             data-selected={selected ? 'true' : 'false'}

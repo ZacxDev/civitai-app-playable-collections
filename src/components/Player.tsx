@@ -147,6 +147,15 @@ export function Player(props: PlayerProps) {
   // focused iframe, and arrow keys are the desktop-primary control) ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ignore the global player shortcuts while a form control is focused —
+      // otherwise arrow keys on the focused scrubber (range input) would BOTH
+      // move the scrubber AND advance the player (double-fire). Let the control
+      // handle its own keys.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return;
+      }
       if (tipTarget) {
         if (e.key === 'Escape') setTipTarget(null);
         return;
