@@ -14,6 +14,12 @@
     "apps:storage:shared:read",
     "apps:storage:shared:write"
   ],
+  "scopeJustifications": {
+    "collections:read:private": "Lets a signed-in viewer browse and play their own private collections (behind an explicit in-app consent prompt), in addition to public ones.",
+    "social:tip:self": "Sends the viewer's Buzz tip to a collection's creator or curator, within the per-tip and daily caps.",
+    "buzz:read:self": "Reads the viewer's Buzz balance so a tip amount can be validated before it is sent.",
+    "apps:storage:shared:write": "Records the shared popular-collections rail entries (collection references and tallies) that are visible to all viewers."
+  },
   "page": {
     "path": "/",
     "title": "Playable Collections",
