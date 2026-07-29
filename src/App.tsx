@@ -267,6 +267,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   openMorePendingRef.current = openMorePending;
   const [followPending, setFollowPending] = useState(false);
   const [tipping, setTipping] = useState(false);
+  // Synchronous double-tip guard. `setTipping(true)` only disables the button on
+  // the NEXT render; a fast double-click can fire two `doTip` calls before that
+  // commits. This ref gates the second call in the same tick (see doTip).
+  const tipInFlightRef = useRef(false);
   // A failed collection-open keeps a retry affordance (the grid already has one).
   const [openError, setOpenError] = useState<{ summary: CollectionSummary; message: string } | null>(null);
 
@@ -639,11 +643,15 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // ---- tip flow ----
   const doTip = useCallback(
     async (target: TipTarget, amount: number): Promise<boolean> => {
+      // Synchronous double-tip gate (M1): reject a second call that arrives in the
+      // same tick, before `setTipping(true)`'s re-render can disable the button.
+      if (tipInFlightRef.current) return false;
       if (!api) return false;
       if (!viewer) {
         requestSignIn();
         return false;
       }
+      tipInFlightRef.current = true;
       setTipping(true);
       try {
         const result = await api.tip({
@@ -658,14 +666,23 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           toasts.push('error', 'That tip could not be completed. Please try again.');
           return false;
         }
+        // Use the SERVER's committed figure (O2), not the client amount — the two
+        // can diverge (host clamping / rounding). Fall back to the requested amount.
+        const sent = result.tip?.amount ?? amount;
         // Record against today's app-local allowance so the next modal reflects it.
-        tipAllowance.record(amount);
-        analytics.track({ type: 'tip', kind: target.kind, amount });
-        toasts.push('success', `Sent ${amount.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
+        tipAllowance.record(sent);
+        analytics.track({ type: 'tip', kind: target.kind, amount: sent });
+        toasts.push('success', `Sent ${sent.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
         refetchBalance();
         return true;
       } catch (err) {
-        if (err instanceof ApiError && err.code === 'insufficient_balance') {
+        if (err instanceof ApiError && err.code === 'network') {
+          // AMBIGUOUS (M2): a timed-out / dropped tip POST may have ALREADY
+          // committed server-side — a "clean" one-click retry risks a double-spend.
+          // Warn the viewer to verify their balance before retrying instead.
+          // (Full fix needs a host idempotency key — owed upstream; see NOTE.)
+          toasts.push('info', 'This tip may have gone through — check your Buzz balance before retrying.');
+        } else if (err instanceof ApiError && err.code === 'insufficient_balance') {
           toasts.push('error', "You don't have enough Buzz for that tip.");
         } else if (err instanceof ApiError && err.code === 'rate_limited') {
           // Surface the server's Retry-After (daily-cap / burst back-off) when present.
@@ -681,6 +698,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
         }
         return false;
       } finally {
+        tipInFlightRef.current = false;
         setTipping(false);
       }
     },

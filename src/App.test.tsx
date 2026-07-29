@@ -161,6 +161,27 @@ describe('CollectionGrid states (deterministic)', () => {
     expect(screen.getByTestId('maturity-badge')).toHaveTextContent('NSFW');
   });
 
+  it('FAILS CLOSED on an ABSENT cover level: an undefined coverNsfwLevel is blurred + badged (audit S1)', () => {
+    // The pre-fix `nsfwLevel != null && …` short-circuit failed OPEN here — an
+    // unrated cover (server omitted the level) rendered full-strength. It must
+    // now resolve to 0 → 'unknown' → gated, matching maturity.ts' fail-closed law.
+    render(
+      <CollectionGrid
+        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: undefined })]}
+        loading={false}
+        error={null}
+        emptyLabel=""
+        onOpen={() => {}}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('NSFW');
+    // The cover <img> itself is blurred (shared MATURITY_BLUR_PX = 36px).
+    expect(document.querySelector('img')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+
   it('shows private + followed badges', () => {
     render(
       <CollectionGrid

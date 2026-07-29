@@ -13,7 +13,7 @@ import type { CSSProperties } from 'react';
 
 import { Button, Modal, TextInput } from '@civitai/blocks-react/ui';
 
-import { TIP_DAILY_MAX, TIP_MAX_PER_TIP, effectiveTipCap } from '../lib/tip-allowance.js';
+import { TIP_DAILY_MAX, TIP_MAX_PER_TIP } from '../lib/tip-allowance.js';
 import { FocusTrap } from './FocusTrap.js';
 
 export const TIP_PRESETS = [10, 50, 100, 500] as const;
@@ -65,7 +65,6 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
 
   const error = touched ? validateTipAmount(amount, balance, dailyRemaining) : null;
   const label = target.kind === 'creator' ? 'creator' : 'curator';
-  const perTipCap = effectiveTipCap(dailyRemaining);
 
   const submit = () => {
     setTouched(true);
@@ -91,8 +90,13 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
         </p>
 
         <p style={leadText} data-testid="tip-allowance">
-          Up to {perTipCap.toLocaleString()} per tip · {dailyRemaining.toLocaleString()} of{' '}
-          {TIP_DAILY_MAX.toLocaleString()} Buzz left today.
+          {/* Show ONLY the real per-tip cap. The former "of 25,000 left today"
+              framing was inert in the opaque-origin sandbox (localStorage throws
+              → the daily estimate was always the full cap, tracking nothing), so
+              it presented an untracked number as if tracked. The server rate
+              limit is the real daily gate. (Host-provided daily store owed
+              upstream — see NOTE.) */}
+          Up to {TIP_MAX_PER_TIP.toLocaleString()} Buzz per tip.
         </p>
 
         <div style={presetRow} role="group" aria-label="Preset amounts">

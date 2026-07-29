@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Harness } from '@civitai/blocks-react/testing';
 import type { ViewerInfo } from '@civitai/app-sdk/blocks';
@@ -8,6 +8,7 @@ import type { ViewerInfo } from '@civitai/app-sdk/blocks';
 import { App } from './App.js';
 import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi, type FakeApi } from './fake-api.js';
+import type { TipResult } from './types.js';
 
 async function openNeon(api: ApiClient, viewer: ViewerInfo | null = { id: 99, username: 'me' }) {
   render(
@@ -145,18 +146,78 @@ describe('tip caps + rate limiting (ship-blocker #2)', () => {
     expect(screen.getByTestId('tip-creator')).toHaveAttribute('aria-label', 'Tip creator');
   });
 
-  it('reduces the displayed daily allowance after a successful tip', async () => {
+  it('shows only the fixed per-tip cap in the tip modal (no untracked daily figure, audit O1)', async () => {
     const api = createFakeApi({ viewerUserId: 99, balance: 100000 }) as FakeApi;
     await openNeon(api);
     await userEvent.click(screen.getByTestId('tip-creator'));
-    expect(screen.getByTestId('tip-allowance')).toHaveTextContent('25,000 of 25,000 Buzz left today');
-    await userEvent.click(within(await screen.findByTestId('tip-modal')).getByTestId('tip-confirm')); // tips 50
-    await waitFor(() => expect(api.__tips()).toHaveLength(1));
-    // Reopen the tip modal — the app-local allowance now reflects the 50 spent.
-    await userEvent.click(screen.getByTestId('tip-curator'));
-    await waitFor(() =>
-      expect(screen.getByTestId('tip-allowance')).toHaveTextContent('24,950 of 25,000 Buzz left today'),
-    );
+    const allowance = screen.getByTestId('tip-allowance');
+    expect(allowance).toHaveTextContent('Up to 5,000 Buzz per tip');
+    // The inert "of 25,000 left today" readout is gone — it tracked nothing in
+    // the opaque-origin sandbox; the server rate limit is the real daily gate.
+    expect(allowance).not.toHaveTextContent(/left today/i);
+  });
+
+  it('double-clicking Send fires exactly one tip — synchronous double-tip guard (audit M1)', async () => {
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 });
+    let resolveTip: (r: TipResult) => void = () => {};
+    // Never-resolving until we release it: the tip stays in flight so a second
+    // click would double-spend if the ref guard weren't there.
+    const tip = vi.fn(() => new Promise<TipResult>((res) => { resolveTip = res; }));
+    const api: ApiClient = { ...base, tip };
+    await openNeon(api);
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    const modal = await screen.findByTestId('tip-modal');
+    const confirm = within(modal).getByTestId('tip-confirm');
+    // TWO clicks in one tick — before `setTipping(true)`'s re-render can disable
+    // the button. Only the synchronous `tipInFlightRef` gate stops the 2nd POST.
+    await act(async () => {
+      confirm.click();
+      confirm.click();
+    });
+    expect(tip).toHaveBeenCalledTimes(1);
+    // Release the in-flight tip so React state flushes cleanly at teardown.
+    await act(async () => {
+      resolveTip({ ok: true, tip: { amount: 50, toUserId: 22 } });
+    });
+  });
+
+  it('warns instead of inviting a clean retry when a tip TIMES OUT — may have committed (audit M2)', async () => {
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 });
+    const api: ApiClient = {
+      ...base,
+      // The api layer aborts a hung POST at 15s and throws this retryable network
+      // error. A timeout does NOT mean the server didn't commit → ambiguous.
+      async tip() {
+        throw new ApiError('network', 0, 'The request timed out.');
+      },
+    };
+    await openNeon(api);
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    const modal = await screen.findByTestId('tip-modal');
+    await userEvent.click(within(modal).getByTestId('tip-confirm'));
+    // Ambiguous timeout → a "check your balance" warning (info), NOT a clean
+    // error toast that would invite a one-click re-send (double-spend risk).
+    expect(await screen.findByTestId('toast-info')).toHaveTextContent(/may have gone through/i);
+    expect(screen.queryByTestId('toast-error')).toBeNull();
+  });
+
+  it('records + toasts the SERVER-reported tip amount, not the client amount (audit O2)', async () => {
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 });
+    // Client sends the default 50, but the server commits 40 (host clamp/round).
+    const api: ApiClient = {
+      ...base,
+      async tip(input) {
+        return { ok: true, tip: { amount: 40, toUserId: input.toUserId } };
+      },
+    };
+    await openNeon(api);
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    const modal = await screen.findByTestId('tip-modal');
+    await userEvent.click(within(modal).getByTestId('tip-confirm')); // client default 50
+    // The success toast reflects the SERVER figure (40), never the requested 50.
+    const toast = await screen.findByTestId('toast-success');
+    expect(toast).toHaveTextContent('40');
+    expect(toast).not.toHaveTextContent('50');
   });
 });
 

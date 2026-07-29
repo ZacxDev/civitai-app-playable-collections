@@ -18,7 +18,7 @@ import { assignColumns, columnCount } from '../modes/columns.js';
 import { selectPlayable } from '../modes/autoplay.js';
 import { advanceOffset, clampDt, shouldAutoScroll } from '../modes/scroll-engine.js';
 import { shouldBlur } from '../lib/maturity.js';
-import { MaturityBadge } from './Maturity.js';
+import { MaturityBadge, MATURITY_BLUR_PX } from './Maturity.js';
 
 /** Fetch more when the tail sentinel comes near — continuous modes burn items fast. */
 const SENTINEL_MARGIN = '400px';
@@ -252,7 +252,7 @@ function Tile({
   // Mature tiles render blurred with a rating badge; the tile tap opens the
   // classic lightbox where the full blur-until-reveal gate applies.
   const blur = shouldBlur(item.nsfwLevel);
-  const media = blur ? { ...mediaEl, filter: 'blur(20px)' } : mediaEl;
+  const media = blur ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl;
   // The poster URL is derived by string-replacing `.mp4→.jpg` (brittle); if it
   // or a lazy cover 404s, fall back to a neutral placeholder instead of a broken
   // image icon.

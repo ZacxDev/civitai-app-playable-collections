@@ -102,8 +102,12 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
   }
 
   // Gate a mature cover (badge + blur-until-tap) — same policy as the item media.
-  // Only when a level is KNOWN; unknown-level covers (server omitted it) render.
-  const mature = nsfwLevel != null && shouldBlur(nsfwLevel);
+  // FAILS CLOSED: an absent / undefined / 0 level resolves to 0 → 'unknown' →
+  // blurred + badged (matches maturity.ts' tested fail-closed contract). The old
+  // `nsfwLevel != null && …` short-circuit failed OPEN on an absent level, letting
+  // an unrated cover render full-strength on this pg13 public app. Never fail open.
+  const resolvedNsfwLevel = nsfwLevel ?? 0;
+  const mature = shouldBlur(resolvedNsfwLevel);
   const blurred = mature && !revealed;
 
   const img = (
@@ -127,7 +131,7 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
     <div style={coverGateWrap} data-testid="cover-gate" data-revealed={revealed ? 'true' : 'false'}>
       {img}
       <span style={coverBadgeSlot}>
-        <MaturityBadge nsfwLevel={nsfwLevel} />
+        <MaturityBadge nsfwLevel={resolvedNsfwLevel} />
       </span>
       {!revealed && (
         // Tap reveals the cover WITHOUT opening the card (stopPropagation); a
