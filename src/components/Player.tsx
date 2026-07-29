@@ -11,9 +11,11 @@ import { Button, Loader, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
-import { mutedText, stage, token, type Palette } from '../theme.js';
+import type { Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
+import { shouldBlur } from '../lib/maturity.js';
 import { iconBtn } from './styles.js';
+import { MaturityBadge, MaturityRevealOverlay, MATURITY_BLUR_PX } from './Maturity.js';
 import { TipModal, type TipTarget } from './TipModal.js';
 
 const SWIPE_THRESHOLD = 48;
@@ -49,6 +51,12 @@ export interface PlayerProps {
   /** Perform the tip. Resolves true on success (Player then marks it tipped). */
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
   tipping: boolean;
+  /** Estimated remaining daily tip allowance (app-local) for the tip modal. */
+  dailyTipRemaining?: number;
+  /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
+  cast?: boolean;
+  /** OS reduced-motion preference — pauses cast auto-advance when set. */
+  reducedMotion?: boolean;
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
@@ -78,6 +86,9 @@ export function Player(props: PlayerProps) {
     onToggleFollow,
     onTip,
     tipping,
+    dailyTipRemaining,
+    cast = false,
+    reducedMotion = false,
     isMobile,
     c,
     onExit,
@@ -117,9 +128,33 @@ export function Player(props: PlayerProps) {
 
   const [tipTarget, setTipTarget] = useState<TipTarget | null>(null);
   const [tippedKeys, setTippedKeys] = useState<Set<string>>(new Set());
+  // Maturity blur-until-tap: mature items render blurred until the viewer reveals
+  // them (per media id, so advancing to a new mature item re-gates it).
+  const [revealedIds, setRevealedIds] = useState<Set<number>>(() => new Set());
+  const blurCurrent = current != null && shouldBlur(current.nsfwLevel) && !revealedIds.has(current.mediaId);
+  const revealCurrent = useCallback(() => {
+    if (!current) return;
+    setRevealedIds((prev) => {
+      const next = new Set(prev);
+      next.add(current.mediaId);
+      return next;
+    });
+  }, [current]);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  // In cast mode all overlay chrome is hidden (passive full-bleed playback).
+  const chromeShown = chromeVisible && !cast;
+
+  // Cast auto-advance: force playback on entering cast (unless reduced-motion,
+  // which pauses it — respecting the OS preference like the continuous modes).
+  useEffect(() => {
+    if (!cast) return;
+    if (reducedMotion) player.pause();
+    else player.play();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cast, reducedMotion]);
 
   const creatorIsSelf = current != null && viewerUserId != null && current.creator.userId === viewerUserId;
   const curatorIsSelf = viewerUserId != null && detail.curator.userId === viewerUserId;
@@ -130,6 +165,17 @@ export function Player(props: PlayerProps) {
   // focused iframe, and arrow keys are the desktop-primary control) ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ignore the global player shortcuts while a form control is focused —
+      // otherwise arrow keys on the focused scrubber (range input) would BOTH
+      // move the scrubber AND advance the player (double-fire). Let the control
+      // handle its own keys.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) {
+        return;
+      }
+      // Cast mode is passive (TV / second-screen) — swallow all shortcuts.
+      if (cast) return;
       if (tipTarget) {
         if (e.key === 'Escape') setTipTarget(null);
         return;
@@ -161,7 +207,7 @@ export function Player(props: PlayerProps) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player.next, player.prev, player.toggle, tipTarget, onExit]);
+  }, [player.next, player.prev, player.toggle, tipTarget, onExit, cast]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -237,7 +283,7 @@ export function Player(props: PlayerProps) {
   if (items.length === 0) {
     return (
       <div style={emptyStage(c)} data-testid="player-empty">
-        <p style={{ margin: 0, ...mutedText }}>This collection has no playable media.</p>
+        <p>This collection has no playable media.</p>
         <Button variant="outline" onClick={onExit} data-testid="player-exit">
           ← Back to collections
         </Button>
@@ -252,6 +298,7 @@ export function Player(props: PlayerProps) {
       data-testid="player"
       data-layout={isMobile ? 'mobile' : 'desktop'}
       data-media-type={current?.type ?? 'none'}
+      data-cast={cast ? 'on' : 'off'}
     >
       {/* ---- media ---- */}
       <div
@@ -265,7 +312,7 @@ export function Player(props: PlayerProps) {
             ref={videoRef}
             key={current.mediaId}
             src={current.url}
-            style={mediaEl}
+            style={blurCurrent ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl}
             autoPlay={player.playing}
             muted={muted}
             playsInline
@@ -285,16 +332,31 @@ export function Player(props: PlayerProps) {
             }}
           />
         ) : current ? (
-          <img src={current.url} alt="" style={mediaEl} data-testid="media-image" />
+          <img
+            src={current.url}
+            alt=""
+            style={blurCurrent ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl}
+            data-testid="media-image"
+          />
         ) : null}
+
+        {/* maturity badge (top-left of the stage, above media) */}
+        {current && (
+          <span style={maturityBadgeSlot}>
+            <MaturityBadge nsfwLevel={current.nsfwLevel} />
+          </span>
+        )}
+
+        {/* blur-until-tap reveal gate for mature media */}
+        {blurCurrent && current && <MaturityRevealOverlay nsfwLevel={current.nsfwLevel} onReveal={revealCurrent} />}
 
         {/* preload next */}
         {player.upcoming?.type === 'image' && (
           <img src={player.upcoming.url} alt="" style={{ display: 'none' }} aria-hidden="true" />
         )}
 
-        {/* desktop click zones (behind chrome) */}
-        {!isMobile && (
+        {/* desktop click zones (behind chrome; disabled in passive cast mode) */}
+        {!isMobile && !cast && (
           <>
             <button
               type="button"
@@ -322,9 +384,9 @@ export function Player(props: PlayerProps) {
       </div>
 
       {/* ---- top overlay: title + exit + buzz ---- */}
-      {chromeVisible && (
+      {chromeShown && (
         <div style={topBar(c)}>
-          <button type="button" onClick={onExit} style={iconBtn()} aria-label="Back to collections" data-testid="player-exit">
+          <button type="button" onClick={onExit} style={iconBtn(c)} aria-label="Back to collections" data-testid="player-exit">
             ←
           </button>
           <div style={titleWrap}>
@@ -340,9 +402,10 @@ export function Player(props: PlayerProps) {
       )}
 
       {/* ---- right overlay chrome: tip/follow ---- */}
-      {chromeVisible && (
+      {chromeShown && (
         <div style={rightRail} data-testid="overlay-chrome">
           <ChromeButton
+            c={c}
             glyph={creatorTipped ? '✓' : '💸'}
             label={creatorTipped ? 'Tipped creator' : 'Tip creator'}
             disabled={!current || creatorIsSelf || tipping}
@@ -351,6 +414,7 @@ export function Player(props: PlayerProps) {
             testid="tip-creator"
           />
           <ChromeButton
+            c={c}
             glyph={curatorTipped ? '✓' : '🎁'}
             label={curatorTipped ? 'Tipped curator' : 'Tip curator'}
             disabled={curatorIsSelf || tipping}
@@ -359,6 +423,7 @@ export function Player(props: PlayerProps) {
             testid="tip-curator"
           />
           <ChromeButton
+            c={c}
             glyph={followed ? '★' : '☆'}
             label={followed ? 'Following' : 'Follow collection'}
             disabled={followPending}
@@ -370,29 +435,29 @@ export function Player(props: PlayerProps) {
       )}
 
       {/* ---- bottom transport ---- */}
-      {chromeVisible && (
+      {chromeShown && (
         <div style={bottomBar(c)}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
-            <button type="button" onClick={player.prev} style={iconBtn()} aria-label="Previous" data-testid="ctrl-prev">
+            <button type="button" onClick={player.prev} style={iconBtn(c)} aria-label="Previous" data-testid="ctrl-prev">
               ⏮
             </button>
             <button
               type="button"
               onClick={player.toggle}
-              style={iconBtn(player.playing)}
+              style={iconBtn(c, player.playing)}
               aria-label={player.playing ? 'Pause' : 'Play'}
               aria-pressed={player.playing}
               data-testid="ctrl-play"
             >
               {player.playing ? '⏸' : '▶'}
             </button>
-            <button type="button" onClick={player.next} style={iconBtn()} aria-label="Next" data-testid="ctrl-next">
+            <button type="button" onClick={player.next} style={iconBtn(c)} aria-label="Next" data-testid="ctrl-next">
               ⏭
             </button>
             <button
               type="button"
               onClick={toggleFullscreen}
-              style={iconBtn(isFullscreen)}
+              style={iconBtn(c, isFullscreen)}
               aria-label="Fullscreen"
               aria-pressed={isFullscreen}
               data-testid="ctrl-fullscreen"
@@ -403,7 +468,7 @@ export function Player(props: PlayerProps) {
               <button
                 type="button"
                 onClick={() => setShowSettings((v) => !v)}
-                style={iconBtn(showSettings)}
+                style={iconBtn(c, showSettings)}
                 aria-label="Playback settings"
                 aria-pressed={showSettings}
                 aria-expanded={showSettings}
@@ -423,7 +488,7 @@ export function Player(props: PlayerProps) {
               onVideoLoopCountChange={onVideoLoopCountChange}
             />
           )}
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <Slider
               min={0}
               max={Math.max(0, player.state.order.length - 1)}
@@ -435,10 +500,10 @@ export function Player(props: PlayerProps) {
             />
             {loadingMore && (
               <span data-testid="player-loading-more" title="Loading more">
-                <Loader size="sm" color={stage.chromeFg} />
+                <Loader size="sm" color="#fff" />
               </span>
             )}
-            <span style={progressText()} data-testid="progress-label">
+            <span style={progressText(c)} data-testid="progress-label">
               {player.progressLabel}
             </span>
           </div>
@@ -450,6 +515,7 @@ export function Player(props: PlayerProps) {
           target={tipTarget}
           balance={buzzBalance}
           submitting={tipping}
+          dailyRemaining={dailyTipRemaining}
           onConfirm={confirmTip}
           onClose={() => setTipTarget(null)}
         />
@@ -459,6 +525,7 @@ export function Player(props: PlayerProps) {
 }
 
 function ChromeButton({
+  c,
   glyph,
   label,
   disabled,
@@ -466,6 +533,7 @@ function ChromeButton({
   onClick,
   testid,
 }: {
+  c: Palette;
   glyph: string;
   label: string;
   disabled: boolean;
@@ -474,19 +542,19 @@ function ChromeButton({
   testid: string;
 }) {
   return (
-    <div style={{ display: 'grid', justifyItems: 'center', gap: 3 }}>
+    <div style={{ display: 'grid', justifyItems: 'center', gap: 2 }}>
       <button
         type="button"
         onClick={onClick}
         disabled={disabled}
-        style={iconBtn(active, disabled)}
+        style={iconBtn(c, active, disabled)}
         aria-label={label}
         aria-pressed={active}
         data-testid={testid}
       >
         {glyph}
       </button>
-      <span style={{ fontSize: 10, color: stage.chromeFg, textShadow: stage.textShadow }}>
+      <span style={{ fontSize: 10, color: '#fff', textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>
         {label.split(' ')[0]}
       </span>
     </div>
@@ -513,9 +581,9 @@ function SettingsPanel({
 }) {
   return (
     <div style={settingsPanel(c)} data-testid="settings-panel" role="group" aria-label="Playback settings">
-      <div style={settingsRow}>
+      <label style={settingsRow}>
         <span style={settingsLabel}>Seconds per image</span>
-        <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Slider
             min={SECONDS_PER_IMAGE.min}
             max={SECONDS_PER_IMAGE.max}
@@ -530,10 +598,10 @@ function SettingsPanel({
             {secondsPerImage}s
           </span>
         </span>
-      </div>
-      <div style={settingsRow}>
+      </label>
+      <label style={settingsRow}>
         <span style={settingsLabel}>Video loop count</span>
-        <span style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Slider
             min={VIDEO_LOOP_COUNT.min}
             max={VIDEO_LOOP_COUNT.max}
@@ -548,7 +616,7 @@ function SettingsPanel({
             {videoLoopCount}×
           </span>
         </span>
-      </div>
+      </label>
     </div>
   );
 }
@@ -566,6 +634,14 @@ function stageStyle(c: Palette): CSSProperties {
   };
 }
 const mediaWrap: CSSProperties = { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const maturityBadgeSlot: CSSProperties = {
+  position: 'absolute',
+  top: 12,
+  left: '50%',
+  transform: 'translateX(-50%)',
+  zIndex: 6,
+  pointerEvents: 'none',
+};
 const mediaEl: CSSProperties = { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', display: 'block' };
 
 function clickZone(which: 'left' | 'center' | 'right'): CSSProperties {
@@ -599,21 +675,20 @@ function topBar(c: Palette): CSSProperties {
 }
 const titleWrap: CSSProperties = { display: 'grid', flex: 1, minWidth: 0 };
 const titleText: CSSProperties = {
-  color: stage.chromeFg,
+  color: '#fff',
   fontWeight: 700,
   fontSize: 15,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
-  textShadow: stage.textShadow,
+  textShadow: '0 1px 3px rgba(0,0,0,0.8)',
 };
-const subText: CSSProperties = { color: stage.chromeFgDim, fontSize: 12, textShadow: stage.textShadow };
+const subText: CSSProperties = { color: 'rgba(255,255,255,0.8)', fontSize: 12, textShadow: '0 1px 3px rgba(0,0,0,0.8)' };
 function buzzReadout(c: Palette): CSSProperties {
   return {
-    color: stage.chromeFg,
+    color: '#fff',
     fontWeight: 700,
     fontSize: 13,
-    fontVariantNumeric: 'tabular-nums',
     background: c.overlay,
     padding: '6px 10px',
     borderRadius: 999,
@@ -644,15 +719,8 @@ function bottomBar(c: Palette): CSSProperties {
     zIndex: 5,
   };
 }
-function progressText(): CSSProperties {
-  return {
-    color: stage.chromeFg,
-    fontSize: 12,
-    minWidth: 54,
-    textAlign: 'right',
-    fontVariantNumeric: 'tabular-nums',
-    textShadow: stage.textShadow,
-  };
+function progressText(c: Palette): CSSProperties {
+  return { color: '#fff', fontSize: 12, minWidth: 54, textAlign: 'right', textShadow: '0 1px 2px ' + c.stageBg };
 }
 
 function settingsPanel(c: Palette): CSSProperties {
@@ -666,15 +734,9 @@ function settingsPanel(c: Palette): CSSProperties {
     color: c.fg,
   };
 }
-const settingsRow: CSSProperties = { display: 'grid', gap: 6 };
-const settingsLabel: CSSProperties = { fontSize: 13, fontWeight: 600, color: token.text };
-const settingsValue: CSSProperties = {
-  fontSize: 13,
-  minWidth: 34,
-  textAlign: 'right',
-  fontVariantNumeric: 'tabular-nums',
-  color: token.dimmed,
-};
+const settingsRow: CSSProperties = { display: 'grid', gap: 4 };
+const settingsLabel: CSSProperties = { fontSize: 13, fontWeight: 600 };
+const settingsValue: CSSProperties = { fontSize: 13, minWidth: 34, textAlign: 'right' };
 
 function emptyStage(c: Palette): CSSProperties {
   return {

@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -90,6 +90,37 @@ describe('ContinuousView — capped video autoplay (🔴 perf guard)', () => {
     // Exactly the cap number of <video> elements mount + play; others are posters.
     const playing = screen.getAllByTestId('continuous-tile').filter((t) => t.getAttribute('data-playing') === 'true');
     expect(playing).toHaveLength(5);
+  });
+});
+
+describe('ContinuousView — content maturity (badge + blur, ship-blocker #3)', () => {
+  it('badges and blurs a mature tile; leaves PG tiles untouched', () => {
+    const matureImg: MediaItem = { ...img(1), nsfwLevel: 8 }; // X
+    renderView({ items: [matureImg, img(2)], reducedMotion: true });
+    // The mature tile carries a rating badge and its media is blurred.
+    const badges = screen.getAllByTestId('maturity-badge');
+    expect(badges).toHaveLength(1);
+    expect(badges[0]).toHaveTextContent('X');
+    const images = screen.getAllByTestId('continuous-image');
+    expect(images[0]).toHaveStyle({ filter: 'blur(20px)' });
+    expect(images[1]).not.toHaveStyle({ filter: 'blur(20px)' });
+  });
+});
+
+describe('ContinuousView — brittle poster fallback (ship-blocker #5)', () => {
+  it('falls back to a placeholder when a video poster 404s', () => {
+    renderView({ items: [vid(1)], reducedMotion: true });
+    const poster = screen.getByTestId('continuous-poster');
+    fireEvent.error(poster);
+    expect(screen.getByTestId('continuous-placeholder')).toBeInTheDocument();
+    expect(screen.queryByTestId('continuous-poster')).toBeNull();
+  });
+
+  it('falls back to a placeholder when a lazy image errors', async () => {
+    renderView({ items: [img(1)], reducedMotion: true });
+    await act(async () => flushIntersections(true)); // swap data-src → src
+    fireEvent.error(screen.getByTestId('continuous-image'));
+    expect(screen.getByTestId('continuous-placeholder')).toBeInTheDocument();
   });
 });
 

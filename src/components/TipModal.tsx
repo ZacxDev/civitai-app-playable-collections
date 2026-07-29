@@ -13,11 +13,13 @@ import type { CSSProperties } from 'react';
 
 import { Button, Modal, TextInput } from '@civitai/blocks-react/ui';
 
-import { mutedText } from '../theme.js';
+import { TIP_DAILY_MAX, TIP_MAX_PER_TIP, effectiveTipCap } from '../lib/tip-allowance.js';
+import { FocusTrap } from './FocusTrap.js';
 
 export const TIP_PRESETS = [10, 50, 100, 500] as const;
 export const TIP_MIN = 1;
-export const TIP_MAX = 100000;
+/** Client per-tip cap — aligned to the server's `BLOCK_TIP_MAX_PER_TIP` (5000). */
+export const TIP_MAX = TIP_MAX_PER_TIP;
 
 export interface TipTarget {
   kind: 'creator' | 'curator';
@@ -27,12 +29,22 @@ export interface TipTarget {
   entityId: number;
 }
 
-export function validateTipAmount(raw: string, balance: number | null): string | null {
+/**
+ * Validate a tip amount against the per-tip cap (5000), the estimated remaining
+ * daily allowance (25000/day, app-local), and the viewer's Buzz balance. The
+ * server remains authoritative; this only pre-blocks an amount it would reject.
+ */
+export function validateTipAmount(
+  raw: string,
+  balance: number | null,
+  dailyRemaining: number = TIP_DAILY_MAX,
+): string | null {
   const n = Number(raw);
   if (!raw.trim()) return 'Enter an amount.';
   if (!Number.isFinite(n) || !Number.isInteger(n)) return 'Amount must be a whole number.';
   if (n < TIP_MIN) return `Minimum tip is ${TIP_MIN} Buzz.`;
-  if (n > TIP_MAX) return `Maximum tip is ${TIP_MAX.toLocaleString()} Buzz.`;
+  if (n > TIP_MAX_PER_TIP) return `Maximum is ${TIP_MAX_PER_TIP.toLocaleString()} Buzz per tip.`;
+  if (n > dailyRemaining) return `Only ${dailyRemaining.toLocaleString()} Buzz left in today's tip allowance.`;
   if (balance != null && n > balance) return `That's more than your ${balance.toLocaleString()} Buzz balance.`;
   return null;
 }
@@ -43,18 +55,21 @@ export interface TipModalProps {
   submitting: boolean;
   onConfirm: (amount: number) => void;
   onClose: () => void;
+  /** Estimated Buzz left in today's tip allowance (app-local). Default: the cap. */
+  dailyRemaining?: number;
 }
 
-export function TipModal({ target, balance, submitting, onConfirm, onClose }: TipModalProps) {
+export function TipModal({ target, balance, submitting, onConfirm, onClose, dailyRemaining = TIP_DAILY_MAX }: TipModalProps) {
   const [amount, setAmount] = useState<string>(String(TIP_PRESETS[1]));
   const [touched, setTouched] = useState(false);
 
-  const error = touched ? validateTipAmount(amount, balance) : null;
+  const error = touched ? validateTipAmount(amount, balance, dailyRemaining) : null;
   const label = target.kind === 'creator' ? 'creator' : 'curator';
+  const perTipCap = effectiveTipCap(dailyRemaining);
 
   const submit = () => {
     setTouched(true);
-    const err = validateTipAmount(amount, balance);
+    const err = validateTipAmount(amount, balance, dailyRemaining);
     if (err) return;
     onConfirm(Number(amount));
   };
@@ -66,12 +81,18 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose }: Ti
       title={`Tip ${target.username ? `@${target.username}` : `the ${label}`}`}
       size="sm"
     >
+      <FocusTrap>
       <div data-testid="tip-modal" aria-label={`Tip ${label}`} style={bodyStyle}>
         <p style={leadText}>
           {target.kind === 'creator'
             ? 'Send Buzz to the creator of this media.'
             : 'Send Buzz to the collection curator.'}
           {balance != null && ` · You have ${balance.toLocaleString()} Buzz.`}
+        </p>
+
+        <p style={leadText} data-testid="tip-allowance">
+          Up to {perTipCap.toLocaleString()} per tip · {dailyRemaining.toLocaleString()} of{' '}
+          {TIP_DAILY_MAX.toLocaleString()} Buzz left today.
         </p>
 
         <div style={presetRow} role="group" aria-label="Preset amounts">
@@ -113,18 +134,21 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose }: Ti
           <Button
             onClick={submit}
             loading={submitting}
-            disabled={Boolean(error)}
+            // Explicitly disabled while submitting too — guards against a fast
+            // double-click firing two tips (a Buzz double-spend) before re-render.
+            disabled={submitting || Boolean(error)}
             data-testid="tip-confirm"
           >
             {submitting ? 'Sending…' : `Send ${amount || '0'} Buzz`}
           </Button>
         </div>
       </div>
+      </FocusTrap>
     </Modal>
   );
 }
 
 const bodyStyle: CSSProperties = { display: 'grid', gap: 12 };
-const leadText: CSSProperties = { margin: 0, ...mutedText };
+const leadText: CSSProperties = { margin: 0, fontSize: 13, color: 'var(--civitai-color-text-dimmed)' };
 const presetRow: CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap' };
 const actionRow: CSSProperties = { display: 'flex', gap: 8, justifyContent: 'flex-end' };

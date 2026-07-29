@@ -184,6 +184,26 @@ describe('network + parse helpers', () => {
     await expect(api.getCollection(1)).rejects.toMatchObject({ code: 'network', status: 0 });
   });
 
+  it('aborts a hung fetch after timeoutMs and surfaces a retryable network error (#5)', async () => {
+    const fetchImpl = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        }),
+    ) as unknown as typeof fetch;
+    const api = createHttpApiClient({ getToken: () => 't', fetchImpl, timeoutMs: 10 });
+    const err = await api.listCollections({ mode: 'public' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('network');
+    expect((err as ApiError).message).toMatch(/timed out/i);
+  });
+
+  it('does not abort a fast fetch (timeout cleared)', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { items: [] })) as unknown as typeof fetch;
+    const api = createHttpApiClient({ getToken: () => 't', fetchImpl, timeoutMs: 50 });
+    await expect(api.listCollections({ mode: 'public' })).resolves.toEqual({ items: [] });
+  });
+
   it('parseRetryAfter handles seconds and dates', () => {
     expect(parseRetryAfter('5')).toBe(5000);
     expect(parseRetryAfter(null)).toBeUndefined();

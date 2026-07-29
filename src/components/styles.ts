@@ -1,24 +1,23 @@
-// Media-player overlay chrome. The round transport/overlay buttons sit on top of
-// arbitrary user media (images/videos), so — like every video player — they are
-// deliberately white-on-scrim and theme-INVARIANT (they must read against the
-// media, not the page background), sourced from the `stage.*` chrome constants,
-// not the theme tokens. Every page-surface control uses the `@civitai/blocks-react`
-// pack instead; this is the one carve-out the pack doesn't cover.
+// Bespoke inline-style builder for the media player's overlay transport
+// controls. The `@civitai/blocks-react/ui` pack has no media-player primitives
+// (play/pause/next, follow/bookmark, tip), so these round icon buttons sit on a
+// dark, translucent media surface and are hand-styled to sit alongside the
+// pack's Button idiom. (Listed as a component-pack gap in the v0.1.5 report.)
 
 import type { CSSProperties } from 'react';
 
-import { stage, token } from '../theme.js';
+import type { Palette } from '../theme.js';
 
 /** A round icon control used for the player overlay chrome. */
-export function iconBtn(active = false, disabled = false): CSSProperties {
+export function iconBtn(c: Palette, active = false, disabled = false): CSSProperties {
   return {
     width: 44,
     height: 44,
     minWidth: 44,
     borderRadius: 999,
-    border: `1px solid ${active ? token.primary : stage.chromeBtnBorder}`,
-    background: active ? token.primary : stage.chromeBtnBg,
-    color: active ? token.primaryFg : stage.chromeFg,
+    border: '1px solid rgba(255,255,255,0.25)',
+    background: active ? c.accent : 'rgba(0,0,0,0.45)',
+    color: active ? c.accentFg : '#fff',
     fontSize: 18,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.4 : 1,
@@ -27,6 +26,5 @@ export function iconBtn(active = false, disabled = false): CSSProperties {
     justifyContent: 'center',
     fontFamily: 'inherit',
     lineHeight: 1,
-    transition: 'background 120ms ease, border-color 120ms ease, transform 80ms ease',
   };
 }

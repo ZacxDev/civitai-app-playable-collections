@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Harness } from '@civitai/blocks-react/testing';
 import type { ViewerInfo } from '@civitai/app-sdk/blocks';
@@ -25,6 +25,8 @@ function renderApp(
     buzzBalance?: { blue: number; green: number; yellow: number };
     /** Seed the mock host's SHARED store (the apps:storage:shared:* bridge). */
     shared?: { seed?: Array<{ value: { title: string; body?: string; data?: unknown }; authorUserId?: number; voters?: number[] }> };
+    /** Analytics sink (Feature #10). */
+    onEvent?: (e: { type: string; [k: string]: unknown }) => void;
   } = {},
 ) {
   return render(
@@ -36,7 +38,7 @@ function renderApp(
       buzzBalance={opts.buzzBalance}
       shared={opts.shared}
     >
-      <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} />
+      <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} onEvent={opts.onEvent} />
     </Harness>,
   );
 }
@@ -76,6 +78,12 @@ describe('CollectionGrid states (deterministic)', () => {
     expect(screen.getByTestId('grid-empty')).toHaveTextContent('Nothing here');
   });
 
+  it('renders a loading SKELETON grid (not a spinner row) while first-loading (#10)', () => {
+    render(<CollectionGrid collections={[]} loading error={null} emptyLabel="none" onOpen={() => {}} c={c} isMobile={false} />);
+    const loading = screen.getByTestId('grid-loading');
+    expect(within(loading).getAllByTestId('skeleton-card').length).toBeGreaterThan(1);
+  });
+
   it('renders cards and fires onOpen', async () => {
     const onOpen = vi.fn();
     render(
@@ -94,6 +102,63 @@ describe('CollectionGrid states (deterministic)', () => {
       <CollectionGrid collections={[sampleCollection()]} loading={false} error={null} emptyLabel="" onOpen={() => {}} c={c} isMobile={false} />,
     );
     expect(screen.getByTestId('collection-grid')).toHaveAttribute('data-layout', 'desktop');
+  });
+
+  it('GATES a mature cover (badge + blur-until-tap) and reveals without opening (audit #1)', async () => {
+    const onOpen = vi.fn();
+    render(
+      <CollectionGrid
+        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 8 })]}
+        loading={false}
+        error={null}
+        emptyLabel=""
+        onOpen={onOpen}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByTestId('cover-gate')).toHaveAttribute('data-revealed', 'false');
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('X');
+    // Tapping the reveal overlay reveals the cover WITHOUT opening the card.
+    await userEvent.click(screen.getByTestId('cover-reveal'));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(screen.getByTestId('cover-gate')).toHaveAttribute('data-revealed', 'true');
+    expect(screen.queryByTestId('cover-reveal')).toBeNull();
+    // Now the card opens normally.
+    await userEvent.click(screen.getByTestId('collection-card'));
+    expect(onOpen).toHaveBeenCalled();
+  });
+
+  it('does NOT gate a PG cover', () => {
+    render(
+      <CollectionGrid
+        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 1 })]}
+        loading={false}
+        error={null}
+        emptyLabel=""
+        onOpen={() => {}}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+  });
+
+  it('gates a cover with an UNKNOWN level (fail closed) when a 0 level is supplied', () => {
+    render(
+      <CollectionGrid
+        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 0 })]}
+        loading={false}
+        error={null}
+        emptyLabel=""
+        onOpen={() => {}}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('NSFW');
   });
 
   it('shows private + followed badges', () => {
@@ -445,6 +510,232 @@ describe('App — host-origin gating (real HTTP client)', () => {
     // Absolute, against the validated host origin — NOT a same-origin relative path.
     expect(collectionsCall!.startsWith(`${host}/api/v1/blocks/collections`)).toBe(true);
     expect(collectionsCall!.startsWith('/api')).toBe(false);
+  });
+});
+
+describe('App — analytics events (Feature #10)', () => {
+  it('emits play, mode_switch, follow and tip events', async () => {
+    const events: Array<{ type: string; [k: string]: unknown }> = [];
+    renderApp({ api: createFakeApi({ viewerUserId: 99, balance: 100000 }), onEvent: (e) => events.push(e) });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101)
+    await screen.findByTestId('collection-viewer');
+    expect(events).toContainEqual(expect.objectContaining({ type: 'play', collectionId: 101 }));
+
+    // Mode switch → continuous chrome.
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    expect(events).toContainEqual(expect.objectContaining({ type: 'mode_switch', collectionId: 101, mode: 'continuous-horizontal' }));
+
+    // Follow (continuous chrome).
+    await userEvent.click(screen.getByTestId('chrome-follow'));
+    await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'follow', collectionId: 101, followed: true })));
+
+    // Tip the curator.
+    await userEvent.click(screen.getByTestId('chrome-tip-curator'));
+    const modal = await screen.findByTestId('tip-modal');
+    await userEvent.click(within(modal).getByTestId('tip-confirm'));
+    await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'tip', kind: 'curator', amount: 50 })));
+  });
+
+  it('emits popular_open when opening from the Popular rail', async () => {
+    const events: Array<{ type: string; [k: string]: unknown }> = [];
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
+      onEvent: (e) => events.push(e),
+      shared: { seed: [{ value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] }] },
+    });
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    await userEvent.click(within(rail).getByTestId('popular-card'));
+    await screen.findByTestId('collection-viewer');
+    expect(events).toContainEqual(expect.objectContaining({ type: 'popular_open', collectionId: 101 }));
+  });
+});
+
+describe('App — Continue-watching rail (Feature #7)', () => {
+  it('lists a played collection and reopens it at the saved position', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101), 3 items
+    await screen.findByTestId('collection-viewer');
+    // Seek to the last item, then exit (saves mode + position).
+    fireEvent.change(screen.getByTestId('scrubber'), { target: { value: '2' } });
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('3 / 3'));
+    await userEvent.click(screen.getByTestId('viewer-exit'));
+
+    // Back on discover, the Continue-watching rail lists the collection.
+    const rail = await screen.findByTestId('recent-rail');
+    expect(rail).toHaveTextContent('Neon Cities');
+
+    // Reopening from the rail resumes at the saved position.
+    await userEvent.click(within(rail).getByTestId('recent-card'));
+    await screen.findByTestId('collection-viewer');
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('3 / 3'));
+  });
+
+  it('does not show the rail before anything has been played', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    expect(screen.queryByTestId('recent-rail')).toBeNull();
+  });
+});
+
+describe('App — deep-link / shareable URLs (Feature #6)', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  });
+
+  it('restores an open collection + view mode from the URL hash on load', async () => {
+    window.history.replaceState(null, '', '#c=101&mode=continuous-horizontal');
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    const viewer = await screen.findByTestId('collection-viewer');
+    expect(viewer).toHaveAttribute('data-mode', 'continuous-horizontal');
+  });
+
+  it('restores the classic playback position from the hash', async () => {
+    window.history.replaceState(null, '', '#c=101&i=2');
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('player');
+    // Neon Cities (101) has 3 items → index 2 is item 3/3.
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('3 / 3');
+  });
+
+  it('writes the open collection to the URL hash, and clears it on exit', async () => {
+    window.history.replaceState(null, '', window.location.pathname);
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101)
+    await screen.findByTestId('collection-viewer');
+    await waitFor(() => expect(window.location.hash).toContain('c=101'));
+    await userEvent.click(screen.getByTestId('viewer-exit'));
+    await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(window.location.hash).toBe(''));
+  });
+
+  it('the Share button copies a deep link to the clipboard', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    const prevClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    try {
+      window.history.replaceState(null, '', window.location.pathname);
+      renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+      const grid = await screen.findByTestId('collection-grid');
+      await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+      await screen.findByTestId('collection-viewer');
+      await userEvent.click(screen.getByTestId('viewer-share'));
+      await waitFor(() => expect(writeText).toHaveBeenCalled());
+      expect(String(writeText.mock.calls[0][0])).toContain('#c=101');
+      expect(await screen.findByTestId('toast-success')).toHaveTextContent(/copied/i);
+    } finally {
+      if (prevClipboard) Object.defineProperty(navigator, 'clipboard', prevClipboard);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+});
+
+describe('App — failed collection-open retry (ship-blocker #5)', () => {
+  it('shows a retry affordance when opening fails, and a retry can succeed', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    let fail = true;
+    const api: ApiClient = {
+      ...base,
+      async getCollection(id, opts) {
+        if (fail) throw new ApiError('unknown', 500, 'open boom');
+        return base.getCollection(id, opts);
+      },
+    };
+    renderApp({ api });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    // Open failed → a retry affordance (not the player, not a bare toast).
+    expect(await screen.findByTestId('open-error')).toBeInTheDocument();
+    expect(screen.queryByTestId('player')).toBeNull();
+    // Retry after the server recovers → the player opens.
+    fail = false;
+    await userEvent.click(screen.getByTestId('open-retry'));
+    await screen.findByTestId('player');
+  });
+});
+
+describe('App — keyboard-operable tablist (ship-blocker #4)', () => {
+  it('wires a roving tablist: selected tab tabbable + aria-controls a tabpanel', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    const discover = screen.getByTestId('tab-discover');
+    const mine = screen.getByTestId('tab-mine');
+    expect(discover).toHaveAttribute('role', 'tab');
+    expect(discover).toHaveAttribute('aria-selected', 'true');
+    expect(discover).toHaveAttribute('tabindex', '0');
+    expect(mine).toHaveAttribute('tabindex', '-1');
+    // aria-controls points at a real tabpanel labelled by the active tab.
+    const panelId = discover.getAttribute('aria-controls');
+    const panel = document.getElementById(panelId!);
+    expect(panel).toHaveAttribute('role', 'tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', 'tab-discover');
+  });
+
+  it('ArrowRight moves selection + focus to the next tab', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    screen.getByTestId('tab-discover').focus();
+    await userEvent.keyboard('{ArrowRight}');
+    const mine = screen.getByTestId('tab-mine');
+    expect(mine).toHaveAttribute('aria-selected', 'true');
+    expect(mine).toHaveFocus();
+    expect(mine).toHaveAttribute('tabindex', '0');
+    expect(screen.getByTestId('tab-discover')).toHaveAttribute('tabindex', '-1');
+  });
+});
+
+describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', () => {
+  it('shows a popular collection that is NOT on the current discover/mine page', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const api: ApiClient = {
+      ...base,
+      async getCollection(id, opts) {
+        if (id === 999) {
+          return {
+            collection: { id: 999, name: 'Hidden Gem', description: null, curator: { userId: 3, username: 'zed' }, isPublic: true, followed: false },
+            items: [{ mediaId: 5, type: 'image', url: 'https://x/5.jpg', width: 1, height: 1, creator: { userId: 3, username: 'zed' }, nsfwLevel: 1 }],
+          };
+        }
+        return base.getCollection(id, opts);
+      },
+    };
+    renderApp({
+      api,
+      shared: { seed: [{ value: { title: 'Hidden Gem', data: { collectionId: 999 } }, voters: [1, 2, 3, 4, 5] }] },
+    });
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    expect(rail).toHaveTextContent('Hidden Gem');
+    expect(within(rail).getByTestId('popular-card')).toHaveAttribute('aria-label', 'Play Hidden Gem — played 5 times');
+  });
+
+  it('drops an unresolvable popular id (getCollection 404) — rail hidden, not crashed', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const api: ApiClient = {
+      ...base,
+      async getCollection(id, opts) {
+        if (id === 888) throw new ApiError('not_found', 404, 'gone');
+        return base.getCollection(id, opts);
+      },
+    };
+    renderApp({
+      api,
+      shared: { seed: [{ value: { title: 'Ghost', data: { collectionId: 888 } }, voters: [1, 2] }] },
+    });
+    await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(screen.queryByTestId('popular-rail')).toBeNull());
+    expect(screen.getByTestId('collection-grid')).toBeInTheDocument();
+    expect(screen.queryByTestId('grid-error')).toBeNull();
+  });
+
+  it('hides the rail (no crash) when the shared store is empty', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    renderApp({ api, shared: { seed: [] } });
+    await screen.findByTestId('collection-grid');
+    expect(screen.queryByTestId('popular-rail')).toBeNull();
   });
 });
 

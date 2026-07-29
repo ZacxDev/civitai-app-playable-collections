@@ -46,7 +46,25 @@ video {
   transform: scale(1.04);
 }
 
-/* Respect reduced-motion. */
+/* Loading-skeleton shimmer (#10). Inline styles can't declare keyframes, so the
+   pulse lives here; disabled under reduced-motion. */
+@keyframes pc-shimmer {
+  0% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0.55;
+  }
+}
+.pc-skeleton {
+  background: var(--civitai-color-surface-2, #e9ecef);
+  animation: pc-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Respect reduced-motion for both the card interactions and the skeleton. */
 @media (prefers-reduced-motion: reduce) {
   .pc-card,
   .pc-card .pc-cover-img {
@@ -54,5 +72,8 @@ video {
   }
   .pc-card:hover {
     transform: none;
+  }
+  .pc-skeleton {
+    animation: none;
   }
 }
