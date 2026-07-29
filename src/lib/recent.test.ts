@@ -50,6 +50,15 @@ describe('recordRecent / readRecent', () => {
     expect(readRecent(s)[0]).toEqual({ id: 7, name: 'Neon', coverImageUrl: null });
   });
 
+  it('carries coverNsfwLevel (for cover gating) and drops a malformed NaN id', () => {
+    const s = memStorage();
+    recordRecent({ id: 5, name: 'M', coverImageUrl: null, coverNsfwLevel: 8 }, s);
+    expect(readRecent(s)[0].coverNsfwLevel).toBe(8);
+    recordRecent({ id: Number.NaN, name: 'bad', coverImageUrl: null }, s);
+    // The NaN id was not persisted.
+    expect(readRecent(s).map((e) => e.name)).toEqual(['M']);
+  });
+
   it('returns [] for empty / corrupt storage', () => {
     const s = memStorage();
     expect(readRecent(s)).toEqual([]);

@@ -24,6 +24,8 @@ import { Alert, Badge, Button, Card, Loader } from '@civitai/blocks-react/ui';
 import type { CollectionSummary } from '../types.js';
 import type { Palette } from '../theme.js';
 import type { RecentEntry } from '../lib/recent.js';
+import { shouldBlur } from '../lib/maturity.js';
+import { MaturityBadge, MATURITY_BLUR_PX } from './Maturity.js';
 
 /** ~150px prefetch margin so a cover loads just before it enters the viewport. */
 const COVER_PREFETCH_MARGIN = '150px';
@@ -86,9 +88,10 @@ function useCoverObserver(): RegisterCover {
  * it is loaded LAZILY: the element carries `data-src` until the grid observer
  * swaps it in near the viewport.
  */
-export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
+export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palette; nsfwLevel?: number }) {
   const register = useContext(CoverObserverContext);
   const [failed, setFailed] = useState(false);
+  const [revealed, setRevealed] = useState(false);
 
   if (!src || failed) {
     return (
@@ -98,7 +101,12 @@ export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
     );
   }
 
-  return (
+  // Gate a mature cover (badge + blur-until-tap) — same policy as the item media.
+  // Only when a level is KNOWN; unknown-level covers (server omitted it) render.
+  const mature = nsfwLevel != null && shouldBlur(nsfwLevel);
+  const blurred = mature && !revealed;
+
+  const img = (
     // `data-src` (not `src`) is set until the grid observer swaps it in near the
     // viewport — deferring off-screen thumbnail fetches. `register` (via context)
     // adds this <img> to the shared observer.
@@ -107,10 +115,37 @@ export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
       ref={register ?? undefined}
       data-src={src}
       alt=""
-      style={coverImg}
+      style={blurred ? { ...coverImg, filter: `blur(${MATURITY_BLUR_PX}px)` } : coverImg}
       loading="lazy"
       onError={() => setFailed(true)}
     />
+  );
+
+  if (!mature) return img;
+
+  return (
+    <div style={coverGateWrap} data-testid="cover-gate" data-revealed={revealed ? 'true' : 'false'}>
+      {img}
+      <span style={coverBadgeSlot}>
+        <MaturityBadge nsfwLevel={nsfwLevel} />
+      </span>
+      {!revealed && (
+        // Tap reveals the cover WITHOUT opening the card (stopPropagation); a
+        // second tap opens. Non-focusable so keyboard-activating the card opens
+        // straight into the item-level gate.
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            setRevealed(true);
+          }}
+          style={coverRevealOverlay}
+          data-testid="cover-reveal"
+          aria-hidden="true"
+        >
+          Tap to reveal
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -260,7 +295,7 @@ export function CollectionCard({
       aria-label={`Play ${collection.name} — ${collection.itemCount} items`}
     >
       <div style={coverWrap}>
-        <CoverImage src={collection.coverImageUrl} c={c} />
+        <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} />
         {!collection.isPublic && (
           <span style={badgeSlot('left')}>
             <Badge size="sm" variant="filled" color="warning" data-testid="private-badge">
@@ -311,7 +346,7 @@ export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
               aria-label={`Play ${collection.name} — played ${count} times`}
             >
               <div style={railCover}>
-                <CoverImage src={collection.coverImageUrl} c={c} />
+                <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} />
               </div>
               <span style={railTitle}>{collection.name}</span>
               <span style={cardMeta}>
@@ -354,7 +389,7 @@ export function RecentRail({ entries, onOpen, c }: RecentRailProps) {
               aria-label={`Resume ${entry.name}`}
             >
               <div style={railCover}>
-                <CoverImage src={entry.coverImageUrl} c={c} />
+                <CoverImage src={entry.coverImageUrl} c={c} nsfwLevel={entry.coverNsfwLevel} />
               </div>
               <span style={railTitle}>{entry.name}</span>
               <span style={cardMeta}>
@@ -413,6 +448,22 @@ const coverWrap: CSSProperties = {
 };
 
 const coverImg: CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
+const coverGateWrap: CSSProperties = { position: 'relative', width: '100%', height: '100%' };
+const coverBadgeSlot: CSSProperties = { position: 'absolute', top: 6, left: 6, zIndex: 2, pointerEvents: 'none' };
+const coverRevealOverlay: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1,
+  color: '#fff',
+  fontSize: 12,
+  fontWeight: 700,
+  textShadow: '0 1px 2px rgba(0,0,0,0.8)',
+  background: 'rgba(0,0,0,0.25)',
+  cursor: 'pointer',
+};
 
 function coverPlaceholder(c: Palette): CSSProperties {
   return {

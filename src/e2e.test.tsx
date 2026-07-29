@@ -133,6 +133,18 @@ describe('tip caps + rate limiting (ship-blocker #2)', () => {
     expect(await screen.findByTestId('toast-error')).toHaveTextContent(/try again in 2s/);
   });
 
+  it('treats a non-throwing { ok: false } tip as a failure (no success, not marked tipped)', async () => {
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 });
+    const api: ApiClient = { ...base, async tip() { return { ok: false }; } };
+    await openNeon(api);
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    const modal = await screen.findByTestId('tip-modal');
+    await userEvent.click(within(modal).getByTestId('tip-confirm'));
+    expect(await screen.findByTestId('toast-error')).toBeInTheDocument();
+    // A soft-failure must NOT mark the creator tipped.
+    expect(screen.getByTestId('tip-creator')).toHaveAttribute('aria-label', 'Tip creator');
+  });
+
   it('reduces the displayed daily allowance after a successful tip', async () => {
     const api = createFakeApi({ viewerUserId: 99, balance: 100000 }) as FakeApi;
     await openNeon(api);

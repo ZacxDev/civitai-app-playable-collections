@@ -134,7 +134,9 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
           <Button
             onClick={submit}
             loading={submitting}
-            disabled={Boolean(error)}
+            // Explicitly disabled while submitting too — guards against a fast
+            // double-click firing two tips (a Buzz double-spend) before re-render.
+            disabled={submitting || Boolean(error)}
             data-testid="tip-confirm"
           >
             {submitting ? 'Sending…' : `Send ${amount || '0'} Buzz`}

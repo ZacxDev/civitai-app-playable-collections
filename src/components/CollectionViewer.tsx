@@ -70,6 +70,8 @@ export interface CollectionViewerProps {
   onViewStateChange?: (state: { mode: ViewMode; index: number }) => void;
   /** Share the current collection/position (Web Share / copy-link). */
   onShare?: () => void;
+  /** Fires when cast (ambient) mode is entered/exited — for analytics. */
+  onCast?: (on: boolean) => void;
   // ---- test seams ----
   /** localStorage handle for view prefs + per-collection state. `undefined` →
    * the real device storage; pass an in-memory Storage (or null) in tests. */
@@ -129,6 +131,16 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Ambient "cast" mode (#8): full-bleed, chrome hidden, passive auto-advance.
   const [cast, setCast] = useState(false);
+  const onCastRef = useRef(props.onCast);
+  onCastRef.current = props.onCast;
+  const enterCast = useCallback(() => {
+    setCast(true);
+    onCastRef.current?.(true);
+  }, []);
+  const exitCast = useCallback(() => {
+    setCast(false);
+    onCastRef.current?.(false);
+  }, []);
   // One-time controls coach (#10).
   const onboarding = useOnboarding(storage);
 
@@ -255,7 +267,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
           <Button
             size="sm"
             variant="light"
-            onClick={() => setCast(true)}
+            onClick={enterCast}
             aria-pressed={false}
             aria-label="Cast — full-screen ambient mode"
             data-testid="cast-toggle"
@@ -307,7 +319,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
       {/* ---- cast mode: a single floating exit affordance (chrome is hidden) ---- */}
       {cast && (
-        <button type="button" onClick={() => setCast(false)} style={castExitStyle} data-testid="cast-exit" aria-label="Exit cast mode">
+        <button type="button" onClick={exitCast} style={castExitStyle} data-testid="cast-exit" aria-label="Exit cast mode">
           ✕ Exit cast
         </button>
       )}

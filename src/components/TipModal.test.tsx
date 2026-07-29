@@ -54,6 +54,12 @@ describe('TipModal — daily-allowance readout + per-tip cap', () => {
     expect(allowance).toHaveTextContent('300 of 25,000 Buzz left today');
   });
 
+  it('disables the confirm button while submitting (no double-spend on double-click)', () => {
+    const onConfirm = vi.fn();
+    render(<TipModal target={target} balance={100000} submitting onConfirm={onConfirm} onClose={() => {}} />);
+    expect(screen.getByTestId('tip-confirm')).toBeDisabled();
+  });
+
   it('blocks an over-cap amount client-side (confirm disabled, no onConfirm)', async () => {
     const onConfirm = vi.fn();
     render(<TipModal target={target} balance={100000} submitting={false} onConfirm={onConfirm} onClose={() => {}} />);

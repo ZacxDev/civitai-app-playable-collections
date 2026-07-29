@@ -424,7 +424,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
         });
         analytics.track({ type: 'play', collectionId: summary.id });
         // Add to the device-local "Continue watching" rail (#7).
-        recordRecentPlay({ id: summary.id, name: summary.name, coverImageUrl: summary.coverImageUrl });
+        recordRecentPlay({ id: summary.id, name: summary.name, coverImageUrl: summary.coverImageUrl, coverNsfwLevel: summary.coverNsfwLevel });
         // Fire-and-forget the shared play-count vote; a failure never blocks
         // playback (anon viewers reject on the write path — that's fine).
         recordPlay(shared, summary)
@@ -458,7 +458,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
         setOpen({ detail: page.collection, items: page.items, followed: page.collection.followed, nextCursor: page.nextCursor, pages: 1 });
         const s = summaryFromPage(page);
         analytics.track({ type: 'play', collectionId: s.id });
-        recordRecentPlay({ id: s.id, name: s.name, coverImageUrl: s.coverImageUrl });
+        recordRecentPlay({ id: s.id, name: s.name, coverImageUrl: s.coverImageUrl, coverNsfwLevel: s.coverNsfwLevel });
         recordPlay(shared, s)
           .then(() => loadPopular())
           .catch(() => {});
@@ -495,6 +495,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
         curator: { userId: 0, username: null },
         isPublic: true,
         followed: false,
+        coverNsfwLevel: entry.coverNsfwLevel,
       };
       void openCollection(summary);
     },
@@ -643,12 +644,18 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
       }
       setTipping(true);
       try {
-        await api.tip({
+        const result = await api.tip({
           toUserId: target.toUserId,
           amount,
           entityType: target.entityType,
           entityId: target.entityId,
         });
+        // A non-throwing soft-failure (`{ ok: false }`) must NOT count as success —
+        // no allowance debit, no success toast, no optimistic "tipped" state.
+        if (!result?.ok) {
+          toasts.push('error', 'That tip could not be completed. Please try again.');
+          return false;
+        }
         // Record against today's app-local allowance so the next modal reflects it.
         tipAllowance.record(amount);
         analytics.track({ type: 'tip', kind: target.kind, amount });
@@ -712,6 +719,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           tipping={tipping}
           dailyTipRemaining={tipAllowance.remaining}
           onShare={onShareCollection}
+          onCast={(on) => analytics.track({ type: 'cast', on })}
           onViewStateChange={handleViewStateChange}
           initialMode={deepLinkRestore?.id === open.detail.id ? deepLinkRestore.mode : undefined}
           initialIndex={deepLinkRestore?.id === open.detail.id ? deepLinkRestore.index : undefined}

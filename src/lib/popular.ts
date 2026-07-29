@@ -110,6 +110,9 @@ export interface ResolvedPopular {
  */
 export function summaryFromPage(page: CollectionPage): CollectionSummary {
   const { collection, items } = page;
+  // Gate the cover by the highest-rated LOADED item (fail-closed-friendly): the
+  // cover thumbnail should never be less-blurred than the media it represents.
+  const coverNsfwLevel = items.length ? Math.max(...items.map((it) => it.nsfwLevel ?? 0)) : undefined;
   return {
     id: collection.id,
     name: collection.name,
@@ -119,6 +122,7 @@ export function summaryFromPage(page: CollectionPage): CollectionSummary {
     curator: collection.curator,
     isPublic: collection.isPublic,
     followed: collection.followed,
+    coverNsfwLevel,
   };
 }
 

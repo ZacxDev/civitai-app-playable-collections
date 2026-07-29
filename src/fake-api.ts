@@ -73,6 +73,8 @@ function makeSeed(): SeedCollection[] {
       curator,
       isPublic,
       followed: false,
+      // Cover gated by the highest-rated item (mirrors the server contract).
+      coverNsfwLevel: items.length ? Math.max(...items.map((it) => it.nsfwLevel)) : undefined,
     },
     items,
   });

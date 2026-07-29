@@ -103,6 +103,15 @@ describe('CollectionViewer — cast / ambient mode (Feature #8)', () => {
     expect(screen.getByTestId('viewer-exit')).toBeInTheDocument();
   });
 
+  it('reports cast enter/exit via onCast (analytics)', async () => {
+    const onCast = vi.fn();
+    renderViewer({ items: [img(1)], onCast });
+    await userEvent.click(screen.getByTestId('cast-toggle'));
+    expect(onCast).toHaveBeenLastCalledWith(true);
+    await userEvent.click(screen.getByTestId('cast-exit'));
+    expect(onCast).toHaveBeenLastCalledWith(false);
+  });
+
   // In cast mode the transport chrome (incl. progress-label) is hidden, so we
   // observe advancement via the current media element's src.
   it('cast auto-advances the slideshow when motion is allowed', () => {
@@ -172,6 +181,27 @@ describe('CollectionViewer — content maturity (badge + blur-until-tap, ship-bl
     expect(screen.queryByTestId('maturity-badge')).toBeNull();
     expect(screen.queryByTestId('maturity-reveal')).toBeNull();
     expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('reveal is PER-ITEM: advancing to the next mature item re-gates it (no leak to siblings)', async () => {
+    renderViewer({ items: [mature(1, 4), mature(2, 4)] });
+    // Reveal item 1.
+    await userEvent.click(screen.getByTestId('maturity-reveal'));
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+    // Advance to item 2 — it must be blurred again (reveal is keyed per media id).
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+  });
+
+  it('the LIGHTBOX blurs a mature item (continuous mode → tap tile)', async () => {
+    renderViewer({ items: [mature(1, 8), img(2)] });
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    const tiles = screen.getAllByTestId('continuous-tile');
+    await userEvent.click(tiles[0]); // the mature tile → opens the classic lightbox
+    const lightbox = await screen.findByTestId('lightbox');
+    expect(within(lightbox).getByTestId('maturity-reveal')).toBeInTheDocument();
+    expect(within(lightbox).getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
   });
 });
 

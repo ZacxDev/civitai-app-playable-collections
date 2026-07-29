@@ -183,16 +183,30 @@ describe('summaryFromPage', () => {
       curator: { userId: 7, username: 'z' },
       isPublic: true,
       followed: true,
+      coverNsfwLevel: 1,
     });
   });
 
-  it('tolerates an empty item page (null cover)', () => {
+  it('gates the cover by the HIGHEST-rated loaded item (safety)', () => {
+    const page: CollectionPage = {
+      collection: { id: 1, name: 'Mixed', description: null, curator: { userId: 1, username: 'z' }, isPublic: true, followed: false },
+      items: [
+        { mediaId: 1, type: 'image', url: 'https://x/1.jpg', width: 1, height: 1, creator: { userId: 1, username: 'z' }, nsfwLevel: 1 },
+        { mediaId: 2, type: 'image', url: 'https://x/2.jpg', width: 1, height: 1, creator: { userId: 1, username: 'z' }, nsfwLevel: 8 },
+      ],
+    };
+    // Cover thumbnail must never be less-blurred than the media it represents.
+    expect(summaryFromPage(page).coverNsfwLevel).toBe(8);
+  });
+
+  it('tolerates an empty item page (null cover, undefined level)', () => {
     const page: CollectionPage = {
       collection: { id: 9, name: 'Empty', description: null, curator: { userId: 1, username: null }, isPublic: false, followed: false },
       items: [],
     };
     expect(summaryFromPage(page).coverImageUrl).toBeNull();
     expect(summaryFromPage(page).itemCount).toBe(0);
+    expect(summaryFromPage(page).coverNsfwLevel).toBeUndefined();
   });
 });
 

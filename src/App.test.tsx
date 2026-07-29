@@ -104,6 +104,63 @@ describe('CollectionGrid states (deterministic)', () => {
     expect(screen.getByTestId('collection-grid')).toHaveAttribute('data-layout', 'desktop');
   });
 
+  it('GATES a mature cover (badge + blur-until-tap) and reveals without opening (audit #1)', async () => {
+    const onOpen = vi.fn();
+    render(
+      <CollectionGrid
+        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 8 })]}
+        loading={false}
+        error={null}
+        emptyLabel=""
+        onOpen={onOpen}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByTestId('cover-gate')).toHaveAttribute('data-revealed', 'false');
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('X');
+    // Tapping the reveal overlay reveals the cover WITHOUT opening the card.
+    await userEvent.click(screen.getByTestId('cover-reveal'));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(screen.getByTestId('cover-gate')).toHaveAttribute('data-revealed', 'true');
+    expect(screen.queryByTestId('cover-reveal')).toBeNull();
+    // Now the card opens normally.
+    await userEvent.click(screen.getByTestId('collection-card'));
+    expect(onOpen).toHaveBeenCalled();
+  });
+
+  it('does NOT gate a PG cover', () => {
+    render(
+      <CollectionGrid
+        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 1 })]}
+        loading={false}
+        error={null}
+        emptyLabel=""
+        onOpen={() => {}}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+  });
+
+  it('gates a cover with an UNKNOWN level (fail closed) when a 0 level is supplied', () => {
+    render(
+      <CollectionGrid
+        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 0 })]}
+        loading={false}
+        error={null}
+        emptyLabel=""
+        onOpen={() => {}}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('NSFW');
+  });
+
   it('shows private + followed badges', () => {
     render(
       <CollectionGrid

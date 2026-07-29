@@ -11,8 +11,11 @@ describe('maturityBucket', () => {
     expect(maturityBucket(16)).toBe('xxx');
     expect(maturityBucket(28)).toBe('xxx'); // OR'd bits → highest tier
   });
-  it('defaults a non-finite level to PG', () => {
-    expect(maturityBucket(Number.NaN)).toBe('pg');
+  it('FAILS CLOSED: unknown / 0 / non-finite → unknown (mature), never PG', () => {
+    expect(maturityBucket(Number.NaN)).toBe('unknown');
+    expect(maturityBucket(0)).toBe('unknown');
+    expect(maturityBucket(-5)).toBe('unknown');
+    expect(maturityBucket(Infinity)).toBe('unknown');
   });
 });
 
@@ -27,16 +30,21 @@ describe('maturityLabel', () => {
 });
 
 describe('shouldBlur / hasMaturityBadge', () => {
-  it('blurs anything above PG-13 (R and up), never PG/PG-13', () => {
+  it('blurs anything above PG-13 (R and up) AND unknown/0 (fail closed), never PG/PG-13', () => {
     expect(shouldBlur(1)).toBe(false);
     expect(shouldBlur(2)).toBe(false);
     expect(shouldBlur(4)).toBe(true);
     expect(shouldBlur(8)).toBe(true);
     expect(shouldBlur(16)).toBe(true);
+    // Fail closed:
+    expect(shouldBlur(0)).toBe(true);
+    expect(shouldBlur(Number.NaN)).toBe(true);
   });
-  it('shows a badge for anything above PG', () => {
+  it('shows a badge for anything above PG (incl. unknown → NSFW)', () => {
     expect(hasMaturityBadge(1)).toBe(false);
     expect(hasMaturityBadge(2)).toBe(true);
     expect(hasMaturityBadge(4)).toBe(true);
+    expect(hasMaturityBadge(0)).toBe(true);
+    expect(maturityLabel(0)).toBe('NSFW');
   });
 });
