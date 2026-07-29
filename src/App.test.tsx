@@ -158,7 +158,7 @@ describe('CollectionGrid states (deterministic)', () => {
       />,
     );
     expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
-    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('NSFW');
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 
   it('FAILS CLOSED on an ABSENT cover level: an undefined coverNsfwLevel is blurred + badged (audit S1)', () => {
@@ -177,7 +177,7 @@ describe('CollectionGrid states (deterministic)', () => {
       />,
     );
     expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
-    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('NSFW');
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
     // The cover <img> itself is blurred (shared MATURITY_BLUR_PX = 36px).
     expect(document.querySelector('img')).toHaveStyle({ filter: 'blur(36px)' });
   });
@@ -210,6 +210,24 @@ describe('App — discover + tabs', () => {
     expect(grid).toHaveTextContent('Neon Cities');
     expect(grid).toHaveTextContent('Forest Studies');
     expect(grid).toHaveTextContent('My Public Board');
+  });
+
+  it('LIVE type-ahead search filters the list without pressing Enter/Search (debounced, dogfood)', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    renderApp({ api });
+    const grid = await screen.findByTestId('collection-grid');
+    expect(within(grid).getAllByTestId('collection-card')).toHaveLength(3);
+
+    // Type a query — do NOT submit the form / press Enter or the Search button.
+    await userEvent.type(screen.getByTestId('search-input'), 'Forest');
+
+    // After the debounce settles, the list re-fetches with the query and filters.
+    await waitFor(() => {
+      const g = screen.getByTestId('collection-grid');
+      expect(within(g).getAllByTestId('collection-card')).toHaveLength(1);
+      expect(g).toHaveTextContent('Forest Studies');
+      expect(g).not.toHaveTextContent('Neon Cities');
+    });
   });
 
   it('shows the viewer Buzz balance once loaded (summed from the useBuzzBalance host bridge)', async () => {

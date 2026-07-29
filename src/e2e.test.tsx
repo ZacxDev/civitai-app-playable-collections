@@ -232,6 +232,24 @@ describe('follow toggle', () => {
     expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'true');
   });
 
+  it('uses ONE consistent "follow" verb across the button and both toasts (dogfood: described 3 ways)', async () => {
+    const api = createFakeApi({ viewerUserId: 99 }) as FakeApi;
+    await openNeon(api);
+    const btn = screen.getByTestId('follow-toggle');
+    // Follow → the toast uses the SAME verb as the button ("Following"), never the
+    // old "Added to your collections." / "bookmark" wording. (Toasts stack, so
+    // assert by unique text rather than the shared testid.)
+    await userEvent.click(btn);
+    expect(await screen.findByText('Following this collection.')).toBeInTheDocument();
+    expect(screen.queryByText(/bookmark|Added to your collections/i)).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'true'));
+
+    // Unfollow → the mirror verb ("Unfollowed"), still never "bookmark".
+    await userEvent.click(screen.getByTestId('follow-toggle'));
+    expect(await screen.findByText('Unfollowed this collection.')).toBeInTheDocument();
+    expect(screen.queryByText(/bookmark/i)).toBeNull();
+  });
+
   it('rolls back on a follow error', async () => {
     const base = createFakeApi({ viewerUserId: 99 });
     const api: ApiClient = {

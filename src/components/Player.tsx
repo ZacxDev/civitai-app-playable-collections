@@ -14,6 +14,7 @@ import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../set
 import type { Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
 import { shouldBlur } from '../lib/maturity.js';
+import { useMatureGate } from '../lib/mature-session.js';
 import { iconBtn } from './styles.js';
 import { MaturityBadge, MaturityRevealOverlay, MATURITY_BLUR_PX } from './Maturity.js';
 import { TipModal, type TipTarget } from './TipModal.js';
@@ -50,6 +51,12 @@ export interface PlayerProps {
   onToggleFollow: () => void;
   /** Perform the tip. Resolves true on success (Player then marks it tipped). */
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
+  /**
+   * Prompt a logged-out viewer to sign in. Tipping requires an account, so for an
+   * anon viewer the tip triggers call this UP FRONT (before the amount picker)
+   * instead of bouncing to sign-in only after amount selection.
+   */
+  onRequestSignIn?: () => void;
   tipping: boolean;
   /** Estimated remaining daily tip allowance (app-local) for the tip modal. */
   dailyTipRemaining?: number;
@@ -85,6 +92,7 @@ export function Player(props: PlayerProps) {
     followPending,
     onToggleFollow,
     onTip,
+    onRequestSignIn,
     tipping,
     dailyTipRemaining,
     cast = false,
@@ -128,18 +136,17 @@ export function Player(props: PlayerProps) {
 
   const [tipTarget, setTipTarget] = useState<TipTarget | null>(null);
   const [tippedKeys, setTippedKeys] = useState<Set<string>>(new Set());
-  // Maturity blur-until-tap: mature items render blurred until the viewer reveals
-  // them (per media id, so advancing to a new mature item re-gates it).
-  const [revealedIds, setRevealedIds] = useState<Set<number>>(() => new Set());
-  const blurCurrent = current != null && shouldBlur(current.nsfwLevel) && !revealedIds.has(current.mediaId);
+  // Maturity gate: mature items render blurred until the viewer accepts a SINGLE
+  // session-level "I'm 18+" confirmation, which then unblurs the whole
+  // playthrough (and every other Player instance) — no per-item re-gating, so the
+  // "sit back and play" loop isn't broken, incl. in ambient/cast mode. Fail-
+  // closed: an ungated mature/unrated item starts blurred until the gate is
+  // accepted. See ../lib/mature-session.ts.
+  const matureGate = useMatureGate();
+  const blurCurrent = current != null && shouldBlur(current.nsfwLevel) && !matureGate.accepted;
   const revealCurrent = useCallback(() => {
-    if (!current) return;
-    setRevealedIds((prev) => {
-      const next = new Set(prev);
-      next.add(current.mediaId);
-      return next;
-    });
-  }, [current]);
+    matureGate.accept();
+  }, [matureGate]);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -246,6 +253,12 @@ export function Player(props: PlayerProps) {
   };
 
   const openTip = (kind: 'creator' | 'curator') => {
+    // Logged-out: tipping needs an account, so prompt sign-in UP FRONT rather
+    // than opening the amount picker and bouncing only after a selection.
+    if (viewerUserId == null) {
+      onRequestSignIn?.();
+      return;
+    }
     if (kind === 'creator') {
       if (!current || creatorIsSelf) return;
       setTipTarget({
@@ -412,6 +425,8 @@ export function Player(props: PlayerProps) {
             active={creatorTipped}
             onClick={() => openTip('creator')}
             testid="tip-creator"
+            // Explain why the control is disabled for your own media (#5).
+            title={creatorIsSelf ? "You can't tip your own media." : undefined}
           />
           <ChromeButton
             c={c}
@@ -421,6 +436,7 @@ export function Player(props: PlayerProps) {
             active={curatorTipped}
             onClick={() => openTip('curator')}
             testid="tip-curator"
+            title={curatorIsSelf ? "You can't tip your own collection." : undefined}
           />
           <ChromeButton
             c={c}
@@ -532,6 +548,7 @@ function ChromeButton({
   active,
   onClick,
   testid,
+  title,
 }: {
   c: Palette;
   glyph: string;
@@ -540,6 +557,8 @@ function ChromeButton({
   active: boolean;
   onClick: () => void;
   testid: string;
+  /** Native tooltip — used to explain a disabled state (e.g. self-tip). */
+  title?: string;
 }) {
   return (
     <div style={{ display: 'grid', justifyItems: 'center', gap: 2 }}>
@@ -548,8 +567,9 @@ function ChromeButton({
         onClick={onClick}
         disabled={disabled}
         style={iconBtn(c, active, disabled)}
-        aria-label={label}
+        aria-label={title ?? label}
         aria-pressed={active}
+        title={title}
         data-testid={testid}
       >
         {glyph}

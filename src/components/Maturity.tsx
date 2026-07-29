@@ -20,18 +20,27 @@ export function MaturityBadge({ nsfwLevel, style }: { nsfwLevel: number; style?:
 }
 
 /**
- * Full-surface tap-to-reveal overlay shown over a blurred mature item. Clicking
- * it (or pressing Enter/Space, since it's a button) reveals the media.
+ * Full-surface SESSION-LEVEL maturity gate shown over a blurred mature item.
+ * Accepting it once (click / Enter / Space) unblurs the whole playthrough for the
+ * rest of the session — see ../lib/mature-session.ts — instead of re-asking per
+ * item. Fail-closed: the media stays blurred until the viewer accepts.
  */
 export function MaturityRevealOverlay({ nsfwLevel, onReveal }: { nsfwLevel: number; onReveal: () => void }) {
   const label = maturityLabel(nsfwLevel);
   return (
-    <button type="button" onClick={onReveal} style={overlayStyle} data-testid="maturity-reveal" aria-label={`Reveal ${label}-rated media`}>
+    <button
+      type="button"
+      onClick={onReveal}
+      style={overlayStyle}
+      data-testid="maturity-reveal"
+      aria-label="I'm 18 or older — reveal this collection"
+    >
       <span aria-hidden="true" style={{ fontSize: 26 }}>
         🔞
       </span>
       <span style={{ fontWeight: 700 }}>{label}</span>
-      <span style={{ fontSize: 13, opacity: 0.85 }}>Tap to reveal</span>
+      <span style={{ fontSize: 14, fontWeight: 600 }}>I&rsquo;m 18+ — reveal this collection</span>
+      <span style={{ fontSize: 12, opacity: 0.85 }}>Unblurs mature media for the rest of this session</span>
     </button>
   );
 }
