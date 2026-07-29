@@ -2,7 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { SharedAppendValue, SharedListItem } from '@civitai/blocks-react';
 
-import { entryCollectionId, readPopular, recordPlay, totalBuzz, type SharedStore } from './popular.js';
+import {
+  entryCollectionId,
+  readPopular,
+  recordPlay,
+  resolvePopularEntries,
+  summaryFromPage,
+  totalBuzz,
+  type SharedStore,
+} from './popular.js';
+import type { CollectionPage, CollectionSummary, PopularEntry } from '../types.js';
 
 /**
  * A minimal in-memory fake of the SHARED store's `list`/`append`/`vote` surface,
@@ -142,6 +151,118 @@ describe('readPopular', () => {
   it('returns an empty list when nothing has been played', async () => {
     const shared = makeFakeShared(99);
     expect(await readPopular(shared, 10)).toEqual([]);
+  });
+});
+
+const summary = (over: Partial<CollectionSummary> = {}): CollectionSummary => ({
+  id: 1,
+  name: 'C1',
+  description: null,
+  coverImageUrl: null,
+  itemCount: 3,
+  curator: { userId: 5, username: 'curator' },
+  isPublic: true,
+  followed: false,
+  ...over,
+});
+
+describe('summaryFromPage', () => {
+  it('builds a grid summary from a detail page, deriving the cover from the first item', () => {
+    const page: CollectionPage = {
+      collection: { id: 42, name: 'Deep Cut', description: 'd', curator: { userId: 7, username: 'z' }, isPublic: true, followed: true },
+      items: [
+        { mediaId: 1, type: 'image', url: 'https://x/1.jpg', width: 1, height: 1, creator: { userId: 7, username: 'z' }, nsfwLevel: 1 },
+      ],
+    };
+    expect(summaryFromPage(page)).toEqual({
+      id: 42,
+      name: 'Deep Cut',
+      description: 'd',
+      coverImageUrl: 'https://x/1.jpg',
+      itemCount: 1,
+      curator: { userId: 7, username: 'z' },
+      isPublic: true,
+      followed: true,
+      coverNsfwLevel: 1,
+    });
+  });
+
+  it('gates the cover by the HIGHEST-rated loaded item (safety)', () => {
+    const page: CollectionPage = {
+      collection: { id: 1, name: 'Mixed', description: null, curator: { userId: 1, username: 'z' }, isPublic: true, followed: false },
+      items: [
+        { mediaId: 1, type: 'image', url: 'https://x/1.jpg', width: 1, height: 1, creator: { userId: 1, username: 'z' }, nsfwLevel: 1 },
+        { mediaId: 2, type: 'image', url: 'https://x/2.jpg', width: 1, height: 1, creator: { userId: 1, username: 'z' }, nsfwLevel: 8 },
+      ],
+    };
+    // Cover thumbnail must never be less-blurred than the media it represents.
+    expect(summaryFromPage(page).coverNsfwLevel).toBe(8);
+  });
+
+  it('tolerates an empty item page (null cover, undefined level)', () => {
+    const page: CollectionPage = {
+      collection: { id: 9, name: 'Empty', description: null, curator: { userId: 1, username: null }, isPublic: false, followed: false },
+      items: [],
+    };
+    expect(summaryFromPage(page).coverImageUrl).toBeNull();
+    expect(summaryFromPage(page).itemCount).toBe(0);
+    expect(summaryFromPage(page).coverNsfwLevel).toBeUndefined();
+  });
+});
+
+describe('resolvePopularEntries', () => {
+  const entries: PopularEntry[] = [
+    { collectionId: 1, count: 9 },
+    { collectionId: 2, count: 5 },
+    { collectionId: 3, count: 2 },
+  ];
+
+  it('resolves ids from the known map without fetching', async () => {
+    const known = new Map<number, CollectionSummary>([
+      [1, summary({ id: 1, name: 'One' })],
+      [2, summary({ id: 2, name: 'Two' })],
+      [3, summary({ id: 3, name: 'Three' })],
+    ]);
+    const fetchSummary = vi.fn(async () => null as CollectionSummary | null);
+    const resolved = await resolvePopularEntries(entries, known, fetchSummary);
+    expect(resolved.map((r) => r.collection.name)).toEqual(['One', 'Two', 'Three']);
+    expect(resolved.map((r) => r.count)).toEqual([9, 5, 2]);
+    // Everything was known → no by-id fetch.
+    expect(fetchSummary).not.toHaveBeenCalled();
+  });
+
+  it('fetches summaries for ids NOT on any loaded list, preserving rank order (the v0.1.9 fix)', async () => {
+    // Only id 2 is loaded; 1 and 3 must be fetched by id and still rank correctly.
+    const known = new Map<number, CollectionSummary>([[2, summary({ id: 2, name: 'Two (known)' })]]);
+    const fetchSummary = vi.fn(async (id: number) => summary({ id, name: `Fetched ${id}` }));
+    const resolved = await resolvePopularEntries(entries, known, fetchSummary);
+    expect(resolved.map((r) => r.collection.name)).toEqual(['Fetched 1', 'Two (known)', 'Fetched 3']);
+    expect(resolved.map((r) => r.collection.id)).toEqual([1, 2, 3]);
+    expect(fetchSummary).toHaveBeenCalledWith(1);
+    expect(fetchSummary).toHaveBeenCalledWith(3);
+    expect(fetchSummary).not.toHaveBeenCalledWith(2);
+  });
+
+  it('drops entries whose fetch returns null or throws (never crashes the rail)', async () => {
+    const known = new Map<number, CollectionSummary>();
+    const fetchSummary = vi.fn(async (id: number) => {
+      if (id === 1) return summary({ id: 1, name: 'One' });
+      if (id === 2) return null; // hidden / unresolvable
+      throw new Error('boom'); // id 3 fetch error
+    });
+    const resolved = await resolvePopularEntries(entries, known, fetchSummary);
+    expect(resolved.map((r) => r.collection.id)).toEqual([1]);
+  });
+
+  it('handles a large (>200) ranked set without dropping resolvable ids', async () => {
+    const big: PopularEntry[] = Array.from({ length: 250 }, (_, i) => ({ collectionId: i + 1, count: 250 - i }));
+    const known = new Map<number, CollectionSummary>();
+    const fetchSummary = vi.fn(async (id: number) => summary({ id, name: `C${id}` }));
+    const resolved = await resolvePopularEntries(big, known, fetchSummary);
+    expect(resolved).toHaveLength(250);
+    // Rank order (count-desc == the input order) is preserved.
+    expect(resolved[0].collection.id).toBe(1);
+    expect(resolved[249].collection.id).toBe(250);
   });
 });
 

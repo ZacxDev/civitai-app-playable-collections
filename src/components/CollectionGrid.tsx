@@ -22,11 +22,15 @@ import type { CSSProperties } from 'react';
 import { Alert, Badge, Button, Card, Loader } from '@civitai/blocks-react/ui';
 
 import type { CollectionSummary } from '../types.js';
-import { elevate, metaText, mutedText, radius, token, type Palette } from '../theme.js';
-import { EmptyState } from './EmptyState.js';
+import type { Palette } from '../theme.js';
+import type { RecentEntry } from '../lib/recent.js';
+import { shouldBlur } from '../lib/maturity.js';
+import { MaturityBadge, MATURITY_BLUR_PX } from './Maturity.js';
 
 /** ~150px prefetch margin so a cover loads just before it enters the viewport. */
 const COVER_PREFETCH_MARGIN = '150px';
+/** Number of skeleton placeholder cards shown while the first page loads (#10). */
+const SKELETON_COUNT = 8;
 /** Fire the next-page load a little before the sentinel is fully visible. */
 const SENTINEL_MARGIN = '200px';
 
@@ -84,9 +88,10 @@ function useCoverObserver(): RegisterCover {
  * it is loaded LAZILY: the element carries `data-src` until the grid observer
  * swaps it in near the viewport.
  */
-export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
+export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palette; nsfwLevel?: number }) {
   const register = useContext(CoverObserverContext);
   const [failed, setFailed] = useState(false);
+  const [revealed, setRevealed] = useState(false);
 
   if (!src || failed) {
     return (
@@ -96,7 +101,12 @@ export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
     );
   }
 
-  return (
+  // Gate a mature cover (badge + blur-until-tap) — same policy as the item media.
+  // Only when a level is KNOWN; unknown-level covers (server omitted it) render.
+  const mature = nsfwLevel != null && shouldBlur(nsfwLevel);
+  const blurred = mature && !revealed;
+
+  const img = (
     // `data-src` (not `src`) is set until the grid observer swaps it in near the
     // viewport — deferring off-screen thumbnail fetches. `register` (via context)
     // adds this <img> to the shared observer.
@@ -105,11 +115,50 @@ export function CoverImage({ src, c }: { src: string | null; c: Palette }) {
       ref={register ?? undefined}
       data-src={src}
       alt=""
-      className="pc-cover-img"
-      style={coverImg}
+      style={blurred ? { ...coverImg, filter: `blur(${MATURITY_BLUR_PX}px)` } : coverImg}
       loading="lazy"
       onError={() => setFailed(true)}
     />
+  );
+
+  if (!mature) return img;
+
+  return (
+    <div style={coverGateWrap} data-testid="cover-gate" data-revealed={revealed ? 'true' : 'false'}>
+      {img}
+      <span style={coverBadgeSlot}>
+        <MaturityBadge nsfwLevel={nsfwLevel} />
+      </span>
+      {!revealed && (
+        // Tap reveals the cover WITHOUT opening the card (stopPropagation); a
+        // second tap opens. Non-focusable so keyboard-activating the card opens
+        // straight into the item-level gate.
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            setRevealed(true);
+          }}
+          style={coverRevealOverlay}
+          data-testid="cover-reveal"
+          aria-hidden="true"
+        >
+          Tap to reveal
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A single loading-skeleton card (cover + two text lines), theme-token styled. */
+export function SkeletonCard() {
+  return (
+    <div style={cardBtn} data-testid="skeleton-card" aria-hidden="true">
+      <div className="pc-skeleton" style={{ ...coverWrap, aspectRatio: '1 / 1' }} />
+      <div style={{ ...cardBody, gap: 6 }}>
+        <span className="pc-skeleton" style={{ height: 12, borderRadius: 4, width: '80%' }} />
+        <span className="pc-skeleton" style={{ height: 10, borderRadius: 4, width: '55%' }} />
+      </div>
+    </div>
   );
 }
 
@@ -146,11 +195,15 @@ export function CollectionGrid({
   const register = useCoverObserver();
 
   if (loading && collections.length === 0) {
+    // Loading skeleton grid (#10) — placeholder cards instead of a spinner row.
     return (
-      <Card padding="lg" data-testid="grid-loading" role="status" style={centerNote}>
-        <Loader size="sm" />
-        <span style={mutedText}>Loading collections…</span>
-      </Card>
+      <ul style={gridStyle(isMobile)} data-testid="grid-loading" data-layout={isMobile ? 'mobile' : 'desktop'} role="status" aria-label="Loading collections">
+        {Array.from({ length: SKELETON_COUNT }, (_, i) => (
+          <li key={i} style={{ listStyle: 'none' }}>
+            <SkeletonCard />
+          </li>
+        ))}
+      </ul>
     );
   }
   if (error) {
@@ -168,7 +221,13 @@ export function CollectionGrid({
     );
   }
   if (collections.length === 0) {
-    return <EmptyState title={emptyLabel} data-testid="grid-empty" />;
+    return (
+      <Card padding="lg" style={centerNote}>
+        <span data-testid="grid-empty" style={{ color: 'var(--civitai-color-text-dimmed)' }}>
+          {emptyLabel}
+        </span>
+      </Card>
+    );
   }
   return (
     <CoverObserverContext.Provider value={register}>
@@ -230,14 +289,13 @@ export function CollectionCard({
   return (
     <button
       type="button"
-      className="pc-card"
       onClick={() => onOpen(collection)}
       style={cardBtn}
       data-testid="collection-card"
       aria-label={`Play ${collection.name} — ${collection.itemCount} items`}
     >
       <div style={coverWrap}>
-        <CoverImage src={collection.coverImageUrl} c={c} />
+        <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} />
         {!collection.isPublic && (
           <span style={badgeSlot('left')}>
             <Badge size="sm" variant="filled" color="warning" data-testid="private-badge">
@@ -282,19 +340,61 @@ export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
             <button
               key={collection.id}
               type="button"
-              className="pc-card"
               onClick={() => onOpen(collection)}
               style={railCard}
               data-testid="popular-card"
               aria-label={`Play ${collection.name} — played ${count} times`}
             >
               <div style={railCover}>
-                <CoverImage src={collection.coverImageUrl} c={c} />
+                <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} />
               </div>
               <span style={railTitle}>{collection.name}</span>
               <span style={cardMeta}>
                 <Badge size="sm" variant="light">
                   {count} {count === 1 ? 'play' : 'plays'}
+                </Badge>
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </CoverObserverContext.Provider>
+  );
+}
+
+export interface RecentRailProps {
+  entries: RecentEntry[];
+  onOpen: (entry: RecentEntry) => void;
+  c: Palette;
+}
+
+/** "Continue watching" rail — recently-played collections that reopen at their
+ * saved mode + position (Feature #7). */
+export function RecentRail({ entries, onOpen, c }: RecentRailProps) {
+  const register = useCoverObserver();
+  if (entries.length === 0) return null;
+  return (
+    <CoverObserverContext.Provider value={register}>
+      <section aria-label="Continue watching" data-testid="recent-rail" style={{ display: 'grid', gap: 8 }}>
+        <h2 style={railHeading}>⏳ Continue watching</h2>
+        <div style={railScroller}>
+          {entries.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              onClick={() => onOpen(entry)}
+              style={railCard}
+              data-testid="recent-card"
+              data-collection-id={entry.id}
+              aria-label={`Resume ${entry.name}`}
+            >
+              <div style={railCover}>
+                <CoverImage src={entry.coverImageUrl} c={c} nsfwLevel={entry.coverNsfwLevel} />
+              </div>
+              <span style={railTitle}>{entry.name}</span>
+              <span style={cardMeta}>
+                <Badge size="sm" variant="light">
+                  Resume
                 </Badge>
               </span>
             </button>
@@ -330,25 +430,40 @@ const cardBtn: CSSProperties = {
   gap: 8,
   width: '100%',
   padding: 0,
-  border: `1px solid ${token.border}`,
-  borderRadius: radius.lg,
+  border: '1px solid var(--civitai-color-border)',
+  borderRadius: 'var(--civitai-radius)',
   overflow: 'hidden',
-  background: token.surface,
-  color: token.text,
+  background: 'var(--civitai-color-surface)',
+  color: 'var(--civitai-color-text)',
   cursor: 'pointer',
   textAlign: 'left',
-  fontFamily: token.font,
+  fontFamily: 'var(--civitai-font)',
 };
 
 const coverWrap: CSSProperties = {
   position: 'relative',
   aspectRatio: '1 / 1',
-  // A recess that reads in BOTH themes — never surface-2 (== body in light).
-  background: elevate(4),
+  background: 'var(--civitai-color-surface-2)',
   overflow: 'hidden',
 };
 
 const coverImg: CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
+const coverGateWrap: CSSProperties = { position: 'relative', width: '100%', height: '100%' };
+const coverBadgeSlot: CSSProperties = { position: 'absolute', top: 6, left: 6, zIndex: 2, pointerEvents: 'none' };
+const coverRevealOverlay: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1,
+  color: '#fff',
+  fontSize: 12,
+  fontWeight: 700,
+  textShadow: '0 1px 2px rgba(0,0,0,0.8)',
+  background: 'rgba(0,0,0,0.25)',
+  cursor: 'pointer',
+};
 
 function coverPlaceholder(c: Palette): CSSProperties {
   return {
@@ -366,50 +481,47 @@ function badgeSlot(side: 'left' | 'right'): CSSProperties {
   return { position: 'absolute', top: 6, [side]: 6 } as CSSProperties;
 }
 
-const cardBody: CSSProperties = { display: 'grid', gap: 3, padding: '0 10px 10px' };
+const cardBody: CSSProperties = { display: 'grid', gap: 2, padding: '0 10px 10px' };
 const cardTitle: CSSProperties = {
   fontWeight: 700,
   fontSize: 14,
-  color: token.text,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 };
-const cardMeta: CSSProperties = { ...metaText };
+const cardMeta: CSSProperties = { fontSize: 12, color: 'var(--civitai-color-text-dimmed)' };
 
-const railHeading: CSSProperties = { fontSize: 15, margin: 0, color: token.text, letterSpacing: '-0.01em' };
+const railHeading: CSSProperties = { fontSize: 15, margin: 0 };
 const railScroller: CSSProperties = {
   display: 'flex',
-  gap: 12,
+  gap: 10,
   overflowX: 'auto',
   paddingBottom: 4,
   WebkitOverflowScrolling: 'touch',
 };
 const railCard: CSSProperties = {
   flex: '0 0 auto',
-  width: 148,
+  width: 140,
   display: 'grid',
-  gap: 6,
+  gap: 4,
   padding: 8,
-  border: `1px solid ${token.border}`,
-  borderRadius: radius.md,
-  background: token.surface,
-  color: token.text,
+  border: '1px solid var(--civitai-color-border)',
+  borderRadius: 'var(--civitai-radius)',
+  background: 'var(--civitai-color-surface)',
+  color: 'var(--civitai-color-text)',
   cursor: 'pointer',
   textAlign: 'left',
-  fontFamily: token.font,
+  fontFamily: 'var(--civitai-font)',
 };
 const railCover: CSSProperties = {
   aspectRatio: '1 / 1',
-  borderRadius: radius.sm,
+  borderRadius: 8,
   overflow: 'hidden',
-  // Recess that reads in BOTH themes — never surface-2 (== body in light).
-  background: elevate(4),
+  background: 'var(--civitai-color-surface-2)',
 };
 const railTitle: CSSProperties = {
   fontWeight: 600,
   fontSize: 13,
-  color: token.text,
   overflow: 'hidden',
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',

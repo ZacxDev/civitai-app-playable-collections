@@ -20,6 +20,13 @@ export interface CollectionSummary {
   isPublic: boolean;
   /** Whether the viewer follows/bookmarks this collection. */
   followed: boolean;
+  /**
+   * Civitai nsfwLevel of the COVER (its highest-rated representative item). Used
+   * to gate the cover thumbnail (badge + blur-until-tap) on the pg13 browse
+   * surfaces. Optional: absent when the list endpoint doesn't supply it — the
+   * cover then renders ungated (the item-media gate + mod review remain the net).
+   */
+  coverNsfwLevel?: number;
 }
 
 /** The collection header returned alongside a page of items (detail endpoint). */

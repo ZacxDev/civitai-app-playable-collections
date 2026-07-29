@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -63,6 +63,147 @@ function renderViewer(over: Partial<React.ComponentProps<typeof CollectionViewer
   };
   return render(<CollectionViewer {...props} />);
 }
+
+function mature(id: number, nsfwLevel = 4): MediaItem {
+  return { ...img(id), nsfwLevel };
+}
+
+describe('CollectionViewer — onboarding coach (Feature #10)', () => {
+  it('shows the coach on first open and hides it (persisted) after dismiss', async () => {
+    const storage = memStorage();
+    const { unmount } = renderViewer({ storage });
+    expect(screen.getByTestId('onboarding-coach')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('onboarding-dismiss'));
+    expect(screen.queryByTestId('onboarding-coach')).toBeNull();
+    unmount();
+
+    // Reopen with the SAME storage → the coach does not return.
+    renderViewer({ storage });
+    expect(screen.queryByTestId('onboarding-coach')).toBeNull();
+  });
+});
+
+describe('CollectionViewer — cast / ambient mode (Feature #8)', () => {
+  it('toggling cast hides the chrome, marks the surface, and offers an exit', async () => {
+    renderViewer({ items: [img(1), img(2), img(3)] });
+    const cv = screen.getByTestId('collection-viewer');
+    expect(cv).toHaveAttribute('data-cast', 'off');
+    expect(screen.getByTestId('viewer-exit')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('cast-toggle'));
+    expect(screen.getByTestId('collection-viewer')).toHaveAttribute('data-cast', 'on');
+    // Chrome (toolbar) is gone; the player is marked cast; an exit affordance shows.
+    expect(screen.queryByTestId('viewer-exit')).toBeNull();
+    expect(screen.queryByTestId('mode-switcher')).toBeNull();
+    expect(screen.getByTestId('player')).toHaveAttribute('data-cast', 'on');
+    expect(screen.getByTestId('cast-exit')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('cast-exit'));
+    expect(screen.getByTestId('collection-viewer')).toHaveAttribute('data-cast', 'off');
+    expect(screen.getByTestId('viewer-exit')).toBeInTheDocument();
+  });
+
+  it('reports cast enter/exit via onCast (analytics)', async () => {
+    const onCast = vi.fn();
+    renderViewer({ items: [img(1)], onCast });
+    await userEvent.click(screen.getByTestId('cast-toggle'));
+    expect(onCast).toHaveBeenLastCalledWith(true);
+    await userEvent.click(screen.getByTestId('cast-exit'));
+    expect(onCast).toHaveBeenLastCalledWith(false);
+  });
+
+  // In cast mode the transport chrome (incl. progress-label) is hidden, so we
+  // observe advancement via the current media element's src.
+  it('cast auto-advances the slideshow when motion is allowed', () => {
+    vi.useFakeTimers();
+    try {
+      renderViewer({ items: [img(1), img(2), img(3)], reducedMotion: false, settings: { secondsPerImage: 2, videoLoopCount: 1 } });
+      fireEvent.click(screen.getByTestId('cast-toggle'));
+      expect(screen.getByTestId('media-image').getAttribute('src')).toContain('/1.jpg');
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByTestId('media-image').getAttribute('src')).toContain('/2.jpg');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('respects reduced motion in cast — does NOT auto-advance', () => {
+    vi.useFakeTimers();
+    try {
+      renderViewer({ items: [img(1), img(2)], reducedMotion: true, settings: { secondsPerImage: 1, videoLoopCount: 1 } });
+      fireEvent.click(screen.getByTestId('cast-toggle'));
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.getByTestId('media-image').getAttribute('src')).toContain('/1.jpg');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('Player — global shortcuts ignored while a control is focused (ship-blocker #4)', () => {
+  it('ArrowRight on the focused scrubber does NOT also advance the player (no double-fire)', async () => {
+    renderViewer({ items: [img(1), img(2), img(3), img(4)] });
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 4');
+    // Focus the scrubber (a range input) and press ArrowRight — the global player
+    // keydown must ignore it so the position does not jump.
+    const scrubber = screen.getByTestId('scrubber');
+    scrubber.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 4');
+
+    // With focus off any control, ArrowRight DOES advance (shortcut still works).
+    scrubber.blur();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 4');
+  });
+});
+
+describe('CollectionViewer — content maturity (badge + blur-until-tap, ship-blocker #3)', () => {
+  it('blurs a mature current item and reveals it on tap (classic Player)', async () => {
+    renderViewer({ items: [mature(1, 4), img(2)] });
+    // PG-13 app default: an R item is badged + blurred until revealed.
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R');
+    const image = screen.getByTestId('media-image');
+    expect(image).toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('maturity-reveal'));
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('does NOT blur or badge a PG item', () => {
+    renderViewer({ items: [img(1)] });
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('reveal is PER-ITEM: advancing to the next mature item re-gates it (no leak to siblings)', async () => {
+    renderViewer({ items: [mature(1, 4), mature(2, 4)] });
+    // Reveal item 1.
+    await userEvent.click(screen.getByTestId('maturity-reveal'));
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+    // Advance to item 2 — it must be blurred again (reveal is keyed per media id).
+    await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+  });
+
+  it('the LIGHTBOX blurs a mature item (continuous mode → tap tile)', async () => {
+    renderViewer({ items: [mature(1, 8), img(2)] });
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    const tiles = screen.getAllByTestId('continuous-tile');
+    await userEvent.click(tiles[0]); // the mature tile → opens the classic lightbox
+    const lightbox = await screen.findByTestId('lightbox');
+    expect(within(lightbox).getByTestId('maturity-reveal')).toBeInTheDocument();
+    expect(within(lightbox).getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+});
 
 describe('CollectionViewer — default mode + mode switching', () => {
   it('defaults to the classic slideshow (Player)', () => {

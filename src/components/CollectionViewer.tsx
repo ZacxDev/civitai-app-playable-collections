@@ -21,7 +21,7 @@ import { Badge, Button, Card, Slider } from '@civitai/blocks-react/ui';
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
 import { getLocalStorage, SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT } from '../settings.js';
-import { elevate, mutedText, stage, token, type Palette } from '../theme.js';
+import type { Palette } from '../theme.js';
 import { useReducedMotion } from '../useMediaQuery.js';
 import { DEFAULT_AUTOPLAY_CAP } from '../modes/autoplay.js';
 import { maybeShuffle } from '../lib/shuffle.js';
@@ -37,6 +37,8 @@ import { Player } from './Player.js';
 import { ContinuousView } from './ContinuousView.js';
 import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
 import { TipModal, type TipTarget } from './TipModal.js';
+import { FocusTrap } from './FocusTrap.js';
+import { useOnboarding } from '../lib/onboarding.js';
 
 export interface CollectionViewerProps {
   detail: CollectionDetail;
@@ -51,12 +53,25 @@ export interface CollectionViewerProps {
   onToggleFollow: () => void;
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
   tipping: boolean;
+  /** Estimated remaining daily tip allowance (app-local) for the tip modals. */
+  dailyTipRemaining?: number;
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  // ---- deep-link (Feature #6) ----
+  /** Deep-link override for the starting view mode (else localStorage restore). */
+  initialMode?: ViewMode;
+  /** Deep-link override for the starting item index (else localStorage restore). */
+  initialIndex?: number;
+  /** Reports the current {mode, index} up so App can keep the URL hash in sync. */
+  onViewStateChange?: (state: { mode: ViewMode; index: number }) => void;
+  /** Share the current collection/position (Web Share / copy-link). */
+  onShare?: () => void;
+  /** Fires when cast (ambient) mode is entered/exited — for analytics. */
+  onCast?: (on: boolean) => void;
   // ---- test seams ----
   /** localStorage handle for view prefs + per-collection state. `undefined` →
    * the real device storage; pass an in-memory Storage (or null) in tests. */
@@ -81,6 +96,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
     onToggleFollow,
     onTip,
     tipping,
+    dailyTipRemaining,
     isMobile,
     c,
     onExit,
@@ -99,10 +115,13 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const { prefs, toggleMuted, setScrollSpeed } = useViewPrefs(storage);
 
   // ---- per-collection restore (mode + position), once, keyed by detail.id ----
+  // A deep-link (Feature #6) override wins over the localStorage restore.
   const restored = useMemo(() => loadCollectionState(detail.id, storage), [detail.id, storage]);
-  const [mode, setMode] = useState<ViewMode>(restored.mode);
+  const initMode = props.initialMode ?? restored.mode;
+  const initPosition = props.initialIndex ?? restored.position;
+  const [mode, setMode] = useState<ViewMode>(initMode);
   const [switchedMode, setSwitchedMode] = useState(false); // true after a manual switch
-  const positionRef = useRef(restored.position);
+  const positionRef = useRef(initPosition);
 
   // ---- ephemeral per-session lenses ----
   const [filter, setFilter] = useState<MediaFilter>('all');
@@ -110,6 +129,20 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const seed = detail.id; // stable per collection → deterministic order across reopen
   const [paused, setPaused] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Ambient "cast" mode (#8): full-bleed, chrome hidden, passive auto-advance.
+  const [cast, setCast] = useState(false);
+  const onCastRef = useRef(props.onCast);
+  onCastRef.current = props.onCast;
+  const enterCast = useCallback(() => {
+    setCast(true);
+    onCastRef.current?.(true);
+  }, []);
+  const exitCast = useCallback(() => {
+    setCast(false);
+    onCastRef.current?.(false);
+  }, []);
+  // One-time controls coach (#10).
+  const onboarding = useOnboarding(storage);
 
   // ---- lightbox + curator tip ----
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -124,7 +157,14 @@ export function CollectionViewer(props: CollectionViewerProps) {
   );
 
   // Restore position only for the initial mode, and only until the user switches.
-  const initialPosition = !switchedMode && mode === restored.mode ? restored.position : 0;
+  const initialPosition = !switchedMode && mode === initMode ? initPosition : 0;
+
+  // Report {mode, index} up so App can keep the shareable URL hash in sync (#6).
+  const onViewStateChangeRef = useRef(props.onViewStateChange);
+  onViewStateChangeRef.current = props.onViewStateChange;
+  const reportViewState = useCallback((m: ViewMode, idx: number) => {
+    onViewStateChangeRef.current?.({ mode: m, index: m === 'classic' ? Math.max(0, Math.floor(idx)) : 0 });
+  }, []);
 
   // ---- persist mode + position ----
   const persist = useCallback(
@@ -137,8 +177,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
       positionRef.current = 0; // position meaning differs per mode; start fresh
       setMode(next);
       persist(next);
+      reportViewState(next, 0);
     },
-    [persist],
+    [persist, reportViewState],
   );
   // Save on unmount (exit / collection switch) capturing the final position.
   const modeRef = useRef(mode);
@@ -146,6 +187,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
   useEffect(() => {
     return () => saveCollectionState(detail.id, { mode: modeRef.current, position: positionRef.current }, storage);
   }, [detail.id, storage]);
+
+  // Report the initial {mode, index} once per opened collection (deep-link sync).
+  useEffect(() => {
+    reportViewState(modeRef.current, positionRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail.id]);
 
   const exit = useCallback(() => {
     saveCollectionState(detail.id, { mode: modeRef.current, position: positionRef.current }, storage);
@@ -158,9 +205,13 @@ export function CollectionViewer(props: CollectionViewerProps) {
     if (needsMoreToFill(filter, displayItems.length, hasMore, loadingMore)) onLoadMore?.();
   }, [filter, displayItems.length, hasMore, loadingMore, onLoadMore]);
 
-  const onClassicPosition = useCallback((pos: number) => {
-    positionRef.current = pos;
-  }, []);
+  const onClassicPosition = useCallback(
+    (pos: number) => {
+      positionRef.current = pos;
+      reportViewState('classic', pos);
+    },
+    [reportViewState],
+  );
   const onContinuousOffset = useCallback((offset: number) => {
     positionRef.current = offset;
   }, []);
@@ -193,8 +244,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const isContinuous = mode !== 'classic';
 
   return (
-    <div data-testid="collection-viewer" data-mode={mode} data-layout={isMobile ? 'mobile' : 'desktop'} style={rootStyle(c)}>
-      {/* ---- control surface ---- */}
+    <div data-testid="collection-viewer" data-mode={mode} data-cast={cast ? 'on' : 'off'} data-layout={isMobile ? 'mobile' : 'desktop'} style={rootStyle(c)}>
+      {/* ---- control surface (hidden in cast mode) ---- */}
+      {!cast && (
       <div style={toolbarStyle()}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <Button size="sm" variant="subtle" onClick={exit} data-testid="viewer-exit" aria-label="Back to collections">
@@ -214,6 +266,21 @@ export function CollectionViewer(props: CollectionViewerProps) {
           <ModeSwitcher value={mode} onChange={changeMode} />
           <Button
             size="sm"
+            variant="light"
+            onClick={enterCast}
+            aria-pressed={false}
+            aria-label="Cast — full-screen ambient mode"
+            data-testid="cast-toggle"
+          >
+            📺 Cast
+          </Button>
+          {props.onShare && (
+            <Button size="sm" variant="light" onClick={props.onShare} aria-label="Share this collection" data-testid="viewer-share">
+              🔗 Share
+            </Button>
+          )}
+          <Button
+            size="sm"
             variant={settingsOpen ? 'filled' : 'light'}
             onClick={() => setSettingsOpen((v) => !v)}
             aria-expanded={settingsOpen}
@@ -229,9 +296,36 @@ export function CollectionViewer(props: CollectionViewerProps) {
           )}
         </div>
       </div>
+      )}
+
+      {/* ---- one-time controls coach (#10) ---- */}
+      {!cast && onboarding.show && (
+        <Card padding="md" data-testid="onboarding-coach" style={coachCard}>
+          <div style={{ display: 'grid', gap: 6 }}>
+            <strong style={{ fontSize: 14 }}>How to play</strong>
+            <ul style={coachList}>
+              <li>Switch between Slideshow, Ticker, and Wall with the mode buttons.</li>
+              <li>In the continuous modes, press &amp; hold to pause the drift.</li>
+              <li>Tap any tile to open it full-screen (tip the creator there).</li>
+            </ul>
+            <div>
+              <Button size="sm" onClick={onboarding.dismiss} data-testid="onboarding-dismiss">
+                Got it
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* ---- cast mode: a single floating exit affordance (chrome is hidden) ---- */}
+      {cast && (
+        <button type="button" onClick={exitCast} style={castExitStyle} data-testid="cast-exit" aria-label="Exit cast mode">
+          ✕ Exit cast
+        </button>
+      )}
 
       {/* ---- collection-level chrome + pause (continuous modes) ---- */}
-      {isContinuous && (
+      {isContinuous && !cast && (
         <div style={chromeRow()}>
           <Button
             size="sm"
@@ -265,7 +359,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
       )}
 
       {/* ---- settings popover ---- */}
-      {settingsOpen && (
+      {settingsOpen && !cast && (
         <Card padding="md" data-testid="viewer-settings" style={settingsCard}>
           <div style={settingRow}>
             <span style={settingLabel}>Audio</span>
@@ -310,7 +404,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
           </div>
 
           {isContinuous ? (
-            <div style={settingRow}>
+            <label style={settingRow}>
               <span style={settingLabel}>Scroll speed</span>
               <span style={sliderWrap}>
                 <Slider
@@ -327,10 +421,10 @@ export function CollectionViewer(props: CollectionViewerProps) {
                   {prefs.scrollSpeed}
                 </span>
               </span>
-            </div>
+            </label>
           ) : (
             <>
-              <div style={settingRow}>
+              <label style={settingRow}>
                 <span style={settingLabel}>Seconds / image</span>
                 <span style={sliderWrap}>
                   <Slider
@@ -347,8 +441,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
                     {settings.secondsPerImage}s
                   </span>
                 </span>
-              </div>
-              <div style={settingRow}>
+              </label>
+              <label style={settingRow}>
                 <span style={settingLabel}>Video loops</span>
                 <span style={sliderWrap}>
                   <Slider
@@ -365,7 +459,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
                     {settings.videoLoopCount}×
                   </span>
                 </span>
-              </div>
+              </label>
             </>
           )}
         </Card>
@@ -391,6 +485,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onToggleFollow={onToggleFollow}
             onTip={onTip}
             tipping={tipping}
+            dailyTipRemaining={dailyTipRemaining}
+            cast={cast}
+            reducedMotion={reducedMotion}
             isMobile={isMobile}
             c={c}
             onExit={exit}
@@ -420,14 +517,15 @@ export function CollectionViewer(props: CollectionViewerProps) {
       </div>
 
       {displayItems.length === 0 && (
-        <div style={emptyNote()} data-testid="viewer-empty">
+        <div style={emptyNote(c)} data-testid="viewer-empty">
           {filter === 'all' ? 'This collection has no playable media.' : `No ${filter} in what's loaded yet.`}
         </div>
       )}
 
       {/* ---- lightbox: the classic single-item view over a continuous surface ---- */}
       {lightboxIndex != null && (
-        <div style={lightboxOverlay} data-testid="lightbox">
+        <div style={lightboxOverlay} data-testid="lightbox" role="dialog" aria-modal="true" aria-label="Media viewer">
+          <FocusTrap autoFocus restoreFocus>
           <Player
             detail={detail}
             items={displayItems}
@@ -443,10 +541,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onToggleFollow={onToggleFollow}
             onTip={onTip}
             tipping={tipping}
+            dailyTipRemaining={dailyTipRemaining}
             isMobile={isMobile}
             c={c}
             onExit={() => setLightboxIndex(null)}
           />
+          </FocusTrap>
         </div>
       )}
 
@@ -462,6 +562,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
           }}
           balance={buzzBalance}
           submitting={tipping}
+          dailyRemaining={dailyTipRemaining}
           onConfirm={doCuratorTip}
           onClose={() => setTipCuratorOpen(false)}
         />
@@ -472,7 +573,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
 // ---- styles ----
 function rootStyle(c: Palette): CSSProperties {
-  return { position: 'relative', width: '100%', minHeight: '100dvh', background: c.bg, color: c.fg, fontFamily: token.font };
+  return { position: 'relative', width: '100%', minHeight: '100dvh', background: c.bg, color: c.fg, fontFamily: 'var(--civitai-font)' };
 }
 function toolbarStyle(): CSSProperties {
   return {
@@ -481,36 +582,51 @@ function toolbarStyle(): CSSProperties {
     justifyContent: 'space-between',
     gap: 10,
     padding: '10px 14px',
-    borderBottom: `1px solid ${token.border}`,
-    background: token.surface,
+    borderBottom: '1px solid var(--civitai-color-border)',
+    background: 'var(--civitai-color-surface)',
     flexWrap: 'wrap',
   };
 }
-const titleStyle: CSSProperties = { fontWeight: 700, fontSize: 15, color: token.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
-const subStyle: CSSProperties = { fontSize: 12, color: token.dimmed };
+const titleStyle: CSSProperties = { fontWeight: 700, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+const subStyle: CSSProperties = { fontSize: 12, color: 'var(--civitai-color-text-dimmed)' };
 function chromeRow(): CSSProperties {
   return {
     display: 'flex',
     gap: 8,
     padding: '8px 14px',
     alignItems: 'center',
-    borderBottom: `1px solid ${token.border}`,
-    // A faint recess that reads in BOTH themes — never surface-2 (== body in light).
-    background: elevate(4),
+    borderBottom: '1px solid var(--civitai-color-border)',
+    background: 'var(--civitai-color-surface-2)',
     flexWrap: 'wrap',
   };
 }
 const settingsCard: CSSProperties = { display: 'grid', gap: 10, margin: '10px 14px' };
 const settingRow: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 };
-const settingLabel: CSSProperties = { fontSize: 13, fontWeight: 600, minWidth: 96, color: token.text };
-const sliderWrap: CSSProperties = { display: 'flex', gap: 10, alignItems: 'center', flex: 1, maxWidth: 260 };
-const sliderValue: CSSProperties = { fontSize: 13, minWidth: 40, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: token.dimmed };
-function emptyNote(): CSSProperties {
-  return { padding: 40, textAlign: 'center', ...mutedText };
+const settingLabel: CSSProperties = { fontSize: 13, fontWeight: 600, minWidth: 96 };
+const sliderWrap: CSSProperties = { display: 'flex', gap: 8, alignItems: 'center', flex: 1, maxWidth: 260 };
+const sliderValue: CSSProperties = { fontSize: 13, minWidth: 40, textAlign: 'right' };
+function emptyNote(c: Palette): CSSProperties {
+  return { padding: 40, textAlign: 'center', color: c.muted };
 }
 const lightboxOverlay: CSSProperties = {
   position: 'fixed',
   inset: 0,
   zIndex: 50,
-  background: stage.bg,
+  background: '#000',
+};
+const coachCard: CSSProperties = { margin: '10px 14px' };
+const coachList: CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, display: 'grid', gap: 3, color: 'var(--civitai-color-text-dimmed)' };
+const castExitStyle: CSSProperties = {
+  position: 'absolute',
+  top: 12,
+  right: 12,
+  zIndex: 40,
+  padding: '6px 12px',
+  borderRadius: 999,
+  border: '1px solid rgba(255,255,255,0.25)',
+  background: 'rgba(0,0,0,0.45)',
+  color: '#fff',
+  fontSize: 13,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
 };

@@ -42,7 +42,7 @@ describe('block.manifest.json', () => {
     expect(manifest.settings).toBeUndefined();
   });
 
-  it('is version 0.1.8', () => {
-    expect(manifest.version).toBe('0.1.8');
+  it('is version 0.2.0', () => {
+    expect(manifest.version).toBe('0.2.0');
   });
 });

@@ -81,7 +81,17 @@ export interface HttpApiClientOptions {
   refreshToken?: () => Promise<void>;
   /** Injectable fetch (tests pass a stub; prod uses global fetch). */
   fetchImpl?: typeof fetch;
+  /**
+   * Per-request ceiling (ms). A single hung fetch is aborted after this and
+   * surfaces as a retryable `network` error, so a stalled request can't wedge a
+   * loader forever (the bounded retry still caps total attempts). Default 15s;
+   * 0 disables the timeout.
+   */
+  timeoutMs?: number;
 }
+
+/** Default per-request abort ceiling. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 
 // ---------------------------------------------------------------------------
 // Endpoint paths. Kept in one map so Wave 1A path changes are a one-line edit.
@@ -110,6 +120,7 @@ export const SORT_PARAM: Record<'newest' | 'popular', string> = {
 export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
   const baseUrl = opts.baseUrl ?? '';
   const doFetch = opts.fetchImpl ?? globalThis.fetch;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
   async function request<T>(
     path: string,
@@ -127,15 +138,27 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
     if (token) headers.Authorization = `Bearer ${token}`;
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
 
+    // Per-request abort ceiling: a hung fetch is aborted after `timeoutMs` so a
+    // single stalled request can't wedge a loader indefinitely.
+    const controller = new AbortController();
+    const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
     let res: Response;
     try {
       res = await doFetch(baseUrl ? url.toString() : path + url.search, {
         method: init.method ?? 'GET',
         headers,
         body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        signal: controller.signal,
       });
     } catch (err) {
+      // Our timeout fired → a retryable network error; otherwise the raw failure.
+      if (controller.signal.aborted) {
+        throw new ApiError('network', 0, 'The request timed out.');
+      }
       throw new ApiError('network', 0, err instanceof Error ? err.message : 'Network error');
+    } finally {
+      if (timer) clearTimeout(timer);
     }
 
     if (res.ok) {

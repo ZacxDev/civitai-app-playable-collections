@@ -17,6 +17,8 @@ import type { Palette } from '../theme.js';
 import { assignColumns, columnCount } from '../modes/columns.js';
 import { selectPlayable } from '../modes/autoplay.js';
 import { advanceOffset, clampDt, shouldAutoScroll } from '../modes/scroll-engine.js';
+import { shouldBlur } from '../lib/maturity.js';
+import { MaturityBadge } from './Maturity.js';
 
 /** Fetch more when the tail sentinel comes near — continuous modes burn items fast. */
 const SENTINEL_MARGIN = '400px';
@@ -247,6 +249,14 @@ function Tile({
   registerTile: (el: HTMLElement | null, mediaId: number) => void;
   registerLazy: (img: HTMLImageElement | null) => void;
 }) {
+  // Mature tiles render blurred with a rating badge; the tile tap opens the
+  // classic lightbox where the full blur-until-reveal gate applies.
+  const blur = shouldBlur(item.nsfwLevel);
+  const media = blur ? { ...mediaEl, filter: 'blur(20px)' } : mediaEl;
+  // The poster URL is derived by string-replacing `.mp4→.jpg` (brittle); if it
+  // or a lazy cover 404s, fall back to a neutral placeholder instead of a broken
+  // image icon.
+  const [broken, setBroken] = useState(false);
   return (
     <button
       type="button"
@@ -262,7 +272,11 @@ function Tile({
       ref={clone ? undefined : (el) => registerTile(el, item.mediaId)}
       style={tileStyle(c)}
     >
-      {item.type === 'video' ? (
+      {broken ? (
+        <div style={{ ...mediaEl, ...tilePlaceholder(c) }} data-testid={clone ? undefined : 'continuous-placeholder'} aria-hidden="true">
+          ▶
+        </div>
+      ) : item.type === 'video' ? (
         // Poster (first-frame/transcoded still) mirrors the server cover approach;
         // the video only mounts/plays when it wins an autoplay slot.
         play ? (
@@ -273,11 +287,18 @@ function Tile({
             autoPlay
             loop
             playsInline
-            style={mediaEl}
+            style={media}
             data-testid={clone ? undefined : 'continuous-video'}
           />
         ) : (
-          <img src={posterFor(item)} alt="" style={mediaEl} data-testid={clone ? undefined : 'continuous-poster'} loading="lazy" />
+          <img
+            src={posterFor(item)}
+            alt=""
+            style={media}
+            data-testid={clone ? undefined : 'continuous-poster'}
+            loading="lazy"
+            onError={() => !clone && setBroken(true)}
+          />
         )
       ) : (
         // Lazy image: data-src until the shared observer swaps it in near view.
@@ -286,10 +307,16 @@ function Tile({
           data-src={clone ? undefined : item.url}
           src={clone ? item.url : undefined}
           alt=""
-          style={mediaEl}
+          style={media}
           loading="lazy"
           data-testid={clone ? undefined : 'continuous-image'}
+          onError={() => !clone && setBroken(true)}
         />
+      )}
+      {!clone && (
+        <span style={tileBadgeSlot}>
+          <MaturityBadge nsfwLevel={item.nsfwLevel} />
+        </span>
       )}
     </button>
   );
@@ -444,8 +471,23 @@ function wallStyle(cols: number): CSSProperties {
 }
 const colStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 };
 
+const tileBadgeSlot: CSSProperties = { position: 'absolute', top: 6, left: 6, zIndex: 2, pointerEvents: 'none' };
+
+function tilePlaceholder(c: Palette): CSSProperties {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 120,
+    color: c.muted,
+    fontSize: 28,
+    background: c.card,
+  };
+}
+
 function tileStyle(c: Palette): CSSProperties {
   return {
+    position: 'relative',
     display: 'block',
     padding: 0,
     border: '1px solid ' + c.border,

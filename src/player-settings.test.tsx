@@ -68,6 +68,16 @@ describe('in-app settings sliders — render + persist + drive the player', () =
     expect(screen.getByTestId('video-loop-count-value')).toHaveTextContent('1×');
   });
 
+  it('uses the pack Slider primitive (#9 design-system adoption)', () => {
+    render(<Wrapper items={[img(1), img(2)]} />);
+    openSettings();
+    // The pack Slider spreads the testid onto its native range input and wraps it
+    // in a [data-civitai-ui="slider"] container.
+    const input = screen.getByTestId('set-seconds-per-image');
+    expect(input).toHaveAttribute('type', 'range');
+    expect(input.closest('[data-civitai-ui="slider"]')).not.toBeNull();
+  });
+
   it('changing the seconds slider updates the store (localStorage + display)', () => {
     render(<Wrapper items={[img(1), img(2)]} />);
     openSettings();

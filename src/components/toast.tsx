@@ -82,7 +82,7 @@ const hostStyle: CSSProperties = {
 
 const toastStyle: CSSProperties = {
   cursor: 'pointer',
-  boxShadow: '0 6px 20px rgba(0, 0, 0, 0.25)',
+  boxShadow: '0 6px 20px rgba(0,0,0,0.25)',
   // Sit the tinted callout on an opaque surface so it reads as a floating toast
   // over arbitrary page content (the pack Alert tint alone is near-transparent).
   backgroundColor: 'var(--civitai-color-surface)',
