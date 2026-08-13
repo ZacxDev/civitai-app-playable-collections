@@ -1,24 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Playable Collections">
-  <!-- Playable Collections — "Press play on a collection."
-       Motif: the ribbon and the triangle. Fanned cards, a play triangle cut clean through
-       the front one, two gold tip-sparks lifting away.
-       Play triangle: flat edge LEFT, apex RIGHT — stated explicitly (rev-2 §1 direction rule).
-
-       v2 fix: the first draft drew three same-fill cards overlapping at ±14°, whose UNION
-       read as a scalloped blob — the fan was invisible because identical fills share no
-       edge. Each card now carries a plate-coloured stroke, which cuts a visible gap at every
-       overlap. Still three colours: the stroke is the plate.
-       Palette: plate #FF4D6D · cards #FFA8B8 · sparks #FFC94D. -->
-  <rect width="1024" height="1024" rx="224" fill="#FF4D6D"/>
-  <g fill="#FFA8B8" stroke="#FF4D6D" stroke-width="26">
-    <rect x="322" y="262" width="380" height="500" rx="40" transform="rotate(-21 512 980)"/>
-    <rect x="322" y="262" width="380" height="500" rx="40" transform="rotate(21 512 980)"/>
-    <rect x="322" y="262" width="380" height="500" rx="40"/>
-  </g>
-  <!-- cut through the front card, back to the plate colour -->
-  <polygon points="455,424 455,600 608,512" fill="#FF4D6D"/>
-  <g fill="#FFC94D">
-    <path d="M828,300 Q839,311 861,322 Q839,333 828,355 Q817,333 795,322 Q817,311 828,300 z"/>
-    <path d="M904,208 Q911,215 926,222 Q911,229 904,244 Q897,229 882,222 Q897,215 904,208 z"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#FA6478"/>
+  <circle cx="512.00" cy="512.00" r="340.00" fill="#F82440"/>
+  <polygon points="442.00,382.00 442.00,642.00 682.00,512.00" fill="#FFF0F2"/>
 </svg>
