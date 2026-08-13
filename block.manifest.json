@@ -3,6 +3,7 @@
   "blockId": "playable-collections",
   "version": "0.2.0",
   "name": "Playable Collections",
+  "tagline": "Press play on a collection.",
   "type": "block",
   "category": "discovery",
   "scopes": [
