@@ -1,30 +1,29 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900" role="img" aria-label="Playable Collections cover">
-  <!-- Playable Collections cover — "Press play on a collection."
-       A ribbon of overlapping media cards curves from lower left to upper right like a fanned
-       deck. One larger card near centre-right carries a play triangle cut clean through it —
-       flat edge LEFT, apex RIGHT, the standard play symbol (stated, never implied: the round-2
-       generation drew it pointing DOWN). Gold tip-sparks drift up and right, thinning.
-       Left third is quiet — only the ribbon's tail entering the frame.
-       Each card carries a plum stroke so overlapping same-fill cards keep a visible edge.
-       Palette: plum #2E1024 ground · coral #FF4D6D + rose #FFA8B8 cards · gold #FFC94D sparks. -->
-  <rect width="1600" height="900" fill="#2E1024"/>
-  <g stroke="#2E1024" stroke-width="14">
-    <rect x="175" y="615" width="150" height="210" rx="20" fill="#FF4D6D" transform="rotate(-18 250 720)"/>
-    <rect x="325" y="553" width="150" height="210" rx="20" fill="#FFA8B8" transform="rotate(-17 400 658)"/>
-    <rect x="475" y="491" width="150" height="210" rx="20" fill="#FF4D6D" transform="rotate(-16 550 596)"/>
-    <rect x="625" y="429" width="150" height="210" rx="20" fill="#FFA8B8" transform="rotate(-15 700 534)"/>
-    <rect x="775" y="367" width="150" height="210" rx="20" fill="#FF4D6D" transform="rotate(-14 850 472)"/>
-    <rect x="925" y="305" width="150" height="210" rx="20" fill="#FFA8B8" transform="rotate(-13 1000 410)"/>
-    <!-- the hero card: larger, and the only one carrying the play cut -->
-    <rect x="1050" y="208" width="200" height="280" rx="26" fill="#FF4D6D" transform="rotate(-12 1150 348)"/>
-    <rect x="1300" y="181" width="150" height="210" rx="20" fill="#FFA8B8" transform="rotate(-11 1375 286)"/>
-  </g>
-  <!-- play triangle cut through the hero card, back to the plum ground -->
-  <polygon points="1105,278 1105,418 1225,348" fill="#2E1024" transform="rotate(-12 1150 348)"/>
-  <!-- tips lifting away, thinning as they go -->
-  <g fill="#FFC94D">
-    <path d="M1245,152 Q1256,163 1278,174 Q1256,185 1245,207 Q1234,185 1212,174 Q1234,163 1245,152 z"/>
-    <path d="M1372,110 Q1380,118 1396,126 Q1380,134 1372,150 Q1364,134 1348,126 Q1364,118 1372,110 z"/>
-    <path d="M1478,72 Q1483,77 1494,82 Q1483,87 1478,98 Q1473,87 1462,82 Q1473,77 1478,72 z"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#FA6478"/>
+  <circle cx="130.00" cy="215.00" r="79.90" fill="#F82E49"/>
+  <polygon points="113.55,184.45 113.55,245.55 169.95,215.00" fill="#FB7889"/>
+  <circle cx="130.00" cy="450.00" r="79.90" fill="#F82E49"/>
+  <polygon points="113.55,419.45 113.55,480.55 169.95,450.00" fill="#FB7889"/>
+  <circle cx="130.00" cy="685.00" r="79.90" fill="#F82E49"/>
+  <polygon points="113.55,654.45 113.55,715.55 169.95,685.00" fill="#FB7889"/>
+  <circle cx="340.00" cy="215.00" r="79.90" fill="#F93C56"/>
+  <polygon points="323.55,184.45 323.55,245.55 379.95,215.00" fill="#FB8796"/>
+  <circle cx="340.00" cy="450.00" r="79.90" fill="#F93C56"/>
+  <polygon points="323.55,419.45 323.55,480.55 379.95,450.00" fill="#FB8796"/>
+  <circle cx="340.00" cy="685.00" r="79.90" fill="#F93C56"/>
+  <polygon points="323.55,654.45 323.55,715.55 379.95,685.00" fill="#FB8796"/>
+  <circle cx="550.00" cy="215.00" r="79.90" fill="#F94B62"/>
+  <polygon points="533.55,184.45 533.55,245.55 589.95,215.00" fill="#FC95A3"/>
+  <circle cx="550.00" cy="450.00" r="79.90" fill="#F94B62"/>
+  <polygon points="533.55,419.45 533.55,480.55 589.95,450.00" fill="#FC95A3"/>
+  <circle cx="550.00" cy="685.00" r="79.90" fill="#F94B62"/>
+  <polygon points="533.55,654.45 533.55,715.55 589.95,685.00" fill="#FC95A3"/>
+  <circle cx="760.00" cy="215.00" r="79.90" fill="#FA5A6F"/>
+  <polygon points="743.55,184.45 743.55,245.55 799.95,215.00" fill="#FCA4B0"/>
+  <circle cx="760.00" cy="450.00" r="79.90" fill="#FA5A6F"/>
+  <polygon points="743.55,419.45 743.55,480.55 799.95,450.00" fill="#FCA4B0"/>
+  <circle cx="760.00" cy="685.00" r="79.90" fill="#FA5A6F"/>
+  <polygon points="743.55,654.45 743.55,715.55 799.95,685.00" fill="#FCA4B0"/>
+  <circle cx="1270.00" cy="450.00" r="210.80" fill="#F82440"/>
+  <polygon points="1226.60,369.40 1226.60,530.60 1375.40,450.00" fill="#FFF0F2"/>
 </svg>

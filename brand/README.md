@@ -1,88 +1,75 @@
-# Playable Collections — brand
+# Playable Collections — brand kit
 
-> *Press play on a collection.*
+> **Press play on a collection.**
 
-Store assets for this app's Civitai App listing. **These files are the source of truth for
-this app's identity** — the listing images are exported from them, not the other way round.
+Vector sources are the source of truth. The store assets are derived from these files by
+the pipeline below; if you change a mark, regenerate rather than editing a raster.
 
-## Identity
+| | |
+|---|---|
+| Plate | `#FA6478` (rose, hue 352°) |
+| Mark | upright rounded tile |
+| Icon | `icon.svg` — 1024x1024 |
+| Cover | `cover.svg` — 1600x900 |
 
-**Voice.** Late-night radio DJ — warm, effortless, hands-free. The only one of the set you use lying down.
+## The mark
 
-**Motif.** **The ribbon and the triangle.** Fanned media cards with a play triangle cut clean through the front one, and gold tip-sparks lifting away.
+A disc with a play triangle. A media player you use lying down; the transport control is the most legible mark in the category.
+
+Shades are **tonal** — every element is the plate hue at a different lightness
+(`-0.13` for bodies, `+0.30` for the hot element). Nothing introduces a second hue, which
+is what lets the colour-normalisation step below correct the plate without dragging an
+accent off its own value.
+
+## How the store assets are built
+
+Three stages. Each does something the others cannot:
+
+1. **Author** (`icon.svg` / `cover.svg`) — exact geometry, exact hex, exact direction.
+2. **Light** — img2img adds studio lighting while preserving composition:
+   `civitai generate "<lighting prompt>" --ecosystem NanoBanana --checkpoint 2725610 --image <authored.png> --aspect-ratio 1:1` (covers: `--aspect-ratio 16:9`).
+3. **Normalise** — a global modulate computed from the plate's own measured offset lands it
+   back on `#FA6478` exactly.
+
+🔴 **Why not generate the mark directly?** It was tried, twice. Text-to-image steers hue
+well but cannot be relied on for *meaning*: a "disc with a wedge cut out" renders as a cone,
+an "open cylinder" as a cup, and a triangle told to point right pointed up. Authoring
+removes that whole class — a drawn triangle cannot render the wrong way.
+
+🔴 **Why not author the whole thing?** A flat vector cannot carry the lit dimensional
+grammar the suite uses. Stage 2 is what supplies it.
+
+## 🔴 The COVER is no longer built from `cover.svg`
+
+`cover.svg` here is the superseded rev-5 cover: this app's icon mark tiled on a grid. It is
+kept only as the vector record of that design. **The live cover is a photographed scene** —
+the app's purpose expressed by analogy — generated rather than derived from a vector, because
+a pattern of our own glyph had no soul and was the worst available use of the generator.
+
+- Live cover source + rationale: `claudedocs/brand-assets-rev5-2026-08-13/COVERS-REV5.1.md`
+  in the `talos-infra` repo (private).
+- **`icon.svg` IS still the source of truth for the icon** — that half is unchanged.
+
+Do not regenerate the cover from `cover.svg`.
+
+## Gates
+
+Every asset is checked before it is attached:
+
+- plate **dE <= 3.0** against `#FA6478` after normalisation
+- icon aspect 0.9-1.1, 128-4096 px, <= 1 MiB · cover aspect 1.3-2.4, min width 640, <= 4 MiB
+- renders legibly at **128 px** on both store themes (light `#F7F9FC` and dark `#0B0E14`)
+- the plate is **edge to edge** — the margin lives inside it. Never a surround: JPEG has no
+  alpha, so a baked surround cannot be cropped away and it destroys dual-theme survivability.
 
 ## Palette
 
-| Role | Hex | |
-|---|---|---|
-| Plate / dominant | `#FF4D6D` | the icon background, edge to edge |
-| Secondary | `#FFA8B8` | the mark itself |
-| Accent | `#FFC94D` | the tip — used sparingly, one element only |
-| Cover ground | `#2E1024` | |
+The suite's seven hues are spaced at least **42°** apart, all at a common lightness, so a
+row of them in the store reads as one family while each stays individually identifiable.
+The full wheel and the method live in the cross-app brand book.
 
-## Files
+## Rejected, and why
 
-| File | Purpose |
-|---|---|
-| `icon.svg` | listing icon, 1024×1024 |
-| `cover.svg` | listing cover, 1600×900 |
+Kept so the next person does not re-derive them:
 
-Export with `rsvg-convert`:
-
-```bash
-rsvg-convert -w 1024 -h 1024 brand/icon.svg  -o /tmp/icon.png
-rsvg-convert -w 1600 -h 900  brand/cover.svg -o /tmp/cover.png
-```
-
-🔴 **Flatten the icon's corners onto the plate colour before uploading** — do not upload it
-with transparency:
-
-```bash
-magick /tmp/icon.png -background '#FF4D6D' -alpha remove -alpha off /tmp/icon-upload.png
-```
-
-The listing pipeline transcodes every asset to JPEG, which has no alpha channel, and the
-transparency is flattened to **black**. The store then clips the icon with a CSS avatar mask
-that is slightly *less* rounded than the plate, so a thin dark rim survives along the curve.
-Filling the corners with the plate colour removes the whole class — there is no transparency
-left to flatten.
-
-Attach with:
-
-```bash
-civitai app listing set-icon  /tmp/icon-upload.png
-civitai app listing set-cover /tmp/cover.png
-```
-
-On a live listing this opens a revision for moderator re-review; the current assets stay
-visible until it is approved. Setting the icon and cover in the same session puts both on one
-revision, so they are reviewed together.
-
-## Shared construction grammar
-
-This app is one of five first-party apps drawn to a common grammar, so a row of them reads as
-a suite while each stays individually memorable. Keep to it when changing anything here:
-
-- Flat vector. Solid fills only — no gradients, shading, bevel, glow or 3D.
-- Geometric primitives only: squares, triangles, circles, arcs, rings.
-- Thick, uniform stroke weight. This is the strongest family signal at thumbnail size.
-- Three colours maximum: one dominant, one accent, one neutral.
-- The plate fills the whole canvas **edge to edge**; the margin lives *inside* it, around the
-  mark. Never ask for margin *around* the plate — that bakes in a surround the store cannot
-  crop past the rounded corners.
-- **No lettering anywhere** — and that includes motifs whose skeleton *constructs* a letter or
-  digit. Before locking a shape, ask what character it resembles.
-- Never name a direction with a noun that already implies one. Say the geometry.
-
-## App-specific note
-
-The play triangle points **right** — flat edge left, apex right. State it explicitly in any regeneration; it has come back pointing down when left implied. Cards carry a plate-coloured stroke so overlapping same-fill shapes keep a visible edge; without it the fan renders as one blob.
-
-## If you regenerate these
-
-These were drawn as vector rather than generated, after three measured rounds established that
-the constraints above and diffusion are structurally mismatched: across 42 generated images,
-flat solid fills held 0/20, exact palette 1/10, and the alpha channel 0/20. Generation is
-useful for *finding* a composition and poor at *meeting* a spec. If you use it, treat the
-output as a sketch and redraw the winner in vector — and judge a candidate by what a stranger
-would say it depicts, not by whether it matches the prompt.
+- **a thick disc with a triangular wedge cut out of its upper face** — rendered a CONE both times — a triangular profile revolved. Unbuildable description; the model substituted the nearest known solid. Identical across both candidates, which is the book's signature for a SPEC defect rather than variance.
