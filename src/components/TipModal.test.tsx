@@ -38,20 +38,25 @@ describe('validateTipAmount', () => {
   });
 });
 
-describe('TipModal — daily-allowance readout + per-tip cap', () => {
-  it('surfaces the per-tip cap and the remaining daily allowance', () => {
+describe('TipModal — per-tip cap readout', () => {
+  it('surfaces the real per-tip cap and NOT the untracked daily figure (audit O1)', () => {
     render(<TipModal target={target} balance={100000} submitting={false} onConfirm={() => {}} onClose={() => {}} dailyRemaining={25000} />);
     const allowance = screen.getByTestId('tip-allowance');
-    expect(allowance).toHaveTextContent('Up to 5,000 per tip');
-    expect(allowance).toHaveTextContent('25,000 of 25,000 Buzz left today');
+    expect(allowance).toHaveTextContent('Up to 5,000 Buzz per tip');
+    // The former "of 25,000 left today" framing is GONE — it was inert in the
+    // opaque-origin sandbox (localStorage throws) and tracked nothing.
+    expect(allowance).not.toHaveTextContent(/left today/i);
   });
 
-  it('shows a reduced remaining allowance and clamps the per-tip cap to it', () => {
+  it('does NOT present a daily count even when a low dailyRemaining is passed (audit O1)', () => {
+    // A low daily-remaining used to clamp + display a number derived from the
+    // untracked app-local estimate. The readout now shows only the fixed per-tip
+    // cap; the server rate limit is the real daily gate.
     render(<TipModal target={target} balance={100000} submitting={false} onConfirm={() => {}} onClose={() => {}} dailyRemaining={300} />);
     const allowance = screen.getByTestId('tip-allowance');
-    // Effective per-tip cap = min(5000, 300) = 300.
-    expect(allowance).toHaveTextContent('Up to 300 per tip');
-    expect(allowance).toHaveTextContent('300 of 25,000 Buzz left today');
+    expect(allowance).toHaveTextContent('Up to 5,000 Buzz per tip');
+    expect(allowance).not.toHaveTextContent(/left today/i);
+    expect(allowance).not.toHaveTextContent('300');
   });
 
   it('disables the confirm button while submitting (no double-spend on double-click)', () => {

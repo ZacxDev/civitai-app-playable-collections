@@ -102,8 +102,10 @@ describe('ContinuousView — content maturity (badge + blur, ship-blocker #3)', 
     expect(badges).toHaveLength(1);
     expect(badges[0]).toHaveTextContent('X');
     const images = screen.getAllByTestId('continuous-image');
-    expect(images[0]).toHaveStyle({ filter: 'blur(20px)' });
-    expect(images[1]).not.toHaveStyle({ filter: 'blur(20px)' });
+    // Uses the shared MATURITY_BLUR_PX (36px) — same strength as every other
+    // maturity surface (audit S2; was a hardcoded 20px here).
+    expect(images[0]).toHaveStyle({ filter: 'blur(36px)' });
+    expect(images[1]).not.toHaveStyle({ filter: 'blur(36px)' });
   });
 });
 

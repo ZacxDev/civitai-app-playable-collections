@@ -52,6 +52,7 @@ import { readPopular, recordPlay, resolvePopularEntries, summaryFromPage, totalB
 import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
+import { useDebouncedValue } from './lib/use-debounced-value.js';
 import { useDailyTipAllowance } from './lib/tip-allowance.js';
 import { buildShareUrl, decodeDeepLink, encodeDeepLink } from './lib/deep-link.js';
 import { shareLink } from './lib/share.js';
@@ -74,6 +75,8 @@ import { ToastHost, useToasts } from './components/toast.js';
 
 const POPULAR_LIMIT = 10;
 const PAGE_LIMIT = 24;
+/** Debounce for the live type-ahead search (ms). */
+const SEARCH_DEBOUNCE_MS = 300;
 
 type Tab = 'discover' | 'mine';
 
@@ -241,6 +244,11 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // ---- browse state ----
   const [tab, setTab] = useState<Tab>('discover');
   const [search, setSearch] = useState('');
+  // Live type-ahead: the input updates on every keystroke, but the list only
+  // re-fetches off this debounced value — no explicit Enter/Search needed. The
+  // loaders below read `debouncedSearch`, so they're re-created (and the browse
+  // effects re-run) ~300 ms after typing stops, not on each keystroke.
+  const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   // Default the discovery sort to popular (feedback #3). On the wire this becomes
   // the deployed server's `Most Followers` (CollectionSort.MostContributors) via
   // SORT_PARAM in lib/api.ts — no dependency on any undeployed server enum.
@@ -267,6 +275,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   openMorePendingRef.current = openMorePending;
   const [followPending, setFollowPending] = useState(false);
   const [tipping, setTipping] = useState(false);
+  // Synchronous double-tip guard. `setTipping(true)` only disables the button on
+  // the NEXT render; a fast double-click can fire two `doTip` calls before that
+  // commits. This ref gates the second call in the same tick (see doTip).
+  const tipInFlightRef = useRef(false);
   // A failed collection-open keeps a retry affordance (the grid already has one).
   const [openError, setOpenError] = useState<{ summary: CollectionSummary; message: string } | null>(null);
 
@@ -295,14 +307,14 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     setDiscover((s) => ({ ...s, loading: true, error: null }));
     try {
       const page = await withBoundedRetry(
-        () => api.listCollections({ mode: 'public', query: search, sort, limit: PAGE_LIMIT }),
+        () => api.listCollections({ mode: 'public', query: debouncedSearch, sort, limit: PAGE_LIMIT }),
         retry,
       );
       setDiscover({ items: page.items, loading: false, error: null, nextCursor: page.nextCursor, loadingMore: false });
     } catch (err) {
       setDiscover({ ...EMPTY_LIST, error: errMessage(err) });
     }
-  }, [api, search, sort, retry]);
+  }, [api, debouncedSearch, sort, retry]);
 
   const loadMine = useCallback(async () => {
     if (!api) return;
@@ -313,14 +325,14 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     setMine((s) => ({ ...s, loading: true, error: null }));
     try {
       const page = await withBoundedRetry(
-        () => api.listCollections({ mode: 'mine', query: search, sort, limit: PAGE_LIMIT }),
+        () => api.listCollections({ mode: 'mine', query: debouncedSearch, sort, limit: PAGE_LIMIT }),
         retry,
       );
       setMine({ items: page.items, loading: false, error: null, nextCursor: page.nextCursor, loadingMore: false });
     } catch (err) {
       setMine({ ...EMPTY_LIST, error: errMessage(err) });
     }
-  }, [api, viewer, search, sort, retry]);
+  }, [api, viewer, debouncedSearch, sort, retry]);
 
   // Infinite-scroll page loaders (feedback #1): fetch the next page via the
   // stored `nextCursor` and append, deduping the inclusive-cursor re-emit.
@@ -331,7 +343,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     const cursor = s.nextCursor;
     setDiscover((p) => ({ ...p, loadingMore: true }));
     try {
-      const page = await api.listCollections({ mode: 'public', query: search, sort, cursor, limit: PAGE_LIMIT });
+      const page = await api.listCollections({ mode: 'public', query: debouncedSearch, sort, cursor, limit: PAGE_LIMIT });
       setDiscover((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
@@ -341,7 +353,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     } catch {
       setDiscover((p) => ({ ...p, loadingMore: false }));
     }
-  }, [api, search, sort]);
+  }, [api, debouncedSearch, sort]);
 
   const loadMoreMine = useCallback(async () => {
     if (!api || !viewer) return;
@@ -350,7 +362,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     const cursor = s.nextCursor;
     setMine((p) => ({ ...p, loadingMore: true }));
     try {
-      const page = await api.listCollections({ mode: 'mine', query: search, sort, cursor, limit: PAGE_LIMIT });
+      const page = await api.listCollections({ mode: 'mine', query: debouncedSearch, sort, cursor, limit: PAGE_LIMIT });
       setMine((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
@@ -360,7 +372,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     } catch {
       setMine((p) => ({ ...p, loadingMore: false }));
     }
-  }, [api, viewer, search, sort]);
+  }, [api, viewer, debouncedSearch, sort]);
 
   const loadPopular = useCallback(async () => {
     try {
@@ -616,7 +628,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
       analytics.track({ type: 'follow', collectionId: open.detail.id, followed: res.followed });
       // Keep the grid card badge in sync.
       applyFollowedToLists(open.detail.id, res.followed);
-      toasts.push('success', res.followed ? 'Added to your collections.' : 'Removed the bookmark.');
+      // One consistent verb — "follow" — across the button (Follow/Following) and
+      // both toasts (dogfood: it was previously described three different ways).
+      toasts.push('success', res.followed ? 'Following this collection.' : 'Unfollowed this collection.');
     } catch (err) {
       // rollback
       setOpen((o) => (o ? { ...o, followed: !nextFollowed } : o));
@@ -639,11 +653,15 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // ---- tip flow ----
   const doTip = useCallback(
     async (target: TipTarget, amount: number): Promise<boolean> => {
+      // Synchronous double-tip gate (M1): reject a second call that arrives in the
+      // same tick, before `setTipping(true)`'s re-render can disable the button.
+      if (tipInFlightRef.current) return false;
       if (!api) return false;
       if (!viewer) {
         requestSignIn();
         return false;
       }
+      tipInFlightRef.current = true;
       setTipping(true);
       try {
         const result = await api.tip({
@@ -658,14 +676,23 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           toasts.push('error', 'That tip could not be completed. Please try again.');
           return false;
         }
+        // Use the SERVER's committed figure (O2), not the client amount — the two
+        // can diverge (host clamping / rounding). Fall back to the requested amount.
+        const sent = result.tip?.amount ?? amount;
         // Record against today's app-local allowance so the next modal reflects it.
-        tipAllowance.record(amount);
-        analytics.track({ type: 'tip', kind: target.kind, amount });
-        toasts.push('success', `Sent ${amount.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
+        tipAllowance.record(sent);
+        analytics.track({ type: 'tip', kind: target.kind, amount: sent });
+        toasts.push('success', `Sent ${sent.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
         refetchBalance();
         return true;
       } catch (err) {
-        if (err instanceof ApiError && err.code === 'insufficient_balance') {
+        if (err instanceof ApiError && err.code === 'network') {
+          // AMBIGUOUS (M2): a timed-out / dropped tip POST may have ALREADY
+          // committed server-side — a "clean" one-click retry risks a double-spend.
+          // Warn the viewer to verify their balance before retrying instead.
+          // (Full fix needs a host idempotency key — owed upstream; see NOTE.)
+          toasts.push('info', 'This tip may have gone through — check your Buzz balance before retrying.');
+        } else if (err instanceof ApiError && err.code === 'insufficient_balance') {
           toasts.push('error', "You don't have enough Buzz for that tip.");
         } else if (err instanceof ApiError && err.code === 'rate_limited') {
           // Surface the server's Retry-After (daily-cap / burst back-off) when present.
@@ -681,6 +708,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
         }
         return false;
       } finally {
+        tipInFlightRef.current = false;
         setTipping(false);
       }
     },
@@ -718,6 +746,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           followPending={followPending}
           onToggleFollow={toggleFollow}
           onTip={doTip}
+          onRequestSignIn={() => requestSignIn()}
           tipping={tipping}
           dailyTipRemaining={tipAllowance.remaining}
           onShare={onShareCollection}

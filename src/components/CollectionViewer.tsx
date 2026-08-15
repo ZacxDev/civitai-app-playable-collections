@@ -52,6 +52,8 @@ export interface CollectionViewerProps {
   followPending: boolean;
   onToggleFollow: () => void;
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
+  /** Prompt a logged-out viewer to sign in (tipping requires an account). */
+  onRequestSignIn?: () => void;
   tipping: boolean;
   /** Estimated remaining daily tip allowance (app-local) for the tip modals. */
   dailyTipRemaining?: number;
@@ -95,6 +97,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
     followPending,
     onToggleFollow,
     onTip,
+    onRequestSignIn,
     tipping,
     dailyTipRemaining,
     isMobile,
@@ -269,10 +272,10 @@ export function CollectionViewer(props: CollectionViewerProps) {
             variant="light"
             onClick={enterCast}
             aria-pressed={false}
-            aria-label="Cast — full-screen ambient mode"
+            aria-label="Ambient — full-screen passive playback"
             data-testid="cast-toggle"
           >
-            📺 Cast
+            📺 Ambient
           </Button>
           {props.onShare && (
             <Button size="sm" variant="light" onClick={props.onShare} aria-label="Share this collection" data-testid="viewer-share">
@@ -319,8 +322,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
       {/* ---- cast mode: a single floating exit affordance (chrome is hidden) ---- */}
       {cast && (
-        <button type="button" onClick={exitCast} style={castExitStyle} data-testid="cast-exit" aria-label="Exit cast mode">
-          ✕ Exit cast
+        <button type="button" onClick={exitCast} style={castExitStyle} data-testid="cast-exit" aria-label="Exit ambient mode">
+          ✕ Exit ambient
         </button>
       )}
 
@@ -349,8 +352,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
           <Button
             size="sm"
             variant="light"
-            onClick={() => setTipCuratorOpen(true)}
+            onClick={() => (viewerUserId == null ? onRequestSignIn?.() : setTipCuratorOpen(true))}
             disabled={curatorIsSelf || tipping}
+            title={curatorIsSelf ? "You can't tip your own collection." : undefined}
             data-testid="chrome-tip-curator"
           >
             🎁 Tip curator
@@ -484,6 +488,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             followPending={followPending}
             onToggleFollow={onToggleFollow}
             onTip={onTip}
+            onRequestSignIn={onRequestSignIn}
             tipping={tipping}
             dailyTipRemaining={dailyTipRemaining}
             cast={cast}
@@ -540,6 +545,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             followPending={followPending}
             onToggleFollow={onToggleFollow}
             onTip={onTip}
+            onRequestSignIn={onRequestSignIn}
             tipping={tipping}
             dailyTipRemaining={dailyTipRemaining}
             isMobile={isMobile}
