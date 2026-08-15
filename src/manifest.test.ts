@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { BLOCK_SCOPES } from '@civitai/app-sdk/blocks';
 
+import pkg from '../package.json';
 import { manifest, validateManifest } from './manifest.js';
 
 describe('block.manifest.json', () => {
@@ -42,7 +43,21 @@ describe('block.manifest.json', () => {
     expect(manifest.settings).toBeUndefined();
   });
 
-  it('is version 0.2.2', () => {
-    expect(manifest.version).toBe('0.2.2');
+  // 🔴 This was a LITERAL (`is version 0.2.2` / `toBe('0.2.2')`). It rots on every
+  // version bump by construction: the 0.2.3 tagline release moved the manifest and
+  // left the literal behind, turning `main` red on a bump that broke nothing. A
+  // permanently-red gate is worse than no gate — it trains everyone to merge
+  // through it, and the next real defect arrives looking exactly like this one.
+  // The sibling app hit this same assertion and fixed it the same way
+  // (civitai-app-model-benchmarking#5).
+  //
+  // The literal also pinned nothing worth knowing; "the version is the version"
+  // teaches no reader anything. The invariant that MATTERS is that the manifest
+  // and the package agree — the store reads one, the build reads the other, and a
+  // bump touching only one is a real shippable defect. That cannot rot on a bump,
+  // and it still fires when someone bumps just one of the two.
+  it('keeps block.manifest.json and package.json versions in lockstep', () => {
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(manifest.version).toBe(pkg.version);
   });
 });
