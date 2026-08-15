@@ -40,11 +40,13 @@ describe('shouldBlur / hasMaturityBadge', () => {
     expect(shouldBlur(0)).toBe(true);
     expect(shouldBlur(Number.NaN)).toBe(true);
   });
-  it('shows a badge for anything above PG (incl. unknown → NSFW)', () => {
+  it('shows a badge for anything above PG (incl. unknown → neutral "Unrated")', () => {
     expect(hasMaturityBadge(1)).toBe(false);
     expect(hasMaturityBadge(2)).toBe(true);
     expect(hasMaturityBadge(4)).toBe(true);
     expect(hasMaturityBadge(0)).toBe(true);
-    expect(maturityLabel(0)).toBe('NSFW');
+    // An unknown/unrated level is still gated, but labelled neutrally — NOT the
+    // alarming "NSFW", which over-states what we actually know about the item.
+    expect(maturityLabel(0)).toBe('Unrated');
   });
 });

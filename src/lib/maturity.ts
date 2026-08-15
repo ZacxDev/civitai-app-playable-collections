@@ -38,10 +38,14 @@ const LABELS: Record<MaturityBucket, string> = {
   r: 'R',
   x: 'X',
   xxx: 'XXX',
-  unknown: 'NSFW',
+  // A missing/unrated level is still gated (fail-closed), but it is NOT known to
+  // be adult — labelling it the alarming "NSFW" over-states what we know. Use a
+  // neutral "Unrated" so an unrated item reads as "we couldn't confirm a rating",
+  // not "this is explicit".
+  unknown: 'Unrated',
 };
 
-/** Human rating label for the badge (e.g. `R`, `XXX`, `NSFW` for unknown). */
+/** Human rating label for the badge (e.g. `R`, `XXX`, `Unrated` for unknown). */
 export function maturityLabel(nsfwLevel: number): string {
   return LABELS[maturityBucket(nsfwLevel)];
 }

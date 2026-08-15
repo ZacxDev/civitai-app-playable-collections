@@ -1,10 +1,15 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CollectionViewer } from './CollectionViewer.js';
+import { resetMatureGate } from '../lib/mature-session.js';
 import { palette } from '../theme.js';
+
+// The session-level maturity gate lives in module scope (opaque-origin sandbox
+// has no usable Web Storage), so reset it between tests for isolation.
+beforeEach(() => resetMatureGate());
 import { loadCollectionState } from '../view-modes.js';
 import type { CollectionDetail, MediaItem } from '../types.js';
 
@@ -162,10 +167,10 @@ describe('Player — global shortcuts ignored while a control is focused (ship-b
   });
 });
 
-describe('CollectionViewer — content maturity (badge + blur-until-tap, ship-blocker #3)', () => {
-  it('blurs a mature current item and reveals it on tap (classic Player)', async () => {
+describe('CollectionViewer — content maturity (session-level 18+ gate, ship-blocker #3)', () => {
+  it('blurs a mature current item and unblurs it after the session gate is accepted (classic Player)', async () => {
     renderViewer({ items: [mature(1, 4), img(2)] });
-    // PG-13 app default: an R item is badged + blurred until revealed.
+    // PG-13 app default: an R item is badged + blurred until the gate is accepted.
     expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R');
     const image = screen.getByTestId('media-image');
     expect(image).toHaveStyle({ filter: 'blur(36px)' });
@@ -183,18 +188,43 @@ describe('CollectionViewer — content maturity (badge + blur-until-tap, ship-bl
     expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
   });
 
-  it('reveal is PER-ITEM: advancing to the next mature item re-gates it (no leak to siblings)', async () => {
+  it('a neutral "Unrated" (not "NSFW") badge for an unknown/unrated level (fail-closed but not alarming)', () => {
+    renderViewer({ items: [mature(1, 0), img(2)] });
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+    // Still fail-closed: an unrated item starts blurred until the gate is accepted.
+    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('🔴 the gate is SESSION-LEVEL: accepting once keeps the next mature item unblurred (no per-item re-gate)', async () => {
     renderViewer({ items: [mature(1, 4), mature(2, 4)] });
-    // Reveal item 1.
+    // Accept the single session gate on item 1.
     await userEvent.click(screen.getByTestId('maturity-reveal'));
     expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
-    // Advance to item 2 — it must be blurred again (reveal is keyed per media id).
+    // Advance to item 2 — it stays unblurred; the "sit back" loop is NOT broken.
     await userEvent.keyboard('{ArrowRight}');
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+  });
+
+  it('🔴 fail-closed default: an ungated mature item starts blurred until the session gate is accepted', () => {
+    renderViewer({ items: [mature(1, 8), img(2)] });
     expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
     expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
   });
 
-  it('the LIGHTBOX blurs a mature item (continuous mode → tap tile)', async () => {
+  it('🔴 ambient/cast mode: the per-item reveal is suppressed once the session gate is granted', async () => {
+    renderViewer({ items: [mature(1, 4), mature(2, 4)] });
+    // Grant the gate in the normal (chrome-visible) view first.
+    await userEvent.click(screen.getByTestId('maturity-reveal'));
+    // Enter ambient mode — the media stays unblurred and NO reveal overlay fires
+    // (the old behaviour re-gated every item even in passive cast mode).
+    await userEvent.click(screen.getByTestId('cast-toggle'));
+    expect(screen.getByTestId('player')).toHaveAttribute('data-cast', 'on');
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+  });
+
+  it('the LIGHTBOX blurs a mature item until the session gate is accepted (continuous mode → tap tile)', async () => {
     renderViewer({ items: [mature(1, 8), img(2)] });
     await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
     const tiles = screen.getAllByTestId('continuous-tile');
@@ -202,6 +232,45 @@ describe('CollectionViewer — content maturity (badge + blur-until-tap, ship-bl
     const lightbox = await screen.findByTestId('lightbox');
     expect(within(lightbox).getByTestId('maturity-reveal')).toBeInTheDocument();
     expect(within(lightbox).getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+});
+
+describe('CollectionViewer — ambient mode label (dogfood: "Cast" did not cast)', () => {
+  it('the toggle reads "Ambient", not "Cast"', () => {
+    renderViewer({ items: [img(1)] });
+    const toggle = screen.getByTestId('cast-toggle');
+    expect(toggle).toHaveTextContent('Ambient');
+    expect(toggle).not.toHaveTextContent('Cast');
+  });
+});
+
+describe('CollectionViewer — logged-out tipping (dogfood: tip failed only at the end)', () => {
+  it('an anon viewer\'s curator tip prompts sign-in up front and does NOT open the modal', async () => {
+    const onRequestSignIn = vi.fn();
+    renderViewer({ items: [img(1), img(2)], viewerUserId: null, onRequestSignIn });
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    await userEvent.click(screen.getByTestId('chrome-tip-curator'));
+    expect(onRequestSignIn).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('tip-modal')).toBeNull();
+  });
+
+  it('an anon viewer\'s creator tip (classic player) prompts sign-in up front', async () => {
+    const onRequestSignIn = vi.fn();
+    renderViewer({ items: [img(1)], viewerUserId: null, onRequestSignIn });
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    expect(onRequestSignIn).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('tip-modal')).toBeNull();
+  });
+});
+
+describe('CollectionViewer — self-tip explanation (dogfood: disabled with no reason)', () => {
+  it('the disabled self-tip curator control explains why', async () => {
+    // viewerUserId 5 === detail.curator.userId → self-tip.
+    renderViewer({ items: [img(1)], viewerUserId: 5 });
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    const btn = screen.getByTestId('chrome-tip-curator');
+    expect(btn).toBeDisabled();
+    expect(btn).toHaveAttribute('title', "You can't tip your own collection.");
   });
 });
 
