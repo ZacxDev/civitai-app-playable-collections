@@ -59,6 +59,7 @@ import { shareLink } from './lib/share.js';
 import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
 import { palette } from './theme.js';
+import { paintTheme } from './bootTheme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import type {
   CollectionDetail,
@@ -184,7 +185,13 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // Theme colors resolve to `--civitai-*` tokens (theme-agnostic); light/dark is
   // driven by the `data-theme` attribute set on the app root below, not by JS.
   const c = palette();
-  const dataTheme = theme === 'dark' ? 'dark' : 'light';
+  // 🔴 NEVER the bare `theme` here. Before `ready` the SDK's snapshot hardcodes the
+  // string 'light' (blocks-react dist/internal/transport.js, EMPTY_SNAPSHOT), so
+  // `theme === 'dark' ? 'dark' : 'light'` resolved every pre-init viewer to LIGHT —
+  // repainting index.html's dark boot skeleton white, then dark again at BLOCK_INIT.
+  // After `ready` the host's answer wins outright, exactly as before. See
+  // src/bootTheme.ts.
+  const dataTheme = paintTheme(ready, theme);
 
   // Has the viewer granted the consent-gated private-collections scope? The
   // block-token mint withholds it until consent, so it appears on the token's
