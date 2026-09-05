@@ -27,7 +27,16 @@ function makeFakeShared(viewer = 99) {
     entries,
     seed(value, votes) {
       const key = `k${++seq}`;
-      entries.push({ key, authorUserId: viewer, value, count: votes.length, createdAt: new Date(), updatedAt: new Date() });
+      entries.push({
+        key, authorUserId: viewer, value, count: votes.length,
+        createdAt: new Date(), updatedAt: new Date(),
+        // 🔴 DERIVED from the same `votes` this seed was handed, never hardcoded.
+        // `viewerVoted` arrived as a REQUIRED field in @civitai/blocks-react
+        // 0.47.0; a fake that pinned it to a constant would encode a shape the
+        // real host never produces, and every test reading it would agree with
+        // the fake instead of with the contract.
+        viewerVoted: votes.includes(viewer),
+      });
       voters.set(key, new Set(votes));
       return key;
     },
@@ -38,7 +47,12 @@ function makeFakeShared(viewer = 99) {
     },
     async append(value) {
       const key = `k${++seq}`;
-      entries.push({ key, authorUserId: viewer, value, count: 0, createdAt: new Date(), updatedAt: new Date() });
+      entries.push({
+        key, authorUserId: viewer, value, count: 0,
+        createdAt: new Date(), updatedAt: new Date(),
+        // A freshly appended entry carries no vote from its own author.
+        viewerVoted: false,
+      });
       voters.set(key, new Set());
       return { key };
     },
@@ -47,12 +61,67 @@ function makeFakeShared(viewer = 99) {
       set.add(viewer);
       voters.set(key, set);
       const entry = entries.find((e) => e.key === key);
-      if (entry) entry.count = set.size;
+      // 🔴 BOTH fields move together. Updating `count` alone would let `list`
+      // report viewerVoted:false for an entry this viewer just voted on — the
+      // fake would then be the only place that behaviour exists.
+      if (entry) { entry.count = set.size; entry.viewerVoted = true; }
       return entry?.count ?? 0;
     },
   };
   return store;
 }
+
+/**
+ * 🔴 A TEST OF THE FAKE, ON PURPOSE — and the only kind of test that can catch
+ * this class. `viewerVoted` arrived as a REQUIRED field on `SharedListItem` in
+ * @civitai/blocks-react 0.47.0, and no production code here reads it yet. So a
+ * fake that reported a constant would be green forever, and the first consumer
+ * would be written against the fake's shape rather than the host's — the
+ * "both-wrong-blind" failure, where the fixture encodes the same wrong shape as
+ * the code that reads it.
+ *
+ * MEASURED: with these two cases absent, reverting the fake's vote path to
+ * update `count` alone left the whole file green (18/18). They are what makes
+ * that line load-bearing.
+ */
+describe('the fake shared store matches the host contract for viewerVoted', () => {
+  it('reports false for an entry this viewer has not voted on', async () => {
+    const shared = makeFakeShared(99);
+    shared.seed({ title: 'a', data: { collectionId: 1 } }, [7, 8]); // other voters only
+    const { items } = await shared.list();
+    expect(items[0].count).toBe(2);
+    expect(items[0].viewerVoted).toBe(false);
+  });
+
+  it('reports true once this viewer votes, without a re-list from scratch', async () => {
+    const shared = makeFakeShared(99);
+    const key = shared.seed({ title: 'a', data: { collectionId: 1 } }, []);
+    expect((await shared.list()).items[0].viewerVoted).toBe(false);
+    await shared.vote(key);
+    const { items } = await shared.list();
+    // 🔴 BOTH, because updating count alone is the mutant that survived.
+    expect(items[0].count).toBe(1);
+    expect(items[0].viewerVoted).toBe(true);
+  });
+
+  it('reports false for an entry this viewer just appended — appending is not voting', async () => {
+    // The third arm. Measured: without this, flipping append()'s `viewerVoted`
+    // to true survived the whole file. `recordPlay` goes through append, so a
+    // fake that auto-votes the author would silently inflate every first play.
+    const shared = makeFakeShared(99);
+    await shared.append({ title: 'fresh', data: { collectionId: 5 } });
+    const { items } = await shared.list();
+    expect(items[0].count).toBe(0);
+    expect(items[0].viewerVoted).toBe(false);
+  });
+
+  it('reports true for a seeded entry whose votes already include this viewer', async () => {
+    const shared = makeFakeShared(99);
+    shared.seed({ title: 'a', data: { collectionId: 1 } }, [7, 99]);
+    const { items } = await shared.list();
+    expect(items[0].viewerVoted).toBe(true);
+  });
+});
 
 describe('entryCollectionId', () => {
   it('extracts a finite numeric collectionId from the opaque data blob', () => {
