@@ -36,7 +36,6 @@ import {
 } from '@civitai/blocks-react';
 import {
   Alert,
-  Badge,
   Button,
   Card,
   Group,
@@ -145,7 +144,9 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // Buzz balance via the host-mediated GET_BUZZ_BALANCE bridge (scope-free) —
   // NOT a block HTTP endpoint (the old `/api/v1/blocks/buzz` was retired by
   // civitai #3144). Returns per-pool { blue, green, yellow }; we sum to one
-  // spendable figure for the header pill + the tip modal's soft ceiling.
+  // spendable figure for the tip modal's soft ceiling. 🔴 That is now its ONLY
+  // consumer — the header pill that also showed it was removed 2026-09-05 — so
+  // this hook looks unused at a glance and is not. See the note at the header.
   const { balance: buzzPools, refetch: refetchBalance } = useBuzzBalance();
   const balance = totalBuzz(buzzPools);
 
@@ -796,13 +797,15 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
       <div style={contentStyle}>
         <Stack gap={16}>
           <header style={{ display: 'grid', gap: 6 }}>
+            {/* The header carried a "⚡ <balance>" Buzz pill here. Removed
+                2026-09-05: a wallet readout is the host's job, not a media
+                player's chrome, and it competed with the app's own content.
+                🔴 THE BALANCE ITSELF IS DELIBERATELY KEPT — `useBuzzBalance()` +
+                `totalBuzz` still run and `balance` is still threaded down to
+                TipModal, which pre-validates a tip against it. Do not "finish the
+                cleanup" by deleting the hook. */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <h1 style={{ fontSize: 22, margin: 0 }}>Playable Collections</h1>
-              {viewer && (
-                <Badge size="lg" variant="light" data-testid="buzz-balance">
-                  ⚡ {balance != null ? balance.toLocaleString() : '—'}
-                </Badge>
-              )}
             </div>
             <p style={{ margin: 0, fontSize: 13, color: 'var(--civitai-color-text-dimmed)' }}>
               Sit back and play through a collection's images and videos.

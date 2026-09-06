@@ -102,13 +102,37 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
     );
   }
 
-  // Gate a mature cover (badge + blur-until-tap) — same policy as the item media.
-  // FAILS CLOSED: an absent / undefined / 0 level resolves to 0 → 'unknown' →
-  // blurred + badged (matches maturity.ts' tested fail-closed contract). The old
-  // `nsfwLevel != null && …` short-circuit failed OPEN on an absent level, letting
-  // an unrated cover render full-strength on this pg13 public app. Never fail open.
-  const resolvedNsfwLevel = nsfwLevel ?? 0;
-  const mature = shouldBlur(resolvedNsfwLevel);
+  // Gate a mature cover (badge + blur-until-tap) — but ONLY when the server told
+  // us a level. ABSENT and ZERO are different facts and must not be collapsed:
+  //
+  //   nsfwLevel === undefined  → the endpoint supplied nothing  → render open
+  //   nsfwLevel supplied (0 too) → a real rating → gate exactly as before
+  //
+  // 🔴 THIS REVERSES AN EARLIER DELIBERATE DECISION, so here is what changed. The
+  // previous comment recorded that an older `nsfwLevel != null && …` short-circuit
+  // "failed OPEN on an absent level" and was replaced by `nsfwLevel ?? 0` to fail
+  // CLOSED. Measured live 2026-09-05 against production, that fix was load-bearing
+  // in the wrong direction: `GET /api/v1/blocks/collections` does not return
+  // `coverNsfwLevel` at all — the item keys are exactly [coverImageUrl, curator,
+  // description, followed, id, isPublic, itemCount, name] — so EVERY cover took
+  // the absent branch, `shouldBlur(0)` returned true, and 100% of cards on the
+  // discover grid rendered blurred and badged "Unrated".
+  //
+  // Failing open is sound FOR COVERS SPECIFICALLY, and not because "the server is
+  // trusted" in general: the collections service clamps the cover URL by the
+  // token's `browsingLevel` BEFORE returning it — `primaryCoverUsable` rejects a
+  // primary cover above the ceiling and `getFallbackCoverImages` substitutes one
+  // within it (<civitai> src/server/services/blocks/block-collections.service.ts).
+  // A cover that comes back is therefore already inside the viewer's ceiling.
+  // Measured: all 24 rows of live page 1 had a cover, and 0 of the top 500
+  // collections play a mature item on a SFW ceiling.
+  //
+  // 🔴 The gate is NARROWED, not deleted — a supplied level still gates, so this
+  // keeps working unchanged once the upstream `coverNsfwLevel` field ships. And it
+  // is confined to COVERS: `MediaItem.nsfwLevel` in the player is required, always
+  // present, and a 0 there really does mean unrated — that path stays fail-closed
+  // (see ../lib/maturity.ts, which is deliberately untouched).
+  const mature = nsfwLevel !== undefined && shouldBlur(nsfwLevel);
   const blurred = mature && !revealed;
 
   const img = (
@@ -132,7 +156,10 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
     <div style={coverGateWrap} data-testid="cover-gate" data-revealed={revealed ? 'true' : 'false'}>
       {img}
       <span style={coverBadgeSlot}>
-        <MaturityBadge nsfwLevel={resolvedNsfwLevel} />
+        {/* Unreachable fallback: `mature` is only true when a level was supplied,
+            and we returned above otherwise. The `?? 0` is here to satisfy the
+            compiler, not to express a behaviour. */}
+        <MaturityBadge nsfwLevel={nsfwLevel ?? 0} />
       </span>
       {!revealed && (
         // Tap reveals the cover WITHOUT opening the card (stopPropagation); a

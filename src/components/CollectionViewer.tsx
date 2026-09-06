@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Badge, Button, Card, Slider } from '@civitai/blocks-react/ui';
+import { Button, Card, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
@@ -292,11 +292,11 @@ export function CollectionViewer(props: CollectionViewerProps) {
           >
             ⚙
           </Button>
-          {viewerUserId != null && (
-            <Badge size="lg" variant="light" data-testid="viewer-buzz">
-              ⚡ {buzzBalance != null ? buzzBalance.toLocaleString() : '—'}
-            </Badge>
-          )}
+          {/* A "⚡ <balance>" Buzz pill sat here. Removed 2026-09-05 with the two
+              other readouts (App header, Player top overlay). 🔴 `buzzBalance` is
+              STILL a required prop and is still forwarded to Player and to the
+              curator TipModal below, which pre-validates a tip against it — the
+              badge went, the balance did not. */}
         </div>
       </div>
       )}

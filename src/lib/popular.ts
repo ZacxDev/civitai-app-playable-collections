@@ -203,8 +203,9 @@ export async function resolvePopularEntries(
 }
 
 /**
- * The viewer's single spendable Buzz figure for the header pill + the tip
- * modal's soft ceiling. `useBuzzBalance()` returns per-pool balances
+ * The viewer's single spendable Buzz figure for the tip modal's soft ceiling
+ * (it also fed a header pill until that readout was removed 2026-09-05 — the
+ * modal is now the only consumer). `useBuzzBalance()` returns per-pool balances
  * (`{ blue, green, yellow }`); we sum them for a "your Buzz" total. Over- rather
  * than under-reporting is the safe direction: the soft client check never falsely
  * blocks a valid tip, and the SERVER stays authoritative (a genuinely

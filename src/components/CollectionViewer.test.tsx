@@ -195,6 +195,23 @@ describe('CollectionViewer — content maturity (session-level 18+ gate, ship-bl
     expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
   });
 
+  it('🔴 SEAM GUARD: the COVER fail-open does NOT leak into the ITEM path — nsfwLevel 0 still gates', () => {
+    // The cover fix (CollectionGrid.CoverImage, 2026-09-05) deliberately renders an
+    // ABSENT `coverNsfwLevel` unblurred, because the collections endpoint never
+    // sends that field and the server has already clamped the cover URL by the
+    // token's browsingLevel. `MediaItem.nsfwLevel` is a DIFFERENT quantity: it is
+    // required, always present, and a 0 there genuinely means "unrated" — so this
+    // path must stay fail-closed.
+    //
+    // This test exists so that a later "let's make maturity consistent everywhere"
+    // tidy-up cannot quietly widen the cover exception into the player. It pins
+    // BOTH the blur and the 18+ gate, not just the badge.
+    renderViewer({ items: [mature(1, 0), img(2)] });
+    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+  });
+
   it('🔴 the gate is SESSION-LEVEL: accepting once keeps the next mature item unblurred (no per-item re-gate)', async () => {
     renderViewer({ items: [mature(1, 4), mature(2, 4)] });
     // Accept the single session gate on item 1.
