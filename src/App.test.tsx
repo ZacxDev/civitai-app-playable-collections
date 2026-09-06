@@ -161,10 +161,22 @@ describe('CollectionGrid states (deterministic)', () => {
     expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 
-  it('FAILS CLOSED on an ABSENT cover level: an undefined coverNsfwLevel is blurred + badged (audit S1)', () => {
-    // The pre-fix `nsfwLevel != null && …` short-circuit failed OPEN here — an
-    // unrated cover (server omitted the level) rendered full-strength. It must
-    // now resolve to 0 → 'unknown' → gated, matching maturity.ts' fail-closed law.
+  it('does NOT gate an ABSENT cover level — the server never sends coverNsfwLevel (supersedes audit S1)', () => {
+    // 🔴 REVERSED DELIBERATELY, and this comment is the record of why. This test
+    // previously asserted the opposite ("FAILS CLOSED on an ABSENT cover level"),
+    // written when an earlier `nsfwLevel != null && …` short-circuit failed OPEN.
+    //
+    // Measured live 2026-09-05: `GET /api/v1/blocks/collections` does not return
+    // `coverNsfwLevel` AT ALL, so the absent branch was not a rare edge — it was
+    // every card, every time, and the fail-closed reading blurred 100% of the grid.
+    // Failing open is safe for COVERS specifically because the server clamps the
+    // cover URL by the token's `browsingLevel` before returning it (see
+    // `primaryCoverUsable` + `getFallbackCoverImages` in <civitai>'s
+    // src/server/services/blocks/block-collections.service.ts) — a cover that comes
+    // back is already within the viewer's ceiling.
+    //
+    // The ITEM path is unchanged and still fails closed; see the sibling tests
+    // below (an explicit 0 is still gated) and CollectionViewer.test.tsx.
     render(
       <CollectionGrid
         collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: undefined })]}
@@ -176,10 +188,10 @@ describe('CollectionGrid states (deterministic)', () => {
         isMobile={false}
       />,
     );
-    expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
-    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
-    // The cover <img> itself is blurred (shared MATURITY_BLUR_PX = 36px).
-    expect(document.querySelector('img')).toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    // The cover <img> renders at full strength (no MATURITY_BLUR_PX filter).
+    expect(document.querySelector('img')).not.toHaveStyle({ filter: 'blur(36px)' });
   });
 
   it('shows private + followed badges', () => {
@@ -230,12 +242,20 @@ describe('App — discover + tabs', () => {
     });
   });
 
-  it('shows the viewer Buzz balance once loaded (summed from the useBuzzBalance host bridge)', async () => {
+  it('does NOT render a Buzz readout in the header — the badge was removed (was: "shows the viewer Buzz balance")', async () => {
+    // 🔴 REVERSED DELIBERATELY. This test used to assert the pill showed "1,234".
+    // Operator decision 2026-09-05: HIDE the badges, KEEP the balance. The wallet
+    // figure is still fetched and still gates a tip (see the two tests below); it
+    // simply is not a permanent piece of app chrome any more.
     const api = createFakeApi({ viewerUserId: 99 });
-    // Balance now comes from the host-mediated GET_BUZZ_BALANCE bridge (per-pool),
-    // NOT the block HTTP client. The pill shows the summed spendable figure.
     renderApp({ api, buzzBalance: { blue: 1000, green: 34, yellow: 200 } });
-    await waitFor(() => expect(screen.getByTestId('buzz-balance')).toHaveTextContent('1,234'));
+    // Wait for a LOADED app before asserting an absence — an assertion made while
+    // the boot gate is still showing "Loading…" would pass for the wrong reason.
+    await screen.findByTestId('collection-grid');
+    expect(screen.queryByTestId('buzz-balance')).toBeNull();
+    expect(screen.queryByTestId('viewer-buzz')).toBeNull();
+    // Nor is the figure rendered under some other element.
+    expect(screen.queryByText(/1,234/)).toBeNull();
   });
 
   it('offers a Popular ↔ Newest sort toggle, and describes the active sort as a sentence rather than a third chip', async () => {
@@ -322,6 +342,58 @@ describe('App — discover + tabs', () => {
     fail = false;
     await userEvent.click(screen.getByTestId('grid-retry'));
     await screen.findByTestId('collection-grid');
+  });
+});
+
+describe('Buzz: the readout is gone, the BALANCE is not', () => {
+  // 🔴 THE HALF THAT IS EASY TO GET WRONG. Deleting the badges is one thing; the
+  // hazard is deleting the balance PATH with them, which no absence-assertion can
+  // see — `queryByTestId('buzz-balance') === null` passes just as happily when
+  // `useBuzzBalance()` has been ripped out and every tip silently skips its
+  // client-side affordability check. So each absence test below is paired with a
+  // test that the figure still ARRIVES where it is spent.
+
+  async function openFirstCollection() {
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    await screen.findByTestId('player');
+  }
+
+  it('renders no Buzz badge anywhere in the VIEWER/PLAYER chrome either', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    renderApp({ api, buzzBalance: { blue: 1000, green: 34, yellow: 200 } });
+    await openFirstCollection();
+    // Three readouts existed: App header (`buzz-balance`), the viewer toolbar
+    // (`viewer-buzz`) and the player top overlay (`buzz-balance` again).
+    expect(screen.queryByTestId('viewer-buzz')).toBeNull();
+    expect(screen.queryByTestId('buzz-balance')).toBeNull();
+    expect(screen.queryByLabelText('Your Buzz balance')).toBeNull();
+    expect(screen.queryByText(/1,234/)).toBeNull();
+  });
+
+  it('🔴 still threads the balance into TipModal — "You have 1,234 Buzz."', async () => {
+    const api = createFakeApi({ viewerUserId: 99 });
+    renderApp({ api, buzzBalance: { blue: 1000, green: 34, yellow: 200 } });
+    await openFirstCollection();
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    const modal = await screen.findByTestId('tip-modal');
+    // The exact summed figure from the GET_BUZZ_BALANCE bridge, rendered by the
+    // modal. This is the positive control for the absence assertions above.
+    expect(modal).toHaveTextContent('You have 1,234 Buzz.');
+  });
+
+  it('🔴 still REJECTS a tip larger than the balance (validateTipAmount reached the real figure)', async () => {
+    // The behavioural half. The line above is a string; this asserts the balance
+    // actually flows into the validator and blocks a spend.
+    const api = createFakeApi({ viewerUserId: 99 });
+    renderApp({ api, buzzBalance: { blue: 100, green: 0, yellow: 0 } });
+    await openFirstCollection();
+    await userEvent.click(screen.getByTestId('tip-creator'));
+    const input = await screen.findByTestId('tip-amount-input');
+    await userEvent.clear(input);
+    await userEvent.type(input, '400');
+    expect(await screen.findByTestId('tip-error')).toHaveTextContent('100 Buzz balance');
+    expect(screen.getByTestId('tip-confirm')).toBeDisabled();
   });
 });
 

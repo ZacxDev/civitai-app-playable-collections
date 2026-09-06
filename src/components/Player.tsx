@@ -1,8 +1,10 @@
 // The full-page media player: stage + overlay chrome + transport controls.
 // Mobile: swipe left/right + tap; Desktop: arrow keys + click zones. Auto-
 // advances images (secondsPerImage) and loops videos (videoLoopCount) via
-// usePlayer(). Overlay chrome: tip creator, tip curator, follow toggle, Buzz
-// balance readout. Tipped/followed state reflected optimistically.
+// usePlayer(). Overlay chrome: tip creator, tip curator, follow toggle. Tipped/
+// followed state reflected optimistically. (A Buzz balance readout lived in the
+// top overlay until 2026-09-05; `buzzBalance` is still a prop, but it is now
+// spent only on TipModal's pre-validation, never rendered as chrome.)
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -396,7 +398,13 @@ export function Player(props: PlayerProps) {
         )}
       </div>
 
-      {/* ---- top overlay: title + exit + buzz ---- */}
+      {/* ---- top overlay: title + exit ---- */}
+      {/* The THIRD "⚡ <balance>" readout lived here, sharing the `buzz-balance`
+          testid with the App header's. Removed 2026-09-05 alongside the other two
+          — this one is the most intrusive of the three, since it sat over the
+          media on the default `classic` playback surface. 🔴 `buzzBalance` remains
+          a required prop: it is still passed to the creator/curator TipModal below
+          for tip pre-validation. */}
       {chromeShown && (
         <div style={topBar(c)}>
           <button type="button" onClick={onExit} style={iconBtn(c)} aria-label="Back to collections" data-testid="player-exit">
@@ -408,9 +416,6 @@ export function Player(props: PlayerProps) {
               {detail.curator.username ? `curated by ${detail.curator.username}` : 'curated collection'}
             </span>
           </div>
-          <span style={buzzReadout(c)} data-testid="buzz-balance" aria-label="Your Buzz balance">
-            ⚡ {buzzBalance != null ? buzzBalance.toLocaleString() : '—'}
-          </span>
         </div>
       )}
 
@@ -704,17 +709,6 @@ const titleText: CSSProperties = {
   textShadow: '0 1px 3px rgba(0,0,0,0.8)',
 };
 const subText: CSSProperties = { color: 'rgba(255,255,255,0.8)', fontSize: 12, textShadow: '0 1px 3px rgba(0,0,0,0.8)' };
-function buzzReadout(c: Palette): CSSProperties {
-  return {
-    color: '#fff',
-    fontWeight: 700,
-    fontSize: 13,
-    background: c.overlay,
-    padding: '6px 10px',
-    borderRadius: 999,
-    whiteSpace: 'nowrap',
-  };
-}
 
 const rightRail: CSSProperties = {
   position: 'absolute',

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 
-import { CollectionGrid } from './CollectionGrid.js';
+import { CollectionGrid, RecentRail } from './CollectionGrid.js';
 import { palette } from '../theme.js';
 import type { CollectionSummary } from '../types.js';
 import { flushIntersections } from '../test-setup.js';
@@ -122,5 +122,66 @@ describe('CollectionGrid cover rendering (feedback #2)', () => {
     fireEvent.error(img as HTMLImageElement);
     expect(screen.getByTestId('cover-placeholder')).toBeInTheDocument();
     expect(document.querySelector('img')).toBeNull();
+  });
+});
+
+describe('CoverImage distinguishes an ABSENT level from a level of ZERO', () => {
+  // 🔴 MEASURED LIVE 2026-09-05 against production: `GET /api/v1/blocks/collections`
+  // does NOT return `coverNsfwLevel` at all — the response item keys are exactly
+  // [coverImageUrl, curator, description, followed, id, isPublic, itemCount, name].
+  // So `CollectionSummary.coverNsfwLevel` is ALWAYS `undefined`, the old
+  // `nsfwLevel ?? 0` collapsed that to 0 → 'unknown' → shouldBlur(0) === true, and
+  // 100% of cards on the discover grid rendered blurred and badged "Unrated".
+  //
+  // The gate is NOT deleted — it is made to tell the two cases apart, so it keeps
+  // working once the upstream field ships. These four tests pin BOTH halves: the
+  // absent case (open) and the supplied cases (unchanged, including a real 0).
+
+  it('an ABSENT coverNsfwLevel renders the cover UNGATED — no blur, no badge', () => {
+    renderGrid([summary({ coverImageUrl: 'https://cdn.example/x.jpg', coverNsfwLevel: undefined })]);
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    expect(screen.queryByTestId('cover-reveal')).toBeNull();
+    // The <img> itself carries no blur filter.
+    expect(document.querySelector('img')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('a SUPPLIED R level (4) still blurs and still badges — the gate is intact', () => {
+    renderGrid([summary({ coverImageUrl: 'https://cdn.example/x.jpg', coverNsfwLevel: 4 })]);
+    expect(screen.getByTestId('cover-gate')).toHaveAttribute('data-revealed', 'false');
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R');
+    expect(document.querySelector('img')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('🔴 an EXPLICIT ZERO still blurs — fail-closed is preserved for a real unrated level', () => {
+    // The discriminating case. A guard written as `nsfwLevel ?? 0` cannot see the
+    // difference between this row and the one above it; a guard written as
+    // `!nsfwLevel` would wrongly open this one too.
+    renderGrid([summary({ coverImageUrl: 'https://cdn.example/x.jpg', coverNsfwLevel: 0 })]);
+    expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+    expect(document.querySelector('img')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('a SUPPLIED PG level (1) is ungated, as it always was', () => {
+    renderGrid([summary({ coverImageUrl: 'https://cdn.example/x.jpg', coverNsfwLevel: 1 })]);
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+  });
+
+  it('the fix lives in CoverImage, so the RAILS get it too (not just the grid)', () => {
+    // CoverImage has three call sites (grid card, popular rail, recent rail). This
+    // pins that the change was made in the component rather than at one call site
+    // — a per-call-site fix would leave this rail blurring every cover.
+    render(
+      <RecentRail
+        entries={[{ id: 3, name: 'Continue', coverImageUrl: 'https://cdn.example/r.jpg', coverNsfwLevel: undefined }]}
+        onOpen={vi.fn()}
+        c={c}
+      />,
+    );
+    expect(screen.getByTestId('recent-card')).toBeInTheDocument();
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
   });
 });
