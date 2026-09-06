@@ -878,7 +878,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
                     aria-pressed={sort === 'popular'}
                     onClick={() => setSort('popular')}
                     data-testid="sort-popular"
-                    title="Most followed"
                   >
                     Popular
                   </Button>
@@ -892,10 +891,17 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
                     Newest
                   </Button>
                 </Group>
-                <span style={{ fontSize: 12, color: 'var(--civitai-color-text-dimmed)' }} data-testid="sort-hint">
-                  {sort === 'popular' ? 'Most followed' : 'Newest first'}
-                </span>
               </Group>
+              {/* 🔴 OUT OF THE CHIP ROW, AND PHRASED AS A SENTENCE. Sitting inline
+                  after the two chips at 12px dimmed, this read as a THIRD, disabled
+                  sort option — "Popular | Newest | Most followed" — which is a claim
+                  about the control surface, not about the sort. The same string was
+                  ALSO the `title` on the Popular button, so it was delivered twice by
+                  two mechanisms; that duplicate is gone. A sentence with a full stop
+                  cannot be mistaken for a chip. */}
+              <span style={{ fontSize: 12, color: 'var(--civitai-color-text-dimmed)' }} data-testid="sort-hint">
+                {sort === 'popular' ? 'Sorted by most followed.' : 'Sorted newest first.'}
+              </span>
             </Stack>
           </form>
 

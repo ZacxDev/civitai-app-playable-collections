@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SharedAppendValue, SharedListItem } from '@civitai/blocks-react';
 
 import {
+  POPULAR_MIN_ENTRIES,
+  POPULAR_MIN_PLAYS,
   entryCollectionId,
+  popularRailEntries,
   readPopular,
   recordPlay,
   resolvePopularEntries,
@@ -120,6 +123,47 @@ describe('the fake shared store matches the host contract for viewerVoted', () =
     shared.seed({ title: 'a', data: { collectionId: 1 } }, [7, 99]);
     const { items } = await shared.list();
     expect(items[0].viewerVoted).toBe(true);
+  });
+});
+
+describe('popularRailEntries — the rail must earn its heading', () => {
+  const e = (count: number) => ({ count });
+
+  it('hides everything when no entry clears the play floor', () => {
+    // The measured live shape: 6, 1, 1, 1, 1. One entry clears the floor, which
+    // is not a ranking, so the rail renders nothing.
+    expect(popularRailEntries([e(6), e(1), e(1), e(1), e(1)])).toEqual([]);
+  });
+
+  it('does NOT let sub-floor entries pad the set up to the entry floor', () => {
+    // 🔴 The ordering of the two checks is the whole point: six one-play entries
+    // would satisfy POPULAR_MIN_ENTRIES if the count were taken before the
+    // filter. Filtering first is what makes the play floor load-bearing.
+    expect(popularRailEntries([e(1), e(1), e(1), e(1), e(1), e(1)])).toEqual([]);
+  });
+
+  it('shows the qualifying entries once BOTH floors are met', () => {
+    const kept = popularRailEntries([e(9), e(4), e(2), e(1)]);
+    // The sub-floor entry is dropped, the rest survive in order.
+    expect(kept.map((x) => x.count)).toEqual([9, 4, 2]);
+  });
+
+  it('is exactly AT the boundary, not one either side of it', () => {
+    // 🔴 Boundary pinned against the CONSTANTS, not against literals, so a
+    // deliberate change to either floor moves this test with it — while an
+    // accidental off-by-one still fails.
+    const atFloor = Array.from({ length: POPULAR_MIN_ENTRIES }, () => e(POPULAR_MIN_PLAYS));
+    expect(popularRailEntries(atFloor)).toHaveLength(POPULAR_MIN_ENTRIES);
+
+    const oneShortOnCount = Array.from({ length: POPULAR_MIN_ENTRIES }, () => e(POPULAR_MIN_PLAYS - 1));
+    expect(popularRailEntries(oneShortOnCount)).toEqual([]);
+
+    const oneShortOnEntries = Array.from({ length: POPULAR_MIN_ENTRIES - 1 }, () => e(POPULAR_MIN_PLAYS));
+    expect(popularRailEntries(oneShortOnEntries)).toEqual([]);
+  });
+
+  it('an empty input is empty out, without throwing', () => {
+    expect(popularRailEntries([])).toEqual([]);
   });
 });
 

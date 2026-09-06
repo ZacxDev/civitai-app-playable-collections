@@ -36,6 +36,56 @@ function renderGrid(collections: CollectionSummary[]) {
   );
 }
 
+describe('an empty collection is not playable — this app is a player', () => {
+  // 🔴 MEASURED LIVE 2026-09-05: "Bookmarked Articles · 0 items" rendered an
+  // ordinary play affordance on the My-collections tab. Pressing it plays
+  // nothing, so the one thing the app exists to do silently does nothing — the
+  // failure mode is indistinguishable from the app being broken.
+  //
+  // 🔴 THIS TEST EXISTS BECAUSE A MUTANT SURVIVED. The guard shipped first with
+  // no coverage at all: flipping `disabled` to `false` left the whole suite green
+  // at 376/376. An unguarded fix is one line from being reverted by the next
+  // person who tidies the JSX.
+
+  it('disables the card and says why, instead of promising a play', () => {
+    renderGrid([summary({ id: 7, name: 'Bookmarked Articles', itemCount: 0 })]);
+    const card = screen.getByTestId('collection-card');
+    expect(card).toBeDisabled();
+    // The label states the reason rather than the (absent) item count.
+    expect(card).toHaveAttribute('aria-label', 'Bookmarked Articles — nothing to play yet');
+    expect(card.getAttribute('aria-label')).not.toMatch(/^Play /);
+  });
+
+  it('does NOT fire onOpen when an empty card is clicked', () => {
+    // 🔴 The BEHAVIOURAL half. `disabled` is an attribute; this asserts the
+    // consequence, because a card could carry the attribute and still be wired
+    // to something that fires (a wrapping handler, a keydown path).
+    const onOpen = vi.fn();
+    render(
+      <CollectionGrid
+        collections={[summary({ id: 7, name: 'Bookmarked Articles', itemCount: 0 })]}
+        loading={false}
+        error={null}
+        emptyLabel="empty"
+        onOpen={onOpen}
+        c={c}
+        isMobile={false}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('collection-card'));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('leaves a NON-empty collection alone — enabled, and still labelled "Play …"', () => {
+    // The control arm. Without it, `disabled` hardcoded to TRUE would pass every
+    // assertion above and break every collection in the app.
+    renderGrid([summary({ id: 8, name: 'Neon Cities', itemCount: 3 })]);
+    const card = screen.getByTestId('collection-card');
+    expect(card).not.toBeDisabled();
+    expect(card).toHaveAttribute('aria-label', 'Play Neon Cities — 3 items');
+  });
+});
+
 describe('CollectionGrid cover rendering (feedback #2)', () => {
   it('renders the ▶ placeholder tile (no <img>) when coverImageUrl is null', () => {
     renderGrid([summary({ coverImageUrl: null })]);
