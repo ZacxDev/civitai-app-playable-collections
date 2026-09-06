@@ -8,6 +8,13 @@ import { BlockGate, injectBlocksStyles } from '@civitai/blocks-react/ui';
 // token source rather than a transitive side-effect of the pack.
 import '@civitai/theme/styles.css';
 
+// The app-owned skin (`brandDepth: skin`). Redefines the `--civitai-color-*`
+// VALUES from the brand plate, so it must load after the package that defines
+// them — though it does not actually depend on that order: its selectors are
+// (0,2,0) against the package's (0,1,0) and win on specificity. See skin.css for
+// why it is unlayered while index.css is not.
+import './skin.css';
+
 import { App } from './App.js';
 import { Harness } from './Harness.js';
 import { installHarnessTransport } from './dev-transport.js';

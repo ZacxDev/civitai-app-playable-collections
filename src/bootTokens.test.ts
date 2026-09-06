@@ -1,20 +1,26 @@
 // The inline boot styles in index.html hardcode colour literals. Everything else in
 // this app is `var(--civitai-*)` with zero hardcoded colour (src/theme.ts), and that
 // is deliberate — but the boot window is the one place a var is unusable, because
-// `@civitai/theme/styles.css` is a render-blocking <link> that has not loaded yet.
-// These tests keep that necessary duplication honest: every literal is asserted
-// against the INSTALLED @civitai/theme, per region, so a theme bump that moves a
-// value fails here instead of shipping a colour jump at handoff.
+// the stylesheets that define those tokens are render-blocking <link>s that have not
+// loaded yet. These tests keep that necessary duplication honest: every literal is
+// asserted against the file that owns the value, per region, so a change there fails
+// here instead of shipping a colour jump at handoff.
+//
+// 🔴 THE SOURCE OF TRUTH MOVED IN 0.2.9, AND THAT IS THE POINT OF THIS FILE.
+// Until 0.2.8 this app was `brandDepth: accent`, so the boot literals were copies of
+// the INSTALLED `@civitai/theme` and this suite asserted them against that package.
+// The app is now `brandDepth: skin`: src/skin.css overrides those same token VALUES,
+// so the package is no longer what the first React commit paints. Left pointed at
+// the package, every assertion below would still have passed — while the viewer got
+// a platform-grey boot that snapped to rose at handoff, which is exactly the defect
+// this suite exists to prevent. It now reads src/skin.css.
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 
 const INDEX_HTML = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 
-const THEME_CSS = readFileSync(
-  createRequire(import.meta.url).resolve('@civitai/theme/styles.css'),
-  'utf8',
-);
+/** The app's own palette — see the note above; NOT @civitai/theme. */
+const SKIN_CSS = readFileSync(new URL('./skin.css', import.meta.url), 'utf8');
 
 /**
  * The inline `<style>` body ONLY.
@@ -49,21 +55,21 @@ function bootValue(selector: string, prop: string): string {
   return tokenValue(BOOT_CSS, selector, prop);
 }
 
-describe('boot token parity with @civitai/theme', () => {
-  it('the DARK literals match the package [data-theme=dark] block', () => {
-    const body = tokenValue(THEME_CSS, "[data-theme='dark']", '--civitai-color-body');
-    const text = tokenValue(THEME_CSS, "[data-theme='dark']", '--civitai-color-text');
-    const surface = tokenValue(THEME_CSS, "[data-theme='dark']", '--civitai-color-surface');
+describe('boot token parity with src/skin.css (NOT @civitai/theme — see the header)', () => {
+  it('the DARK literals match the skin base block', () => {
+    const body = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-body');
+    const text = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-text');
+    const surface = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-surface');
 
     expect(bootValue(':root', '--pc-boot-body')).toBe(body);
     expect(bootValue(':root', '--pc-boot-text')).toBe(text);
     expect(bootValue(':root', '--pc-boot-surface')).toBe(surface);
   });
 
-  it('the LIGHT literals match the package :root block', () => {
-    const body = tokenValue(THEME_CSS, ':root', '--civitai-color-body');
-    const text = tokenValue(THEME_CSS, ':root', '--civitai-color-text');
-    const surface = tokenValue(THEME_CSS, ':root', '--civitai-color-surface');
+  it('the LIGHT literals match the skin light block', () => {
+    const body = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-body');
+    const text = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-text');
+    const surface = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-surface');
 
     const media = BOOT_CSS.slice(BOOT_CSS.indexOf('@media (prefers-color-scheme: light)'));
     expect(tokenValue(media, ':root', '--pc-boot-body')).toBe(body);
@@ -76,8 +82,8 @@ describe('boot token parity with @civitai/theme', () => {
   // media query or an explicit light signal would make a no-preference viewer boot
   // light while every other layer of this app resolves unknown to dark.
   it('no light value is reachable without an explicit light signal', () => {
-    const lightBody = tokenValue(THEME_CSS, ':root', '--civitai-color-body');
-    const darkBody = tokenValue(THEME_CSS, "[data-theme='dark']", '--civitai-color-body');
+    const lightBody = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-body');
+    const darkBody = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-body');
     expect(lightBody).not.toBe(darkBody); // sanity: or this test proves nothing
 
     expect(bootValue(':root', '--pc-boot-body')).toBe(darkBody);
@@ -94,8 +100,8 @@ describe('boot token parity with @civitai/theme', () => {
   // `background` DECLARATION is not decoration: it paints the html canvas, the layer
   // beneath the skeleton. Flipping it to white changed nothing and no test failed.
   it('every html-canvas background matches its region', () => {
-    const lightBody = tokenValue(THEME_CSS, ':root', '--civitai-color-body');
-    const darkBody = tokenValue(THEME_CSS, "[data-theme='dark']", '--civitai-color-body');
+    const lightBody = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-body');
+    const darkBody = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-body');
 
     const baseHtml = BOOT_CSS.indexOf('html {');
     expect(baseHtml).toBeGreaterThan(-1);

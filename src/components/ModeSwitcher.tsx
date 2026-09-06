@@ -146,7 +146,10 @@ function segStyle(selected: boolean, size: 'sm' | 'md'): CSSProperties {
     cursor: 'pointer',
     whiteSpace: 'nowrap',
     fontFamily: 'inherit',
-    color: selected ? 'var(--civitai-color-primary-fg, #fff)' : 'var(--civitai-color-text)',
+    // No `, #fff` fallback: the token is @property-registered with an
+    // initial-value, so it can never resolve to nothing — the fallback was dead,
+    // and under the skin its literal disagreed with dark's primary-fg (#2a0611).
+    color: selected ? 'var(--civitai-color-primary-fg)' : 'var(--civitai-color-text)',
     background: selected ? 'var(--civitai-color-primary)' : 'transparent',
     transition: 'background 120ms ease',
   };
