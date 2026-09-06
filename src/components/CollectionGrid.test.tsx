@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+
+import { Harness } from '@civitai/blocks-react/testing';
 
 import { CollectionGrid, RecentRail } from './CollectionGrid.js';
 import { palette } from '../theme.js';
@@ -183,5 +185,144 @@ describe('CoverImage distinguishes an ABSENT level from a level of ZERO', () => 
     expect(screen.getByTestId('recent-card')).toBeInTheDocument();
     expect(screen.queryByTestId('cover-gate')).toBeNull();
     expect(screen.queryByTestId('maturity-badge')).toBeNull();
+  });
+});
+
+describe('the ABSENT-level fail-open is scoped to a SFW DOMAIN CEILING', () => {
+  // 🔴 THE GAP THIS SUITE CLOSES. #17 shipped `nsfwLevel !== undefined &&
+  // shouldBlur(nsfwLevel)` — unconditional — justified by evidence that was
+  // ceiling-scoped: "0 of the top 500 collections play a mature item ON A SFW
+  // CEILING", all of it measured at `maxBrowsingLevel: 3` (PG|PG13).
+  //
+  // The code generalised that to EVERY ceiling, and the two come apart on a
+  // red-capable host: `domainBrowsingCeiling` returns `allBrowsingLevelsFlag`
+  // there, and the contentRating refusal only blocks MATURE-RATED apps off red —
+  // a `pg13` app like this one gets the full ceiling. On that path
+  // `getFallbackCoverImages` can legitimately return an R/X/XXX cover while
+  // `coverNsfwLevel` is still absent, so the #17 guard computed `mature === false`
+  // and rendered a mature cover unblurred with no badge — contradicting this app's
+  // own store description ("Anything rated above PG-13 stays blurred until you
+  // confirm once that you're 18+").
+  //
+  // The guard now TESTS the condition its evidence was measured under:
+  //   supplied level     → shouldBlur(level)   (unchanged, both ceilings)
+  //   absent + SFW       → open   (the clamp evidence covers exactly this)
+  //   absent + mature    → gated  (no clamp guarantee ⇒ fail closed)
+
+  const coverAt = (over: Partial<CollectionSummary> = {}) =>
+    summary({ coverImageUrl: 'https://cdn.example/x.jpg', ...over });
+
+  /** Render the grid inside a host projecting a given domain maturity ceiling. */
+  function renderAtCeiling(maturity: 'sfw' | 'mature', collections: CollectionSummary[]) {
+    return render(
+      <Harness maturity={maturity} showLog={false}>
+        <CollectionGrid
+          collections={collections}
+          loading={false}
+          error={null}
+          emptyLabel="empty"
+          onOpen={vi.fn()}
+          c={c}
+          isMobile={false}
+        />
+      </Harness>,
+    );
+  }
+
+  it('🔴 absent level + MATURE ceiling → BLURRED and badged (the #17 regression)', async () => {
+    // RED on 2dc319f3a: the merged guard returns `mature === false` here and the
+    // cover renders wide open. This is the whole point of the change.
+    renderAtCeiling('mature', [coverAt({ coverNsfwLevel: undefined })]);
+    await waitFor(() => expect(screen.getByTestId('cover-gate')).toBeInTheDocument());
+    // We do not know the rating — so it is gated AND labelled honestly as unrated,
+    // never as a specific tier we cannot substantiate.
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+    expect(screen.getByTestId('cover-reveal')).toBeInTheDocument();
+    expect(document.querySelector('img')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('absent level + SFW ceiling → OPEN (the clamp evidence covers this case)', async () => {
+    renderAtCeiling('sfw', [coverAt({ coverNsfwLevel: undefined })]);
+    // Positive control that the ceiling actually landed: the grid renders, and the
+    // cover is open. If BLOCK_INIT never arrived this would ALSO be open (isSfw
+    // fail-closes to true), which is why the mature case above is the load-bearing
+    // one — it can only pass if the projected ceiling genuinely reached the hook.
+    await waitFor(() => expect(screen.getByTestId('collection-card')).toBeInTheDocument());
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    expect(document.querySelector('img')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('🔴 a MATURE ceiling does not blur EVERYTHING — a supplied PG (1) cover stays open', async () => {
+    // The discriminating control for the test above it. Without this, a mutant
+    // that gates every cover on a mature domain (or a harness that somehow blurs
+    // unconditionally) would still satisfy the mature-ceiling assertion, and the
+    // suite would be pinning "mature ⇒ blur" rather than "absent + mature ⇒ blur".
+    renderAtCeiling('mature', [coverAt({ coverNsfwLevel: 1 })]);
+    await waitFor(() => expect(screen.getByTestId('collection-card')).toBeInTheDocument());
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+  });
+
+  // ---- a SUPPLIED level behaves identically under BOTH ceilings (4 cases) ----
+  // The ceiling term must apply ONLY to the absent branch. These four pin that a
+  // real rating is still decided by `shouldBlur` alone, so the new term cannot
+  // start overriding server-supplied levels in either direction.
+
+  it('supplied R (4) + SFW ceiling → blurred + badged R', async () => {
+    renderAtCeiling('sfw', [coverAt({ coverNsfwLevel: 4 })]);
+    await waitFor(() => expect(screen.getByTestId('cover-gate')).toBeInTheDocument());
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R');
+  });
+
+  it('supplied R (4) + MATURE ceiling → still blurred + badged R (a permissive domain does NOT unblur a known-R cover)', async () => {
+    renderAtCeiling('mature', [coverAt({ coverNsfwLevel: 4 })]);
+    await waitFor(() => expect(screen.getByTestId('cover-gate')).toBeInTheDocument());
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R');
+    expect(document.querySelector('img')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('supplied 0 + SFW ceiling → blurred + badged Unrated', async () => {
+    renderAtCeiling('sfw', [coverAt({ coverNsfwLevel: 0 })]);
+    await waitFor(() => expect(screen.getByTestId('cover-gate')).toBeInTheDocument());
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+  });
+
+  it('supplied 0 + MATURE ceiling → still blurred + badged Unrated', async () => {
+    renderAtCeiling('mature', [coverAt({ coverNsfwLevel: 0 })]);
+    await waitFor(() => expect(screen.getByTestId('cover-gate')).toBeInTheDocument());
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+  });
+
+  it('🔴 PRE-BLOCK_INIT / a host with no ceiling → treated as SFW, so an absent level renders OPEN', () => {
+    // An explicit assertion of a REAL state rather than an implied one. `isSfw`
+    // fail-closes to `true` when the ceiling is absent — before BLOCK_INIT lands,
+    // and against any host predating civitai #2670 (verified in the SDK:
+    // `isSfwCeiling` returns true for a non-number mask). Assuming the STRICTEST
+    // domain is the consistent choice, because that is exactly the domain the
+    // clamp evidence was measured on.
+    //
+    // Rendered with NO <Harness> at all, so no BLOCK_INIT is ever delivered. This
+    // is also why every other bare-render test in this file exercises the SFW arm.
+    renderGrid([coverAt({ coverNsfwLevel: undefined })]);
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    expect(document.querySelector('img')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('the ceiling term reaches the RAILS too — absent level + mature ceiling gates a recent-rail cover', async () => {
+    // Same call-site argument as the SFW rail test above: CoverImage owns the
+    // hook, so all three call sites inherit it and none can forget to pass it.
+    render(
+      <Harness maturity="mature" showLog={false}>
+        <RecentRail
+          entries={[{ id: 3, name: 'Continue', coverImageUrl: 'https://cdn.example/r.jpg', coverNsfwLevel: undefined }]}
+          onOpen={vi.fn()}
+          c={c}
+        />
+      </Harness>,
+    );
+    await waitFor(() => expect(screen.getByTestId('cover-gate')).toBeInTheDocument());
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 });
