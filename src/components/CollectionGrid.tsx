@@ -19,6 +19,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
+import { useDomainMaturity } from '@civitai/blocks-react';
 import { Alert, Badge, Button, Card, Loader } from '@civitai/blocks-react/ui';
 
 import type { CollectionSummary } from '../types.js';
@@ -91,6 +92,17 @@ function useCoverObserver(): RegisterCover {
  */
 export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palette; nsfwLevel?: number }) {
   const register = useContext(CoverObserverContext);
+  // Read the domain ceiling HERE rather than threading an `isSfw` prop from the
+  // three call sites (grid card, popular rail, recent rail). Two reasons: a call
+  // site cannot forget it — which is the exact defect class the absent-vs-zero
+  // fix below was written for — and `useDomainMaturity` reads the SAME singleton
+  // transport snapshot `useBlockContext` does, so a per-card call is a
+  // `useSyncExternalStore` subscription to an already-existing store, not new
+  // per-card state. (Contrast `CoverObserverContext` above, which IS shared via
+  // context because N IntersectionObservers would be N real objects.)
+  //
+  // 🔴 Must stay ABOVE the `!src` early return — hooks cannot be conditional.
+  const { isSfw } = useDomainMaturity();
   const [failed, setFailed] = useState(false);
   const [revealed, setRevealed] = useState(false);
 
@@ -102,37 +114,51 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
     );
   }
 
-  // Gate a mature cover (badge + blur-until-tap) — but ONLY when the server told
-  // us a level. ABSENT and ZERO are different facts and must not be collapsed:
+  // Gate a mature cover (badge + blur-until-tap). Three cases, not two — ABSENT,
+  // ZERO and "a real rating" are all different facts:
   //
-  //   nsfwLevel === undefined  → the endpoint supplied nothing  → render open
-  //   nsfwLevel supplied (0 too) → a real rating → gate exactly as before
+  //   nsfwLevel supplied (0 too) → a real rating → shouldBlur(), both ceilings
+  //   absent + SFW domain ceiling    → render open
+  //   absent + MATURE domain ceiling → gate (we know nothing; assume the worst)
   //
-  // 🔴 THIS REVERSES AN EARLIER DELIBERATE DECISION, so here is what changed. The
-  // previous comment recorded that an older `nsfwLevel != null && …` short-circuit
-  // "failed OPEN on an absent level" and was replaced by `nsfwLevel ?? 0` to fail
-  // CLOSED. Measured live 2026-09-05 against production, that fix was load-bearing
-  // in the wrong direction: `GET /api/v1/blocks/collections` does not return
-  // `coverNsfwLevel` at all — the item keys are exactly [coverImageUrl, curator,
-  // description, followed, id, isPublic, itemCount, name] — so EVERY cover took
-  // the absent branch, `shouldBlur(0)` returned true, and 100% of cards on the
-  // discover grid rendered blurred and badged "Unrated".
+  // 🔴 WHY ABSENT IS NOT SIMPLY "GATE". Measured live 2026-09-05 against
+  // production, `GET /api/v1/blocks/collections` does not return `coverNsfwLevel`
+  // at all — the item keys are exactly [coverImageUrl, curator, description,
+  // followed, id, isPublic, itemCount, name]. So absent is not a rare edge, it is
+  // EVERY row: an earlier `nsfwLevel ?? 0` collapsed absent into 0, `shouldBlur(0)`
+  // returned true, and 100% of cards rendered blurred and badged "Unrated".
   //
-  // Failing open is sound FOR COVERS SPECIFICALLY, and not because "the server is
-  // trusted" in general: the collections service clamps the cover URL by the
-  // token's `browsingLevel` BEFORE returning it — `primaryCoverUsable` rejects a
-  // primary cover above the ceiling and `getFallbackCoverImages` substitutes one
-  // within it (<civitai> src/server/services/blocks/block-collections.service.ts).
-  // A cover that comes back is therefore already inside the viewer's ceiling.
-  // Measured: all 24 rows of live page 1 had a cover, and 0 of the top 500
-  // collections play a mature item on a SFW ceiling.
+  // 🔴 WHY IT IS NOT SIMPLY "OPEN" EITHER, AND WHY THE CEILING IS IN THE TEST.
+  // The justification for opening is a SERVER-SIDE CLAMP: the collections service
+  // clamps the cover URL by the token's `browsingLevel` before returning it —
+  // `primaryCoverUsable` rejects a primary cover above the ceiling and
+  // `getFallbackCoverImages` substitutes one within it (<civitai>
+  // src/server/services/blocks/block-collections.service.ts).
   //
-  // 🔴 The gate is NARROWED, not deleted — a supplied level still gates, so this
-  // keeps working unchanged once the upstream `coverNsfwLevel` field ships. And it
-  // is confined to COVERS: `MediaItem.nsfwLevel` in the player is required, always
-  // present, and a 0 there really does mean unrated — that path stays fail-closed
-  // (see ../lib/maturity.ts, which is deliberately untouched).
-  const mature = nsfwLevel !== undefined && shouldBlur(nsfwLevel);
+  // That evidence is CEILING-SCOPED and must not be quoted wider than it was
+  // taken: all of it was measured at `maxBrowsingLevel: 3` (PG|PG13) — all 24 rows
+  // of live page 1 had a cover, and 0 of the top 500 collections play a mature item
+  // ON A SFW CEILING. #17 shipped the guard UNCONDITIONALLY and so generalised a
+  // SFW-only measurement to every domain. On a red-capable host the two come apart:
+  // `domainBrowsingCeiling` returns `allBrowsingLevelsFlag`, and the contentRating
+  // refusal only blocks MATURE-RATED apps off red, so this `pg13` app gets the full
+  // ceiling — `getFallbackCoverImages` may then legitimately return an R/X/XXX
+  // cover with `coverNsfwLevel` still absent, which #17 rendered unblurred and
+  // unbadged. That contradicted this app's own store description ("Anything rated
+  // above PG-13 stays blurred until you confirm once that you're 18+").
+  //
+  // So the guard now tests the condition its evidence was gathered under. `isSfw`
+  // is derived from the ceiling BITMASK (never the domain string) and FAIL-CLOSES
+  // TO TRUE before `BLOCK_INIT` lands and against any host predating civitai
+  // #2670 — so an absent level renders OPEN in those states. That is deliberate
+  // and consistent: an unknown ceiling is treated as the strictest domain, which
+  // is exactly the domain the clamp evidence covers.
+  //
+  // 🔴 STILL CONFINED TO COVERS. `MediaItem.nsfwLevel` in the player is required
+  // and always present, so a 0 there is a real "unrated" and stays fail-closed on
+  // EVERY ceiling — ../lib/maturity.ts is deliberately untouched, and
+  // CollectionViewer.test.tsx pins that seam under both ceilings.
+  const mature = nsfwLevel !== undefined ? shouldBlur(nsfwLevel) : !isSfw;
   const blurred = mature && !revealed;
 
   const img = (
@@ -156,9 +182,12 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
     <div style={coverGateWrap} data-testid="cover-gate" data-revealed={revealed ? 'true' : 'false'}>
       {img}
       <span style={coverBadgeSlot}>
-        {/* Unreachable fallback: `mature` is only true when a level was supplied,
-            and we returned above otherwise. The `?? 0` is here to satisfy the
-            compiler, not to express a behaviour. */}
+        {/* 🔴 The `?? 0` is now a LIVE path, not the dead compiler-appeasing
+            fallback the previous comment here described: `mature` is true for an
+            ABSENT level on a mature ceiling, and 0 → maturityBucket 'unknown' →
+            the neutral "Unrated" label. That is the honest badge for a cover
+            whose rating the server never sent — we gate it, but we do not claim
+            a tier we cannot substantiate. */}
         <MaturityBadge nsfwLevel={nsfwLevel ?? 0} />
       </span>
       {!revealed && (

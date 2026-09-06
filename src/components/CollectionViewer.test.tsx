@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Harness } from '@civitai/blocks-react/testing';
+
 import { CollectionViewer } from './CollectionViewer.js';
 import { resetMatureGate } from '../lib/mature-session.js';
 import { palette } from '../theme.js';
@@ -193,6 +195,44 @@ describe('CollectionViewer — content maturity (session-level 18+ gate, ship-bl
     expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
     // Still fail-closed: an unrated item starts blurred until the gate is accepted.
     expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('🔴 SEAM GUARD (both ceilings): a real nsfwLevel 0 gates on a MATURE domain too', async () => {
+    // The cover fail-open is now DOMAIN-SCOPED (absent level + SFW ceiling only).
+    // A permissive domain ceiling must not become a licence to unblur the ITEM
+    // path: `MediaItem.nsfwLevel` is required and always present, so a 0 there is
+    // a real "unrated" and stays fail-closed no matter what the domain allows.
+    //
+    // This is the direction a future "the domain allows R, so stop blurring"
+    // change would break, and neither the SFW-ceiling test below nor the cover
+    // suite would notice — the cover tests never render a MediaItem.
+    render(
+      <Harness maturity="mature" showLog={false}>
+        <CollectionViewer
+          detail={detail()}
+          items={[mature(1, 0), img(2)]}
+          settings={{ secondsPerImage: 5, videoLoopCount: 1 }}
+          onSecondsPerImageChange={() => {}}
+          onVideoLoopCountChange={() => {}}
+          viewerUserId={99}
+          buzzBalance={1000}
+          followed={false}
+          followPending={false}
+          onToggleFollow={() => {}}
+          onTip={async () => true}
+          tipping={false}
+          isMobile={false}
+          c={c}
+          onExit={() => {}}
+          storage={memStorage()}
+          reducedMotion
+        />
+      </Harness>,
+    );
+    await waitFor(() => expect(screen.getByTestId('media-image')).toBeInTheDocument());
+    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 
   it('🔴 SEAM GUARD: the COVER fail-open does NOT leak into the ITEM path — nsfwLevel 0 still gates', () => {
