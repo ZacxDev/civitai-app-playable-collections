@@ -238,7 +238,7 @@ describe('App — discover + tabs', () => {
     await waitFor(() => expect(screen.getByTestId('buzz-balance')).toHaveTextContent('1,234'));
   });
 
-  it('offers a Popular ↔ Newest sort toggle, defaulting to Popular labelled "Most followed" (feedback #3)', async () => {
+  it('offers a Popular ↔ Newest sort toggle, and describes the active sort as a sentence rather than a third chip', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api });
     await screen.findByTestId('collection-grid');
@@ -252,8 +252,14 @@ describe('App — discover + tabs', () => {
     // Default = Popular, and it's labelled so users know what it means.
     expect(popular).toHaveAttribute('aria-pressed', 'true');
     expect(newest).toHaveAttribute('aria-pressed', 'false');
-    expect(popular).toHaveAttribute('title', 'Most followed');
-    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Most followed');
+    // 🔴 The `title` is GONE on purpose and this asserts its absence, not merely
+    // the new text. The same string used to be delivered twice — as a native
+    // tooltip on the button AND as the visible hint — so dropping one without a
+    // guard would leave the duplicate free to come back.
+    expect(popular).not.toHaveAttribute('title');
+    // A SENTENCE, with a full stop: inline after the two chips at 12px dimmed,
+    // the bare "Most followed" read as a third, disabled sort option.
+    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Sorted by most followed.');
   });
 
   it('toggling the sort re-fetches the list from page 1 with the new sort (feedback #3)', async () => {
@@ -277,7 +283,7 @@ describe('App — discover + tabs', () => {
     await waitFor(() => expect(seen.some((s) => s.sort === 'newest')).toBe(true));
     expect(seen.every((s) => s.cursor === undefined)).toBe(true);
     expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Newest first');
+    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Sorted newest first.');
   });
 
   it('switches to My collections and shows own public + private when private access is granted', async () => {
@@ -581,11 +587,32 @@ describe('App — analytics events (Feature #10)', () => {
     renderApp({
       api: createFakeApi({ viewerUserId: 99 }),
       onEvent: (e) => events.push(e),
-      shared: { seed: [{ value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] }] },
+      // 🔴 THREE entries, each at or above POPULAR_MIN_PLAYS — the rail is only
+      // rendered when both floors are met, so a single seeded entry would hide it
+      // and this test would fail for a reason unrelated to its subject.
+      shared: {
+        seed: [
+          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
+          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
+          // 🔴 201 ('My Public Board') — an id the fake API actually ships.
+          // `resolvePopularEntries` DROPS an unresolvable id, so an invented
+          // companion shrinks the set below the entry floor and hides the rail.
+          { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
+        ],
+      },
     });
     await screen.findByTestId('collection-grid');
     const rail = await screen.findByTestId('popular-rail');
-    await userEvent.click(within(rail).getByTestId('popular-card'));
+    // 🔴 PICKED BY IDENTITY, NOT BY POSITION. The rail needs three entries to
+    // render, and it RANKS them by play count — so `[0]` is whichever companion
+    // happens to be most-played, and this test asserts on collectionId 101. An
+    // index here couples the assertion to a ranking that is not its subject;
+    // it failed exactly that way once before this comment was written.
+    const neon = within(rail)
+      .getAllByTestId('popular-card')
+      .find((el) => el.getAttribute('aria-label')?.includes('Neon Cities'));
+    expect(neon).toBeDefined();
+    await userEvent.click(neon!);
     await screen.findByTestId('collection-viewer');
     expect(events).toContainEqual(expect.objectContaining({ type: 'popular_open', collectionId: 101 }));
   });
@@ -743,12 +770,29 @@ describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', 
     };
     renderApp({
       api,
-      shared: { seed: [{ value: { title: 'Hidden Gem', data: { collectionId: 999 } }, voters: [1, 2, 3, 4, 5] }] },
+      // Hidden Gem is the SUBJECT (an id absent from every loaded list); the two
+      // companions exist only so the rail clears POPULAR_MIN_ENTRIES and renders.
+      shared: {
+        seed: [
+          { value: { title: 'Hidden Gem', data: { collectionId: 999 } }, voters: [1, 2, 3, 4, 5] },
+          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
+          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
+        ],
+      },
     });
     await screen.findByTestId('collection-grid');
     const rail = await screen.findByTestId('popular-rail');
     expect(rail).toHaveTextContent('Hidden Gem');
-    expect(within(rail).getByTestId('popular-card')).toHaveAttribute('aria-label', 'Play Hidden Gem — played 5 times');
+    // 🔴 SCOPED TO THE SUBJECT, not to "the only card". The rail now needs three
+    // entries to render at all, so `getByTestId('popular-card')` is ambiguous by
+    // construction; the two companions exist only to clear the entry floor and
+    // are not what this test is about. Asserting on the whole set would couple
+    // this test to the threshold's value.
+    const gem = within(rail)
+      .getAllByTestId('popular-card')
+      .find((el) => el.getAttribute('aria-label')?.includes('Hidden Gem'));
+    expect(gem).toBeDefined();
+    expect(gem).toHaveAttribute('aria-label', 'Play Hidden Gem — played 5 times');
   });
 
   it('drops an unresolvable popular id (getCollection 404) — rail hidden, not crashed', async () => {

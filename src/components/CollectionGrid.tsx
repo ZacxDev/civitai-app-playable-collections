@@ -25,6 +25,7 @@ import type { CollectionSummary } from '../types.js';
 import type { Palette } from '../theme.js';
 import type { RecentEntry } from '../lib/recent.js';
 import { shouldBlur } from '../lib/maturity.js';
+import { popularRailEntries } from '../lib/popular.js';
 import { MaturityBadge, MATURITY_BLUR_PX } from './Maturity.js';
 
 /** ~150px prefetch margin so a cover loads just before it enters the viewport. */
@@ -296,7 +297,19 @@ export function CollectionCard({
       onClick={() => onOpen(collection)}
       style={cardBtn}
       data-testid="collection-card"
-      aria-label={`Play ${collection.name} — ${collection.itemCount} items`}
+      // 🔴 AN EMPTY COLLECTION IS NOT PLAYABLE, AND THIS IS A PLAYER. Measured
+      // live: "Bookmarked Articles · 0 items" rendered an ordinary play
+      // affordance, so the one thing the app exists to do silently does nothing.
+      // `disabled` rather than hidden: the collection is really there and the
+      // viewer put it there, so removing it from their own list would be a
+      // second lie. The label says WHY instead of promising a play.
+      disabled={collection.itemCount === 0}
+      data-empty={collection.itemCount === 0 ? 'true' : undefined}
+      aria-label={
+        collection.itemCount === 0
+          ? `${collection.name} — nothing to play yet`
+          : `Play ${collection.name} — ${collection.itemCount} items`
+      }
     >
       <div style={coverWrap}>
         <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} />
@@ -334,13 +347,18 @@ export interface PopularRailProps {
 
 export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
   const register = useCoverObserver();
-  if (entries.length === 0) return null;
+  // 🔴 THE RAIL FILTERS ITSELF rather than trusting its caller. The heading makes
+  // a claim ("Popular right now") that only the data can honour, so the component
+  // that renders the claim is the one that checks it — a caller cannot forget.
+  // See `popularRailEntries` for the two thresholds and why one is not enough.
+  const shown = popularRailEntries(entries);
+  if (shown.length === 0) return null;
   return (
     <CoverObserverContext.Provider value={register}>
       <section aria-label="Popular collections" data-testid="popular-rail" style={{ display: 'grid', gap: 8 }}>
         <h2 style={railHeading}>🔥 Popular right now</h2>
         <div style={railScroller}>
-          {entries.map(({ collection, count }) => (
+          {shown.map(({ collection, count }) => (
             <button
               key={collection.id}
               type="button"

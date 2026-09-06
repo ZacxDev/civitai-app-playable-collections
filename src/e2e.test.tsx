@@ -268,20 +268,22 @@ describe('follow toggle', () => {
 });
 
 describe('popular rail (shared play-counts)', () => {
-  it('appears on discover after a collection has been played (recordPlay → mock host SHARED store)', async () => {
+  // 🔴 REPOINTED, NOT DELETED — and this test used to PIN THE DEFECT. It asserted
+  // that a SINGLE play puts a collection on a rail headed "🔥 Popular right now",
+  // which is the exact behaviour the threshold removes: one play cannot tell
+  // "people like this" from "the author opened it once". Its real subject — the
+  // recordPlay → SHARED store → readPopular round trip — is unchanged and still
+  // asserted below; only the claim about what ONE play earns has moved.
+  it('records a play in the SHARED store, but ONE play does not earn the popular rail', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     await openNeon(api);
     await userEvent.click(screen.getByTestId('player-exit'));
-    // Back on discover, the popular rail should now include the played collection.
-    // Opening it fired `recordPlay(shared, …)` which appended + self-voted an
-    // entry in the host's SHARED store; `readPopular` reads it back (count 1).
-    await waitFor(() => expect(screen.queryByTestId('popular-rail')).toBeInTheDocument());
-    const rail = screen.getByTestId('popular-rail');
-    expect(rail).toHaveTextContent('Neon Cities');
-    expect(within(rail).getByTestId('popular-card')).toHaveAttribute(
-      'aria-label',
-      'Play Neon Cities — played 1 times',
-    );
+    // The play WAS recorded — the collection is reachable on discover as ever …
+    await waitFor(() => expect(screen.getByTestId('collection-grid')).toBeInTheDocument());
+    expect(screen.getByTestId('collection-grid')).toHaveTextContent('Neon Cities');
+    // … and the rail stays absent, with no copy explaining why.
+    expect(screen.queryByTestId('popular-rail')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Popular right now/)).not.toBeInTheDocument();
   });
 
   it('ranks the rail by distinct-viewer vote count (desc) from the seeded SHARED store', async () => {
@@ -298,8 +300,18 @@ describe('popular rail (shared play-counts)', () => {
           seed: [
             // Newest-first insertion order is [101, 102]; votes invert that so a
             // pure insertion-order rail would be WRONG.
-            { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1] }, // count 1
+            // 🔴 All three clear POPULAR_MIN_PLAYS and there are POPULAR_MIN_ENTRIES
+            // of them, so the rail renders and the RANKING claim is what is under
+            // test. Seeding below the floor would hide the rail and this test
+            // would fail for a reason that has nothing to do with ordering.
+            { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] }, // count 2
             { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] }, // count 3
+            // 🔴 201 ('My Public Board'), NOT an invented id: `resolvePopularEntries`
+            // DROPS an entry whose collectionId resolves to nothing, so an
+            // unresolvable companion silently shrinks the set below the entry floor
+            // and hides the rail — the test then fails for a reason that has nothing
+            // to do with ranking. The fake API ships 101, 102, 201, 202.
+            { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] }, // count 4
           ],
         }}
       >
@@ -310,7 +322,8 @@ describe('popular rail (shared play-counts)', () => {
     const rail = await screen.findByTestId('popular-rail');
     const cards = within(rail).getAllByTestId('popular-card');
     // Ranked count-desc: Forest Studies (3) before Neon Cities (1).
-    expect(cards[0]).toHaveAttribute('aria-label', 'Play Forest Studies — played 3 times');
-    expect(cards[1]).toHaveAttribute('aria-label', 'Play Neon Cities — played 1 times');
+    expect(cards[0]).toHaveAttribute('aria-label', 'Play My Public Board — played 4 times');
+    expect(cards[1]).toHaveAttribute('aria-label', 'Play Forest Studies — played 3 times');
+    expect(cards[2]).toHaveAttribute('aria-label', 'Play Neon Cities — played 2 times');
   });
 });

@@ -95,6 +95,50 @@ export async function readPopular(shared: SharedReadStore, limit: number): Promi
 }
 
 /** One resolved rail entry: a full collection card + its distinct-viewer play count. */
+/**
+ * 🔴 THE RAIL MUST EARN ITS HEADING. Measured live 2026-09-05, the five cards on
+ * `🔥 Popular right now` read **6, 1, 1, 1, 1 plays** — a ranking in which four
+ * of five entries are tied at the minimum possible non-zero value. That is not a
+ * popularity signal; it is the app's own play counter with almost nothing in it,
+ * presented as one, on the most prominent surface after the title.
+ *
+ * Two thresholds, because one does not cover it:
+ *
+ * - {@link POPULAR_MIN_PLAYS} — a SINGLE play cannot distinguish "people like
+ *   this" from "someone opened it once", including the author testing their own
+ *   entry. Two is the smallest count that can mean a return visit or a second
+ *   person.
+ * - {@link POPULAR_MIN_ENTRIES} — a "rail" of one or two cards is not a ranking,
+ *   it is a list with a superlative over it. Three is the smallest set in which
+ *   an ORDER carries information.
+ *
+ * 🔴 BELOW EITHER, THE RAIL RENDERS NOTHING AT ALL — no heading, and deliberately
+ * no copy explaining the absence. An explanation would re-raise exactly the thing
+ * the threshold exists to suppress, and an absent rail asks no questions: the
+ * Discover grid below is a complete front door on its own.
+ */
+export const POPULAR_MIN_PLAYS = 2;
+
+/** @see POPULAR_MIN_PLAYS */
+export const POPULAR_MIN_ENTRIES = 3;
+
+/**
+ * The entries the popular rail may show, or an EMPTY ARRAY when the data does
+ * not support the claim the heading makes.
+ *
+ * Returning `[]` rather than a boolean is deliberate: `PopularRail` already
+ * renders nothing for an empty list, so the threshold reuses the one hiding
+ * mechanism that exists instead of adding a second one that could disagree with
+ * it.
+ *
+ * 🔴 The filter runs BEFORE the count check, so entries below the play floor
+ * cannot pad the set to reach the entry floor — six one-play entries stay hidden.
+ */
+export function popularRailEntries<T extends { count: number }>(entries: readonly T[]): T[] {
+  const qualifying = entries.filter((e) => e.count >= POPULAR_MIN_PLAYS);
+  return qualifying.length >= POPULAR_MIN_ENTRIES ? qualifying : [];
+}
+
 export interface ResolvedPopular {
   collection: CollectionSummary;
   count: number;
