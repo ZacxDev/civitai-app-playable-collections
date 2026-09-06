@@ -1,0 +1,119 @@
+{
+  "slug": "playable-collections",
+  "pass": "2026-09-05",
+  "versionAtPass": "0.2.6",
+  "baseAtPass": "5a8bb5e4bfbf0865054de6181471069071e8850e",
+  "brandDepth": "accent",
+  "hue": "#FA6478",
+  "heroPrompt": null,
+  "heroSeed": null,
+  "sdkVersionAtPass": {
+    "_note": "THIS PASS MOVED THE FLOOR, so a single set of numbers would be a half-truth. `found` is what the pass inherited and what phase 0 had to design against; `left` is what it shipped on. The bump was a SEPARATE PR (#13) precisely so a regression could be attributed to it or to the redesign, never to 'one of the two'.",
+    "found": {
+      "@civitai/app-sdk": "0.27.0",
+      "@civitai/blocks-react": "0.36.0",
+      "@civitai/theme": "^0.2.0",
+      "@civitai/components": null
+    },
+    "left": {
+      "@civitai/app-sdk": "0.37.0",
+      "@civitai/blocks-react": "0.47.0",
+      "@civitai/theme": "^0.3.1",
+      "@civitai/components": "^0.4.1"
+    },
+    "_measured": "verified after install by reading each resolved package's own version field, plus a find for a @civitai package nested UNDER another package's node_modules (zero hits). Do NOT reuse the pnpm-store pattern recorded for gen-matrix -- this repo is npm with a package-lock.json, and that pattern false-positives on every top-level package here."
+  },
+  "decisions": [
+    {
+      "what": "the SDK pins were bumped in their OWN PR, ahead of the pass",
+      "chose": "two PRs -- #13 (pins only, no production code) then #14 (the pass)",
+      "because": "operator fork, answered explicitly. Phase 0 measured the pins four-plus minors behind (app-sdk 0.27.0 against 0.37.0, blocks-react 0.36.0 against 0.47.0), which made ResourceCard and the pre-handshake theme read unavailable AS PINNED. Bumping inside the pass would have put a dependency jump and a redesign in one diff, so a post-merge regression could not be attributed to either. The split earned itself immediately: the bump surfaced a REQUIRED new field on SharedListItem that `npm test` stayed green through (367/367) while `tsc --noEmit` failed -- vitest does not typecheck, so the test tier alone would have shipped it."
+    },
+    {
+      "what": "the `Popular right now` rail is THRESHOLDED rather than relabelled or left alone",
+      "chose": "render nothing below POPULAR_MIN_PLAYS 2 AND POPULAR_MIN_ENTRIES 3, with no copy explaining the absence",
+      "because": "operator fork, answered explicitly. Measured live 2026-09-05, the five cards under that heading read 6, 1, 1, 1, 1 plays -- four of five tied at the minimum possible non-zero value, on the most prominent surface after the title. One play cannot distinguish 'people like this' from 'the author opened it once'; one or two cards is a list with a superlative over it, not a ranking. An explanatory line was rejected in the same breath: it would re-raise exactly the thing the threshold suppresses, and the Discover grid below is a complete front door on its own."
+    },
+    {
+      "what": "the filter runs BEFORE the entry count, not after",
+      "chose": "filter to qualifying entries, then require the count",
+      "because": "the other order lets six one-play entries satisfy the entry floor and render a rail in which nothing clears the play floor -- i.e. it would make POPULAR_MIN_PLAYS decorative. Pinned by its own test ('does NOT let sub-floor entries pad the set up to the entry floor')."
+    },
+    {
+      "what": "PopularRail filters ITSELF instead of trusting its caller",
+      "chose": "call popularRailEntries inside the component that renders the heading",
+      "because": "the heading makes a claim only the data can honour, so the component that renders the claim is the one that checks it. A caller cannot forget, and a future second caller inherits the guarantee."
+    },
+    {
+      "what": "an empty collection is DISABLED, not hidden",
+      "chose": "disabled card with a label that says why ('<name> -- nothing to play yet')",
+      "because": "measured live: 'Bookmarked Articles - 0 items' rendered an ordinary play affordance, so the one thing this app exists to do silently did nothing -- indistinguishable from the app being broken. Hiding it would be a second lie: the viewer put that collection in their own list and would find it missing."
+    },
+    {
+      "what": "the sort hint moved out of the chip row and became a sentence",
+      "chose": "'Sorted by most followed.' on its own line, and the duplicate title= tooltip deleted",
+      "because": "at 12px dimmed inline after two chips, the bare 'Most followed' read as a THIRD, DISABLED sort option -- a claim about the control surface, not about the sort. A sentence with a full stop cannot be mistaken for a chip. The same string was also the Popular button's native tooltip, delivering it twice by two mechanisms; the test now asserts the tooltip's ABSENCE, so dropping one delivery cannot let it drift back."
+    },
+    {
+      "what": "release 0.2.7, not 0.3.0",
+      "chose": "follow this repo's patch-bump convention",
+      "because": "gen-matrix went 0.8.9 -> 0.9.0 partly to dodge an ambiguity -- 0.8.10 is greater under semver and LESS under lexicographic comparison, and nothing documents which `civitai app submit` implements. 0.2.7 is unambiguous under both, so no escape hatch was needed and the repo's own run (0.2.3 through 0.2.6, all patch bumps carrying features) stands. The floor was read from the NO-ARG listing, because constraints 13 records THIS app returning a withdrawn row for a version that was live."
+    },
+    {
+      "what": "the store description was re-read against the change rather than assumed unaffected",
+      "chose": "no copy change",
+      "because": "block.manifest.json tells users 'a Popular rail builds out of those votes as more people use the app' -- a claim about the exact surface this pass changed. It survived, and got MORE accurate: the rail used to appear after a SINGLE play, which that sentence did not describe. Recorded because nothing checks this, and a release that silently invalidates its own store copy is the easy miss."
+    }
+  ],
+  "deferred": [
+    {
+      "what": "phase 1 (brand) not run -- no hero image, no skin",
+      "why": "brandDepth is `accent` and measured so: zero hex literals in src/theme.ts against 15 --civitai-color references, so light/dark correctness is already entirely the platform's. Moving to `skin` transfers that debt here for no gain the store assets do not already provide. The brand kit at #FA6478 is the brand's expression in the STORE (brand/icon.svg, brand/cover.svg), not inside a full-bleed media player.",
+      "closingCondition": "ends if a hardcoded colour literal ever lands in src/theme.ts -- `git grep -cE '#[0-9a-fA-F]{3,8}' src/theme.ts` returning non-zero is the mechanical check, and whoever adds it owns the dual-theme assertions the rubric then requires."
+    },
+    {
+      "what": "phase 3 (interaction) not run -- reduced-motion, optimistic-rollback and overflow-menu semantics unaudited this pass",
+      "why": "phase 2 alone produced three defects and a dependency bump; batching phase 3 into the same PR would have made the mutation battery unattributable across two kinds of change.",
+      "closingCondition": "ends when an --evidence capture of the PLAYER states (not just discover/mine) is taken and its a11y section read -- the recipe currently drives only `discover` and `mine`, so the player is unmeasured. Concretely: extend .claude/skills/app-capture/scripts/recipes/playable-collections.json with a player state, capture, and read the a11y violations count. Whoever extends the recipe checks it."
+    },
+    {
+      "what": "phase 4 (identity) not run",
+      "why": "no measured defect. The app already renders the viewer's own handle rather than 'you' ('by zachlowdenzx' on the viewer's own cards), which is the phase-4 rule this pass would have been checking.",
+      "closingCondition": "ends if a capture ever shows the string 'you' or 'You' as a curator/author label -- `grep -c '>You<'` over a captured DOM is the check. No action needed while that is 0."
+    },
+    {
+      "what": "phase 5 (moderation) not run -- the app has no report/escalation affordance",
+      "why": "unlike custom-generators, this app publishes NO user-authored text or media of its own. Its shared-storage writes are play VOTES keyed by collectionId -- ids, not content -- and every image shown is an existing public Civitai image already under platform moderation. There is no app-owned surface for a viewer to report.",
+      "closingCondition": "ends if this app ever writes user-authored TEXT to shared storage (a title, a note, a caption). The mechanical check is whether SharedAppendValue's `title` field is ever populated from user input rather than from a collection name -- `git grep -n 'append(' src/lib/popular.ts` and read the call site. Whoever adds such a field owns the abuse seam."
+    },
+    {
+      "what": "phase 7 (re-shoot) not run in this pass",
+      "why": "phase 7 trails phase 8 by construction -- the re-shoot needs the new version LIVE, i.e. through moderator review, so it cannot ship in the pass's own PR. The phase-0 baseline capture is at /tmp/taste-before equivalent and is transient; its VALUES are recorded in the talos-infra handoff.",
+      "closingCondition": "ends when 0.2.7 reads `approved` / `live` with source 9e17c32 on the NO-ARG listing and an --evidence capture of `discover` shows the popular rail ABSENT (live counts were 6,1,1,1,1, so both floors fail) and `sort-hint` reading 'Sorted by most followed.'. Both are readable from the testid inventory without a human looking."
+    }
+  ],
+  "rubric": {
+    "brand": {
+      "hueFromSystem": "pass -- #FA6478 read from brand/README.md, not invented here",
+      "heroReproducible": "n-a -- no hero, see deferred",
+      "dualTheme": "pass -- accent depth, host owns both themes",
+      "noHardcodedThemeColour": "pass -- measured 0 hex literals in src/theme.ts against 15 --civitai-color references"
+    },
+    "ia": {
+      "primaryObjectFirst": "pass -- the collection grid is the page; the thresholded rail no longer displaces it with a false ranking",
+      "noExplainerForWhatTheUiShows": "pass -- the one explanatory string left ('Sorted by most followed.') describes a CONTROL's state, which the UI cannot show on its own",
+      "honestPartialOverConfidentWrong": "pass -- this is the pass's whole subject: a rail that cannot support its heading now renders nothing, and cursor pagination already declared hasMore"
+    },
+    "interaction": {
+      "reducedMotion": "not-measured -- see deferred phase 3",
+      "optimisticRollback": "not-measured -- see deferred phase 3",
+      "menuSemantics": "n-a -- no overflow menu in the surfaces this pass touched",
+      "deadAffordances": "pass -- a 0-item collection is disabled with a label saying why, asserted both structurally and behaviourally (onOpen not called)"
+    },
+    "tests": {
+      "regressionWatchedRed": "pass -- ten mutants, each red for its own named reason, byte-identical restore after each",
+      "survivorsFound": "2 -- the 0-item guard shipped with NO coverage (flipping `disabled` to false left the suite green at 376/376), and its control arm was added only after hardcoding `disabled` to true ALSO passed. Both closed.",
+      "suite": "371 -> 379"
+    }
+  }
+}
