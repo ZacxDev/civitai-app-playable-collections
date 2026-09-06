@@ -140,6 +140,20 @@ describe('skin palette — both themes', () => {
     expect(c(DARK, 'text')).not.toBe(c(LIGHT, 'text'));
   });
 
+  // 🔴 PINS THE SIZE THE LEDGER QUOTES. taste.json said "28 token values", then
+  // "32"; neither was ever right, and both went unnoticed for the same reason the
+  // 2.35 figure did — no assertion read them. This is the whole 2.35 lesson
+  // applied to a second number rather than re-learned on it. A palette change is
+  // free; changing the SHAPE of the palette has to move a number the ledger quotes.
+  it('the palette size the ledger quotes is derived, not typed', () => {
+    const declarations = [...decomment(SKIN_CSS).matchAll(/(--civitai-[\w-]+)\s*:/g)].map((m) => m[1]);
+    const colour = declarations.filter((d) => d.startsWith('--civitai-color-'));
+    expect(declarations).toHaveLength(35); // 33 colour + --civitai-radius in both blocks
+    expect(new Set(declarations).size).toBe(19);
+    expect(colour).toHaveLength(33);
+    expect(new Set(colour).size).toBe(18);
+  });
+
   // 🔴 The failure this catches is the one that produced the trap the skin
   // replaces: upstream's dark block redefines 14 of 32 tokens, so the gray ramp
   // is theme-invariant and silently wrong in one theme. A key present in one of
@@ -348,34 +362,48 @@ describe('which files carry colour literals — the rubric line, made checkable'
       .filter((l) => !l.trimStart().startsWith('//'))
       .join('\n');
 
+  // 🔴 `.css` IS SCANNED, AND OMITTING IT MADE THE FIRST VERSION VACUOUS. That
+  // version filtered to `/\.tsx?$/`, so no stylesheet was ever examined — and
+  // `src/index.css` is exactly where a theme literal had already lived once. An
+  // audit measured it: restoring `var(--civitai-color-surface-2, #e9ecef)` into
+  // index.css:91 — the literal that file's own comment says "is GONE" because it
+  // "would have painted a cold gray block into a rose UI" — left the suite
+  // 450/450 green. The test that read as the guard against that regression was
+  // not one. `skin.css` is excluded because it is the sanctioned home.
   const carriers = sourceFiles(SRC)
-    .filter((f) => /\.tsx?$/.test(f))
+    .filter((f) => !f.endsWith('skin.css'))
     .filter((f) => /#[0-9a-fA-F]{3,8}\b|rgba?\(|'(?:black|white)'/.test(stripAll(readFileSync(f, 'utf8'))))
     .map((f) => f.slice(SRC.length))
     .sort();
 
   it('is exactly the documented set — two exceptions plus six media-overlay files', () => {
     expect(carriers).toEqual([
-      // The two DOCUMENTED exceptions, each with its reason in the file:
-      'components/BrandMark.tsx', // an identity, invariant across themes
+      'components/BrandMark.tsx', // DOCUMENTED: an identity, invariant across themes
       'components/CollectionGrid.tsx',
       'components/CollectionViewer.tsx',
       'components/Maturity.tsx',
       'components/Player.tsx',
       'components/styles.ts',
       'components/toast.tsx',
-      'theme.ts', // `stage` — must read against arbitrary media, not a page bg
+      'theme.ts', // DOCUMENTED: `stage` — reads against arbitrary media, not a page bg
     ]);
     // The count the rubric quotes, derived rather than typed.
     expect(carriers.length).toBe(8);
     expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(6);
   });
 
-  it('skin.css remains the ONLY home for a theme-responsive literal', () => {
-    // The app's own surfaces resolve through var(); anything above is overlay
-    // chrome or an identity. A literal appearing in a NEW file fails the list.
-    expect(carriers).not.toContain('App.tsx');
-    expect(carriers).not.toContain('components/ModeSwitcher.tsx');
+  // 🔴 NOT a restatement of the list above — that one would pass with `.css`
+  // unscanned, which is how the vacuous version got shipped. This asserts the
+  // stylesheets specifically, so it fails for a reason the list cannot.
+  it('no STYLESHEET carries a colour literal — index.css included', () => {
+    const sheets = sourceFiles(SRC).filter((f) => f.endsWith('.css') && !f.endsWith('skin.css'));
+    expect(sheets.length).toBeGreaterThan(0); // positive control: we found stylesheets
+    for (const f of sheets) {
+      expect({ file: f.slice(SRC.length), literals: stripAll(readFileSync(f, 'utf8')).match(/#[0-9a-fA-F]{3,8}\b/g) }).toEqual({
+        file: f.slice(SRC.length),
+        literals: null,
+      });
+    }
   });
 });
 
@@ -404,8 +432,18 @@ describe('pack pairings the skin has to keep legible', () => {
 });
 
 // ---------------------------------------------------------------------------
-// the ways this skin can be silently switched off — there are four numbered
-// below, because the layer trap has an opposite-facing half (see (1))
+// the ways this skin can be silently switched off. FOUR are numbered below
+// against the THREE named at the top of this file, and the extra one is (2)
+// SPECIFICITY — a real inertness route (a bare `[data-pc-skin]` ties with
+// @civitai/theme and loses on source order, skin.css's selector note), which the
+// header's "three mechanisms" does not count.
+//
+// ⚠ An earlier draft of this line explained the four as "the layer trap has an
+// opposite-facing half (see (1))". That was FALSE twice over: the mirror half
+// (index.css must BE layered) lives INSIDE (1) and is not one of the four, and it
+// is not a way this SKIN is switched off at all — it is about the app's reset
+// stripping the PACK. Recorded rather than silently replaced, because reaching
+// for a fresh rationale is what produced it.
 // ---------------------------------------------------------------------------
 
 describe('structural — the skin cannot be made inert without failing here', () => {
@@ -463,7 +501,42 @@ describe('structural — the skin cannot be made inert without failing here', ()
       // @keyframes ONLY. Its stops are shaped like selectors but are not style
       // rules and take no part in the cascade. Every other at-rule keeps its body.
       .replace(/@keyframes[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
-    return outside.match(/(^|\n)\s*[^@\s}][^{}]*\{/g) ?? [];
+    // 🔴 v4. A style rule is a `{` whose prelude — the text back to the previous
+    // `{`, `}` or `;` — is non-empty. Walked, not matched with a regex.
+    //
+    // v3 scanned with `/(^|\n)\s*[^@\s}][^{}]*\{/`, anchored to a LINE START, so it
+    // only ever saw a rule that BEGINS a line: a one-line
+    // `@media screen { * { border-width: 0 } }` was missed in both positions,
+    // while the test title said EVERY style rule and the commit said an @media body
+    // was "scanned like anything else". Neither was true for that spelling, and
+    // nothing in this repo normalises hand-written CSS (no prettier, no stylelint),
+    // so the one-line form is a real thing to write. Reverting to v3 turns exactly
+    // the four one-line controls below red — measured.
+    //
+    // ⚠ AND A REGEX CANNOT DO THIS, which is why it is a loop: a pattern that
+    // MATCHES the preceding delimiter also CONSUMES it, so the next rule has no
+    // delimiter left to match against. An `@media { * { … } }` then reports its own
+    // (empty) at-rule prelude and silently drops the `*` rule one character later.
+    //
+    // ⚠ A `.replace(/@[\w-]+[^{;]*\{/g, '{')` step sat here for one revision, to
+    // strip at-rule preludes so the reported name would be the inner selector.
+    // Measured and REMOVED: with the walk in place it changes NO verdict — all four
+    // one-line controls pass without it. It only altered which prelude got named
+    // (`@media screen` rather than `*`), and an extra line whose purpose has to be
+    // explained is worse than a slightly blunter failure message.
+    const preludes: string[] = [];
+    let cut = 0;
+    for (let i = 0; i < outside.length; i += 1) {
+      const ch = outside[i];
+      if (ch === '{') {
+        const prelude = outside.slice(cut, i).trim();
+        if (prelude.length > 0) preludes.push(prelude);
+        cut = i + 1;
+      } else if (ch === '}' || ch === ';') {
+        cut = i + 1;
+      }
+    }
+    return preludes;
   };
 
   it('index.css IS layered, and EVERY style rule is inside the layer', () => {
@@ -476,14 +549,30 @@ describe('structural — the skin cannot be made inert without failing here', ()
   // defect fully restored — a control that cannot fail when the guard regresses,
   // which is the one property it existed to provide. Feeding mutated CSS through
   // `styleRulesOutsideLayer` is what makes a future green worth something.
+  // 🔴 THE SHAPES ARE THE POINT, AND CHOOSING THEM BADLY IS HOW THIS GUARD KEEPS
+  // SHIPPING HALF-BLIND. Round 2's four controls were all drawn from spellings the
+  // regex already handled, which is the same axis-blindness they were written to
+  // close — an audit then found the one-line `@media` form missed in BOTH
+  // positions. Vary the SPELLING (line breaks, at-rule kind, selector shape), not
+  // just the position.
   it.each([
     ['appended AFTER the layer, multi-line', (css: string) => `${css}\n.pc-evil {\n  border-width: 0;\n}\n`],
     ['appended AFTER the layer, one-line', (css: string) => `${css}\n.pc-evil { border-width: 0; }\n`],
     ['placed BEFORE the layer', (css: string) => `.pc-evil {\n  border-width: 0;\n}\n${css}`],
     [
-      'hidden inside an unlayered @media',
+      'inside a multi-line unlayered @media',
       (css: string) => `${css}\n@media screen {\n  * {\n    border-width: 0;\n  }\n}\n`,
     ],
+    // the four the audit measured as MISSED
+    ['inside a ONE-LINE unlayered @media, after', (css: string) => `${css}\n@media screen { * { border-width: 0 } }\n`],
+    ['inside a ONE-LINE unlayered @media, before', (css: string) => `@media screen { * { border-width: 0 } }\n${css}`],
+    ['inside a one-line @supports', (css: string) => `${css}\n@supports (display:grid) { * { border-width: 0 } }\n`],
+    [
+      'inside a one-line @media with a grouped selector',
+      (css: string) => `${css}\n@media print { html, body { border-width: 0 } }\n`,
+    ],
+    // trailing on the same line as the layer's own closing brace
+    ['appended on the layer closer line', (css: string) => `${css.replace(/\}\s*$/, '')}\n} .pc-evil { border-width: 0; }\n`],
   ])('the check SEES an unlayered rule %s', (_shape, mutate) => {
     const found = styleRulesOutsideLayer(mutate(decomment(INDEX_CSS)));
     expect(found.length).toBeGreaterThan(0);

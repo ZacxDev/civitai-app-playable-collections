@@ -1,7 +1,7 @@
 // Design tokens for Playable Collections.
 //
-// Every value resolves to a CSS custom property (`--civitai-*`) so there are ZERO
-// hardcoded theme colors here, and light/dark is driven entirely by the
+// Every THEME value resolves to a CSS custom property (`--civitai-*`) — light/dark
+// is driven entirely by the
 // `[data-theme]` attribute on the block root (see App.tsx / CollectionViewer.tsx
 // / Player.tsx). The `@civitai/blocks-react/ui` pack (Button/Badge/Modal/…) is
 // self-themed off the same tokens, so the app's own chrome reads as one system.
@@ -10,8 +10,11 @@
 // `brandDepth: skin`, not `accent`: `@civitai/theme@0.3.1` still DECLARES the
 // tokens (and `@property`-registers them), but **src/skin.css overrides their
 // values** from the brand plate `#FA6478` for both themes. So this module is
-// unchanged and still literal-free — it just resolves to the app's palette rather
-// than the platform's. Read src/skin.css before reasoning about any colour below;
+// unchanged — it just resolves to the app's palette rather than the platform's.
+// ⚠ "literal-free" was this file's own claim about itself and it is FALSE: `stage`
+// below carries seven literals. They are theme-INVARIANT by design and documented
+// as such, which is a different statement from "there are none"; src/skin.test.ts
+// now lists this file as a colour-literal carrier, so the two agree. Read src/skin.css before reasoning about any colour below;
 // its selectors are (0,2,0) and beat the package's (0,1,0) blocks.
 //
 // Token names: the pre-0.35 pack emitted `--ci-*`; 0.35.2+ emits `--civitai-*` and
