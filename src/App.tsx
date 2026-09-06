@@ -18,6 +18,14 @@
 //   #4 every surface is built from `@civitai/blocks-react/ui`; the pack styles
 //      itself, and the app themes itself by setting `data-theme` on its own root
 //      (the host can't reach inside the iframe — gotcha #60).
+//
+// 🔴 EVERY APP ROOT BELOW CARRIES `data-pc-skin` AS WELL AS `data-theme`, and it
+// is not decorative. src/skin.css (`brandDepth: skin`, operator feedback round 3
+// item 5) redefines the `--civitai-color-*` VALUES under
+// `[data-pc-skin][data-theme…]` — a compound selector, because a bare one would
+// tie with @civitai/theme's own `[data-theme='dark']` and lose on source order.
+// Drop the attribute from a root and that root silently reverts to the platform's
+// blue with no error anywhere; src/skinRoot.test.tsx is what stops that.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -58,6 +66,7 @@ import { shareLink } from './lib/share.js';
 import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
 import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
 import { palette } from './theme.js';
+import { BrandMark } from './components/BrandMark.js';
 import { paintTheme } from './bootTheme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import type {
@@ -729,7 +738,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // fetch, so the same-origin/no-host loop can't start.
   if (!ready || !canFetch) {
     return (
-      <div ref={rootRef} data-theme={dataTheme} style={pageStyle()}>
+      <div ref={rootRef} data-pc-skin data-theme={dataTheme} style={pageStyle()}>
         <div style={{ margin: 'auto', display: 'flex', gap: 10, alignItems: 'center', color: 'var(--civitai-color-text-dimmed)' }}>
           <Loader size="sm" />
           Loading Playable Collections…
@@ -740,7 +749,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
 
   if (open) {
     return (
-      <div ref={rootRef} data-theme={dataTheme}>
+      <div ref={rootRef} data-pc-skin data-theme={dataTheme}>
         <CollectionViewer
           key={open.detail.id}
           detail={open.detail}
@@ -793,7 +802,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   };
 
   return (
-    <div ref={rootRef} data-theme={dataTheme} data-layout={isMobile ? 'mobile' : 'desktop'} style={pageStyle()}>
+    <div ref={rootRef} data-pc-skin data-theme={dataTheme} data-layout={isMobile ? 'mobile' : 'desktop'} style={pageStyle()}>
       <div style={contentStyle}>
         <Stack gap={16}>
           <header style={{ display: 'grid', gap: 6 }}>
@@ -805,7 +814,13 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
                 TipModal, which pre-validates a tip against it. Do not "finish the
                 cleanup" by deleting the hook. */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-              <h1 style={{ fontSize: 22, margin: 0 }}>Playable Collections</h1>
+              {/* The mark, beside the name. Under `accent` the brand lived only in
+                  the store assets; `skin` is what earns it a place in the UI. It is
+                  aria-hidden — the <h1> already says the name. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                <BrandMark />
+                <h1 style={{ fontSize: 22, margin: 0 }}>Playable Collections</h1>
+              </div>
             </div>
             <p style={{ margin: 0, fontSize: 13, color: 'var(--civitai-color-text-dimmed)' }}>
               Sit back and play through a collection's images and videos.
@@ -977,7 +992,16 @@ function errMessage(err: unknown): string {
 function pageStyle(): CSSProperties {
   return {
     fontFamily: 'var(--civitai-font)',
-    background: 'var(--civitai-color-surface-2)',
+    // 🔴 `body`, not `surface-2`. Under `accent` the choice was arbitrary — the
+    // platform's light theme made body/surface/surface-2 the SAME colour, so the
+    // page could be any of them, and dark's surface-2 being the lighter value went
+    // unnoticed. src/skin.css gives the three tokens three real values in both
+    // themes, which turns this into an actual decision: the page is the deepest
+    // (`body`), a card is the lift (`surface`), and `surface-2` is a recess for
+    // inert chrome (the mode switcher's track, cover placeholders). Leaving it on
+    // surface-2 would have made the page the brightest plane and every card a
+    // hole in it.
+    background: 'var(--civitai-color-body)',
     color: 'var(--civitai-color-text)',
     width: '100%',
     minHeight: '100dvh',

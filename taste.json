@@ -1,27 +1,19 @@
 {
   "slug": "playable-collections",
-  "pass": "2026-09-05",
-  "versionAtPass": "0.2.6",
-  "baseAtPass": "5a8bb5e4bfbf0865054de6181471069071e8850e",
-  "brandDepth": "accent",
+  "pass": "2026-09-06",
+  "versionAtPass": "0.2.9",
+  "baseAtPass": "40c8135",
+  "brandDepth": "skin",
   "hue": "#FA6478",
   "heroPrompt": null,
   "heroSeed": null,
   "sdkVersionAtPass": {
-    "_note": "THIS PASS MOVED THE FLOOR, so a single set of numbers would be a half-truth. `found` is what the pass inherited and what phase 0 had to design against; `left` is what it shipped on. The bump was a SEPARATE PR (#13) precisely so a regression could be attributed to it or to the redesign, never to 'one of the two'.",
-    "found": {
-      "@civitai/app-sdk": "0.27.0",
-      "@civitai/blocks-react": "0.36.0",
-      "@civitai/theme": "^0.2.0",
-      "@civitai/components": null
-    },
-    "left": {
-      "@civitai/app-sdk": "0.37.0",
-      "@civitai/blocks-react": "0.47.0",
-      "@civitai/theme": "^0.3.1",
-      "@civitai/components": "^0.4.1"
-    },
-    "_measured": "verified after install by reading each resolved package's own version field, plus a find for a @civitai package nested UNDER another package's node_modules (zero hits). Do NOT reuse the pnpm-store pattern recorded for gen-matrix -- this repo is npm with a package-lock.json, and that pattern false-positives on every top-level package here."
+    "_note": "0.2.9 changed NO pin. These are the versions the skin was measured against and built on; recorded because the skin overrides tokens that @civitai/theme declares and @property-registers, so a theme bump is the thing most able to move it out from under us.",
+    "@civitai/app-sdk": "0.37.0",
+    "@civitai/blocks-react": "0.47.0",
+    "@civitai/theme": "0.3.1",
+    "@civitai/components": "0.4.1",
+    "_measured": "read from each installed package's own version field after `npm ci` in a worktree off origin/main. A find for a @civitai package nested UNDER another package's node_modules returned ZERO -- worth re-running after any bump, because the design-system skill records a nested older @civitai/components silently shadowing the hoisted newer one via a shared injection marker."
   },
   "decisions": [
     {
@@ -63,18 +55,64 @@
       "what": "the store description was re-read against the change rather than assumed unaffected",
       "chose": "no copy change",
       "because": "block.manifest.json tells users 'a Popular rail builds out of those votes as more people use the app' -- a claim about the exact surface this pass changed. It survived, and got MORE accurate: the rail used to appear after a SINGLE play, which that sentence did not describe. Recorded because nothing checks this, and a release that silently invalidates its own store copy is the easy miss."
+    },
+    {
+      "what": "brandDepth moved `accent` -> `skin`",
+      "chose": "the app owns both palettes; the platform owns neither",
+      "because": "operator feedback round 3 item 5, answered explicitly. This is the deferred phase-1 entry being taken up, not a new idea. It closes that entry in the direction the entry anticipated -- it said whoever lands a colour literal owns the dual-theme assertions, and this pass lands 28 of them and writes the assertions."
+    },
+    {
+      "what": "the skin redefines the --civitai-* TOKENS rather than re-pointing components at an app-local palette",
+      "chose": "override the token values under [data-pc-skin][data-theme...]",
+      "because": "measured: eight components reference var(--civitai-color-*) DIRECTLY rather than going through theme.ts's palette() (App, CollectionGrid, CollectionViewer, ModeSwitcher, TipModal, toast, ...). Re-pointing each is eight diffs that drift apart, and would still leave every @civitai/blocks-react/ui component (Button/Alert/Card/Modal) on the platform's blue -- the pack beside the app instead of part of it. One override skins all of it. Verified in a real engine, not inferred: headless chromium reports --civitai-color-primary as rgb(250,100,120) and the outline Button's border as the same, so the pack IS taking the app's palette."
+    },
+    {
+      "what": "the token overrides are UNLAYERED while index.css is wrapped in `@layer app`",
+      "chose": "opposite treatment for the two halves of the app CSS, in two separate files",
+      "because": "unlayered declarations beat layered ones outright, and that cuts both ways. The tokens must beat @civitai/theme, which is itself unlayered (measured: zero `@layer` in @civitai/theme@0.3.1), so a layered override would be silently INERT -- they win on specificity instead, (0,2,0) against the package's (0,1,0). index.css must NOT beat @civitai/components, which ships inside `@layer civitai.components` and reaches this app at runtime via injectBlocksStyles(); an unlayered reset there is the design system's most-repeated gotcha. Merging the two files breaks one of them whichever way it goes."
+    },
+    {
+      "what": "the layer ORDER statement lives in index.html, not in a bundled stylesheet",
+      "chose": "`@layer app, civitai.components;` as the first CSS in the inline <style>",
+      "because": "layer rank is fixed by FIRST ENCOUNTER, and @civitai/components arrives at RUNTIME. If the pack injected before the app's order statement was parsed, `civitai.components` would rank BELOW `app` and the reset would win after all -- the same defect reached by a different route, and invisible to any test of the CSS files alone. An inline <style> in <head> is parsed before any script runs, which is the only position that cannot lose that race."
+    },
+    {
+      "what": "light theme does NOT use the brand plate as its primary",
+      "chose": "#FA6478 in dark, #C8324B (the same hue, driven down in lightness) in light",
+      "because": "white on #FA6478 is 2.35:1 -- a filled primary button in light theme could not carry its own label. The brand kit's own tonal rule (one hue at different lightnesses, never a second hue) is what makes the substitute legitimate rather than a second brand. Dark keeps the plate exactly, so the mark and the UI agree there; skin.test.ts pins BOTH facts, including the 2.35:1 that forces the split."
+    },
+    {
+      "what": "the page background moved from `surface-2` to `body`",
+      "chose": "page = body, card = surface, recess = surface-2",
+      "because": "under `accent` this was arbitrary -- the platform's light theme made all three the same colour, so nothing distinguished them and dark's surface-2 being the LIGHTER value went unnoticed. Giving the three tokens three real values turns it into an actual decision, and leaving it would have made the page the brightest plane with every card a hole punched in it."
+    },
+    {
+      "what": "the boot skeleton literals were re-sourced from skin.css, and bootTokens.test.ts with them",
+      "chose": "repoint the existing parity test at src/skin.css instead of @civitai/theme",
+      "because": "the coupled surface a skin pass is most likely to miss, because it lives in a different file and its test stays GREEN. index.html hardcodes boot colours (a var cannot be used before the stylesheet loads) and that suite asserted them against the INSTALLED package. The skin overrides those same tokens, so left as-is every assertion still passed while the viewer got a platform-grey boot that snapped to rose at handoff. Mutant M10 confirms the repointed test catches exactly that."
+    },
+    {
+      "what": "the mark was added to the browse header, with theme-INVARIANT colours",
+      "chose": "inline SVG copied from brand/icon.svg, aria-hidden, never token-driven",
+      "because": "under `accent` the brand lived only in the store assets; `skin` is what earns it a place in the UI. Its fills are deliberately NOT tokens -- the same call `stage` makes for the player chrome: a mark is an identity and must be the same rose in both themes, or it stops matching the store icon in one of them. brandMark.test.ts asserts the component against the vector AND against the hue written in brand/README.md, so an edit to both files still has to disagree with the kit."
+    },
+    {
+      "what": "the %-split tip, follow via the host bridge, hide-badges-but-keep-balance, and keeping Most Followers",
+      "chose": "recorded here as operator forks; NONE implemented in 0.2.9",
+      "because": "owed from round 3 and previously unrecorded -- they lived only in a handoff doc, which is the medium this ledger exists to outlive. They are upstream work (civitai/civitai + civitai-app-starters) and are ranked separately; writing them down is not shipping them. The %-split tip in particular carries five design hazards, none cheaply discoverable at runtime -- partial failure across two transactions, TIP_MIN per leg, TIP_MAX_PER_TIP applying PER LEG so one click could send 10,000 against a store description promising 5,000, self-tip 403 when curator == viewer, and the app-local daily allowance needing to debit both legs."
     }
   ],
   "deferred": [
     {
-      "what": "phase 1 (brand) not run -- no hero image, no skin",
-      "why": "brandDepth is `accent` and measured so: zero hex literals in src/theme.ts against 15 --civitai-color references, so light/dark correctness is already entirely the platform's. Moving to `skin` transfers that debt here for no gain the store assets do not already provide. The brand kit at #FA6478 is the brand's expression in the STORE (brand/icon.svg, brand/cover.svg), not inside a full-bleed media player.",
-      "closingCondition": "ends if a hardcoded colour literal ever lands in src/theme.ts -- `git grep -cE '#[0-9a-fA-F]{3,8}' src/theme.ts` returning non-zero is the mechanical check, and whoever adds it owns the dual-theme assertions the rubric then requires."
+      "what": "phase 1 (brand) -- DONE in 0.2.9, no longer deferred",
+      "why": "closed by this pass. The entry's condition was mechanical -- grepping src/theme.ts for a hex literal and expecting a non-zero count -- and it is worth recording that the condition AS WRITTEN would not have fired: theme.ts is still literal-free, because the skin puts its literals in src/skin.css and theme.ts still resolves through var(). The SPIRIT fired exactly as intended: a colour literal landed in the app, and whoever landed it owed the dual-theme assertions. They are written (src/skin.test.ts, both themes) and mutation-checked.",
+      "closingCondition": "CLOSED 2026-09-06 at 0.2.9. A future re-open needs a new entry, not this one.",
+      "_lesson": "a closing condition pinned to a FILE PATH can be satisfied by relocation. Prefer one pinned to the property -- 'a colour literal exists anywhere the app renders from' -- over one pinned to a path."
     },
     {
-      "what": "phase 3 (interaction) not run -- reduced-motion, optimistic-rollback and overflow-menu semantics unaudited this pass",
-      "why": "phase 2 alone produced three defects and a dependency bump; batching phase 3 into the same PR would have made the mutation battery unattributable across two kinds of change.",
-      "closingCondition": "ends when an --evidence capture of the PLAYER states (not just discover/mine) is taken and its a11y section read -- the recipe currently drives only `discover` and `mine`, so the player is unmeasured. Concretely: extend .claude/skills/app-capture/scripts/recipes/playable-collections.json with a player state, capture, and read the a11y violations count. Whoever extends the recipe checks it."
+      "what": "phase 3 (interaction) -- the recorded condition is MET; the phase itself is still not run",
+      "why": "the condition was 'an --evidence capture of the PLAYER states is taken and its a11y section read'. Done: the capture recipe gained a `player` state (talos-infra 5825b698f) and the phase-0 baseline reports player 89 elements / 29 unique testids / a11y violations 0 (interactive-name 0, img-alt 0, control-label 0, heading-order 0), console 0, failed network 0 of 24, state `populated` -- so the zeros are not the empty-state artefact the recipe warns about. Recorded honestly: a11y-violations-zero is NOT the same claim as 'reduced-motion, optimistic rollback and menu semantics are correct', which is what phase 3 actually audits. The condition was weaker than the phase it was attached to. It is met; the phase is not.",
+      "closingCondition": "the phase ends when reduced-motion is asserted BEHAVIOURALLY (not as a media query that exists), an optimistic mutation is shown rolling back under injected failure, and any overflow menu is driven by keyboard. Whoever writes those tests checks it. Nothing in this repo measures them today."
     },
     {
       "what": "phase 4 (identity) not run",
@@ -87,33 +125,38 @@
       "closingCondition": "ends if this app ever writes user-authored TEXT to shared storage (a title, a note, a caption). The mechanical check is whether SharedAppendValue's `title` field is ever populated from user input rather than from a collection name -- `git grep -n 'append(' src/lib/popular.ts` and read the call site. Whoever adds such a field owns the abuse seam."
     },
     {
-      "what": "phase 7 (re-shoot) not run in this pass",
-      "why": "phase 7 trails phase 8 by construction -- the re-shoot needs the new version LIVE, i.e. through moderator review, so it cannot ship in the pass's own PR. The phase-0 baseline capture is at /tmp/taste-before equivalent and is transient; its VALUES are recorded in the talos-infra handoff.",
-      "closingCondition": "ends when 0.2.7 reads `approved` / `live` with source 9e17c32 on the NO-ARG listing and an --evidence capture of `discover` shows the popular rail ABSENT (live counts were 6,1,1,1,1, so both floors fail) and `sort-hint` reading 'Sorted by most followed.'. Both are readable from the testid inventory without a human looking."
+      "what": "phase 7 (re-shoot) not run in this pass either",
+      "why": "phase 7 trails phase 8 by construction -- the re-shoot needs the new version LIVE, i.e. through moderator review. The previous entry here named 0.2.7 / 9e17c32 and was STALE within a day (0.2.8 shipped and went live); this one names the version it was written for, so its staleness is at least legible. The phase-0 --evidence baseline for THIS pass already exists and is durable: civit/captures/pc-0208-verify/phase0-before/ (discover / mine / player), captured against live 0.2.8.",
+      "closingCondition": "ends when 0.2.9 reads approved/live with this PR's squash sha on the NO-ARG listing, AND an --evidence capture of all three states is diffed against phase0-before/ with evidence.py diff. That diff is the taste delta and the only part of this pass that is evidence rather than opinion. Whoever cuts the capture checks it."
     }
   ],
   "rubric": {
     "brand": {
-      "hueFromSystem": "pass -- #FA6478 read from brand/README.md, not invented here",
-      "heroReproducible": "n-a -- no hero, see deferred",
-      "dualTheme": "pass -- accent depth, host owns both themes",
-      "noHardcodedThemeColour": "pass -- measured 0 hex literals in src/theme.ts against 15 --civitai-color references"
+      "hueFromSystem": "pass -- #FA6478 read from brand/README.md and brand/icon.svg; brandMark.test.ts asserts the component against BOTH, so agreeing with one is not enough",
+      "heroReproducible": "n-a -- no hero image generated this pass; no Buzz spent",
+      "dualTheme": "pass -- 28 token values across two themes, every surface/border/text pair asserted in BOTH by src/skin.test.ts (body text, dimmed text, primary label, primary-as-accent, semantic text, border visibility, three-planes separation). Mutants M7 (light-only) and M8 (dark-only) each go red in ONE theme, which is what shows the per-theme assertions bite separately rather than as one blanket check.",
+      "noHardcodedThemeColour": "pass, with the qualifier that matters under `skin` -- the app now OWNS 28 theme literals, all confined to src/skin.css and all present in both theme blocks. The only colours outside it are theme-INVARIANT by design and documented as such: the media-player stage chrome (theme.ts `stage`) and the brand mark."
     },
     "ia": {
-      "primaryObjectFirst": "pass -- the collection grid is the page; the thresholded rail no longer displaces it with a false ranking",
-      "noExplainerForWhatTheUiShows": "pass -- the one explanatory string left ('Sorted by most followed.') describes a CONTROL's state, which the UI cannot show on its own",
-      "honestPartialOverConfidentWrong": "pass -- this is the pass's whole subject: a rail that cannot support its heading now renders nothing, and cursor pagination already declared hasMore"
+      "primaryObjectFirst": "pass -- unchanged by this pass; the grid is still the page",
+      "noExplainerForWhatTheUiShows": "pass -- no copy added",
+      "honestPartialOverConfidentWrong": "pass -- unchanged"
     },
     "interaction": {
-      "reducedMotion": "not-measured -- see deferred phase 3",
+      "reducedMotion": "not-measured -- see deferred phase 3; this pass added no new motion",
       "optimisticRollback": "not-measured -- see deferred phase 3",
-      "menuSemantics": "n-a -- no overflow menu in the surfaces this pass touched",
-      "deadAffordances": "pass -- a 0-item collection is disabled with a label saying why, asserted both structurally and behaviourally (onOpen not called)"
+      "menuSemantics": "n-a -- no overflow menu",
+      "deadAffordances": "pass -- unchanged"
     },
     "tests": {
-      "regressionWatchedRed": "pass -- ten mutants, each red for its own named reason, byte-identical restore after each",
-      "survivorsFound": "2 -- the 0-item guard shipped with NO coverage (flipping `disabled` to false left the suite green at 376/376), and its control arm was added only after hardcoding `disabled` to true ALSO passed. Both closed.",
-      "suite": "371 -> 379"
+      "regressionWatchedRed": "pass -- 11 mutants, all killed by ASSERTION (none by import error), each naming its own guard, byte-identical restore verified after every one, plus a baseline control run confirming the unmutated tree is green so the kills are attributable",
+      "survivorsFound": "1, and it was a guard-REACHABILITY defect rather than a missing test. M6 (a bare skin selector) renamed the very block the test module looks up at import time, so the module threw in skinBlock() before the compound-selector guard ever executed: the suite went red and the mutant LOOKED killed while the guard was untested. Rebuilt to ADD a bare block instead, leaving both named blocks resolvable -- it then failed on that guard alone. The battery's own kill-detector was wrong in the same round (it counted only assertion lines, so an import failure scored as SURVIVED -- a reassuring zero) and was fixed to report the two apart.",
+      "suite": "398 -> 436 (+38: skin.test.ts 30, skinRoot.test.tsx 3, brandMark.test.ts 5); both vitest projects green, node and dom",
+      "beyondTheSuite": "the load-bearing claims here are about the CSS CASCADE, which jsdom does not implement -- so a green unit suite could not have settled them. Both were measured in headless chromium against a production-shaped bundle: (1) the skin beats @civitai/theme despite the package's sheet being injected LATER (--civitai-color-body reads rgb(18,9,12) dark / rgb(251,241,243) light, radius .625rem, and the pack's outline Button border takes rgb(250,100,120)); (2) `@layer app` genuinely protects the pack -- a Preflight-style `* { border-width: 0 }` INSIDE the layer leaves the Button at 1px, the SAME rule unlayered takes it to 0px, shipped baseline 1px. The second needed that added rule as a CONTROL, because the reset this app actually ships (box-sizing / max-width / font-family) contains nothing that could strip a pack style: the layer is PREVENTIVE today, and the control is what separates 'the layer works' from 'nothing was threatening it'.",
+      "flakeObserved": "one pre-existing test unrelated to this pass -- App.test.tsx 'appends the next page on sentinel intersection and dedupes the re-emitted id' -- failed once in the first full-suite run and then passed 3/3 in isolation and 3/3 more full-suite runs. Not touched by this diff; recorded rather than re-run away. It is an IntersectionObserver timing dependency, and the durable fix is to remove the timing dependency, not to retry."
+    },
+    "evidence": {
+      "beforeAfterDiff": "PENDING -- before exists (civit/captures/pc-0208-verify/phase0-before/, live 0.2.8, three states); after needs 0.2.9 live, which is deferred phase 7. Until that diff is run this pass has measurements but not the taste delta."
     }
   }
 }

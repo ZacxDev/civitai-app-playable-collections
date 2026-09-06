@@ -1,53 +1,115 @@
-/* Minimal reset. All component styling is inline (the sandboxed iframe can't
-   receive host CSS), so this only zeroes the document defaults. */
-:root {
-  color-scheme: light dark;
-}
-* {
-  box-sizing: border-box;
-}
-html,
-body,
-#root {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-}
-body {
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-}
-img,
-video {
-  max-width: 100%;
+/* Document reset + the app's own decorative rules.
+   ============================================================================
+
+   🔴 EVERYTHING IN THIS FILE IS IN `@layer app`, AND THAT IS LOAD-BEARING.
+   `@civitai/components` ships every rule inside `@layer civitai.components`, and
+   it reaches this app at runtime: `injectBlocksStyles()` (imported in main.tsx)
+   calls through to that package's own `injectStyles`. Normal unlayered rules beat
+   ALL layered rules regardless of specificity, so an unlayered reset here — the
+   `*`/`img`/`body` rules below are exactly the shape that does it — would
+   silently strip borders and backgrounds off every pack component. That is the
+   design system's most-hit gotcha ("components render unstyled / borderless"),
+   recorded three times before it reached us.
+
+   The layer ORDER is declared in index.html (`@layer app, civitai.components;`),
+   not here: layer order is first-encounter order, and an inline <style> in <head>
+   is parsed before any script, which is the only position that cannot lose a race
+   with a runtime injection. Later layers win, so `civitai.components` sits above
+   `app` — the pack's own rules win, and this file only fills the gaps.
+
+   🔴 The app's TOKEN OVERRIDES are deliberately NOT here — see src/skin.css. They
+   have to beat `@civitai/theme`, which is unlayered, so they must be unlayered
+   too. Same file-level rule, opposite direction; do not merge the two files. */
+
+@layer app {
+  :root {
+    /* Dark first, matching <meta name="color-scheme"> and bootThemeGuess(). */
+    color-scheme: dark light;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+  }
+
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  img,
+  video {
+    max-width: 100%;
+  }
+
+  /* ---- media cards --------------------------------------------------------
+     Interaction states for the app's own custom controls, which the
+     `@civitai/blocks-react` pack has no primitive for. Bundled INTO the iframe
+     app (the host cannot reach inside it) and driven entirely by `--civitai-*`,
+     which src/skin.css now supplies — so these read in both themes without a
+     single literal here. */
+  .pc-card {
+    transition:
+      border-color 130ms ease,
+      transform 130ms ease,
+      box-shadow 130ms ease;
+  }
+  .pc-card:hover {
+    border-color: var(--civitai-color-primary);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px color-mix(in srgb, var(--civitai-color-text) 12%, transparent);
+  }
+  .pc-card:focus-visible {
+    outline: 2px solid var(--civitai-color-primary);
+    outline-offset: 2px;
+    border-color: var(--civitai-color-primary);
+  }
+  .pc-card .pc-cover-img {
+    transition: transform 220ms ease;
+  }
+  .pc-card:hover .pc-cover-img {
+    transform: scale(1.04);
+  }
+
+  /* Loading-skeleton shimmer (#10). Inline styles can't declare keyframes, so the
+     pulse lives here; disabled under reduced-motion.
+
+     🔴 The fallback literal that used to sit on `--civitai-color-surface-2` here
+     (`#e9ecef`, the platform's light gray-2) is GONE: under the skin that value
+     belongs to no theme, so on the fallback path it would have painted a cold
+     gray block into a rose UI. The token is always defined by src/skin.css on the
+     app root, and skinRoot.test.tsx is what keeps that true. */
+  .pc-skeleton {
+    background: var(--civitai-color-surface-2);
+    animation: pc-shimmer 1.4s ease-in-out infinite;
+  }
+
+  /* Respect reduced-motion for both the card interactions and the skeleton. */
+  @media (prefers-reduced-motion: reduce) {
+    .pc-card,
+    .pc-card .pc-cover-img {
+      transition: none;
+    }
+    .pc-card:hover {
+      transform: none;
+    }
+    .pc-skeleton {
+      animation: none;
+    }
+  }
 }
 
-/* Interaction states for the app's own custom controls (media cards) that the
-   `@civitai/blocks-react` pack doesn't cover. Bundled INTO the iframe app (not
-   host CSS), and driven entirely by `--civitai-*` tokens so they flip with
-   [data-theme]. Pack components (Button/Badge/…) bring their own states. */
-.pc-card {
-  transition: border-color 130ms ease, transform 130ms ease, box-shadow 130ms ease;
-}
-.pc-card:hover {
-  border-color: var(--civitai-color-primary);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--civitai-color-text) 12%, transparent);
-}
-.pc-card:focus-visible {
-  outline: 2px solid var(--civitai-color-primary);
-  outline-offset: 2px;
-  border-color: var(--civitai-color-primary);
-}
-.pc-card .pc-cover-img {
-  transition: transform 220ms ease;
-}
-.pc-card:hover .pc-cover-img {
-  transform: scale(1.04);
-}
-
-/* Loading-skeleton shimmer (#10). Inline styles can't declare keyframes, so the
-   pulse lives here; disabled under reduced-motion. */
+/* 🔴 OUTSIDE the layer on purpose: `@keyframes` is not a style rule, so it takes
+   no part in the cascade and gains nothing from a layer — but a keyframes block
+   nested in `@layer` is legal and easy to misread as "this animation is layered".
+   Keeping it out states plainly that layering has nothing to say about it. */
 @keyframes pc-shimmer {
   0% {
     opacity: 0.55;
@@ -57,23 +119,5 @@ video {
   }
   100% {
     opacity: 0.55;
-  }
-}
-.pc-skeleton {
-  background: var(--civitai-color-surface-2, #e9ecef);
-  animation: pc-shimmer 1.4s ease-in-out infinite;
-}
-
-/* Respect reduced-motion for both the card interactions and the skeleton. */
-@media (prefers-reduced-motion: reduce) {
-  .pc-card,
-  .pc-card .pc-cover-img {
-    transition: none;
-  }
-  .pc-card:hover {
-    transform: none;
-  }
-  .pc-skeleton {
-    animation: none;
   }
 }

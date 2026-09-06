@@ -1,0 +1,114 @@
+/* ============================================================================
+   PLAYABLE COLLECTIONS — the app-owned skin (`brandDepth: skin`).
+   ============================================================================
+
+   Until 0.2.8 this app was `brandDepth: accent`: it consumed `@civitai/theme`'s
+   `--civitai-*` values unchanged and the PLATFORM owned light/dark correctness.
+   Operator feedback round 3 item 5 asked for the brand kit in the UI, which moves
+   the depth to `skin` — so this file redefines those token VALUES from the brand
+   plate `#FA6478` (rose, hue 352°, brand/README.md), and the light/dark debt is
+   now OURS. Every pair below is asserted in BOTH themes by src/skin.test.ts; that
+   suite is the thing that makes this file safe to edit.
+
+   ── WHY THE TOKENS AND NOT THE COMPONENTS ────────────────────────────────────
+   Eight components reference `var(--civitai-color-*)` directly rather than going
+   through src/theme.ts's `palette()` (App.tsx, CollectionGrid, CollectionViewer,
+   ModeSwitcher, TipModal, toast, …). Re-pointing each at an app-local palette
+   would be eight diffs that can drift apart, and would still leave the
+   `@civitai/blocks-react/ui` pack components (Button/Alert/Card/Modal/…) on the
+   platform's blue. Redefining the tokens skins all of it at once, in one place,
+   and keeps the pack reading as part of the app rather than beside it.
+
+   ── 🔴 WHY THIS FILE IS UNLAYERED AND index.css IS NOT ───────────────────────
+   Cascade layers rank BELOW unlayered declarations: for normal (non-`!important`)
+   rules, unlayered always beats layered, whatever the specificity. That single
+   rule cuts both ways here, and the two halves of the app's CSS need OPPOSITE
+   treatment:
+
+     • These token overrides must WIN over `@civitai/theme`, whose `:root` /
+       `[data-theme='…']` blocks are themselves UNLAYERED (measured: zero `@layer`
+       in @civitai/theme@0.3.1). A layered override would lose to them outright
+       and this whole file would be silently inert. So: unlayered, and it wins on
+       SPECIFICITY instead — see the selector note below.
+
+     • index.css's decorative/reset rules must NOT win over `@civitai/components`,
+       which ships every rule inside `@layer civitai.components` and is injected
+       into this app at runtime by `injectBlocksStyles()` (blocks-react's
+       dist/ui/styles.js imports `componentsCss` + `injectStyles` from it). An
+       unlayered app reset there is the documented "components render unstyled /
+       borderless" trap. So index.css lives in `@layer app`, and index.html
+       declares `@layer app, civitai.components;` before any script runs, which
+       fixes the order regardless of when the pack injects.
+
+   🔴 So do NOT "tidy" this file into `@layer app`. That would look like
+   consistency and would turn the skin off, with no error anywhere.
+
+   ── 🔴 WHY EVERY SELECTOR IS DOUBLED ─────────────────────────────────────────
+   `@civitai/theme`'s blocks are `:root`, `[data-theme='light']`, `[data-theme=
+   'dark']` — all specificity (0,1,0). A bare `[data-pc-skin]` would TIE with
+   `[data-theme='dark']` on the same element and lose on source order, because the
+   pack's sheet is injected into <head> at runtime, i.e. after the bundle. The
+   compound selectors below are (0,2,0) and win on specificity, so nothing depends
+   on injection order. `data-pc-skin` is stamped on every app root in App.tsx;
+   src/skinRoot.test.tsx fails if it stops being — an unset attribute would make
+   this file inert exactly the way a layer would.
+
+   ── THE VALUES ───────────────────────────────────────────────────────────────
+   Tonal, per brand/README.md: one hue at different lightnesses, no second hue.
+   Dark keeps the plate `#FA6478` as `primary` unchanged. Light CANNOT — white on
+   `#FA6478` is 2.35:1 — so light's primary is the same hue driven down in
+   lightness to `#C8324B`, which carries white at 5.23:1. That is the "-0.13 for
+   bodies" move in the brand kit, applied to a UI need rather than to a mark.
+
+   🔴 This also RETIRES the two traps src/theme.ts documented under `accent`:
+     1. the theme-INVARIANT `--civitai-color-gray-*` ramp — unused here, and the
+        skin does not depend on it;
+     2. light `body == surface == surface-2` (all `#fefefe` upstream), which left
+        a card with no fill contrast. Under the skin light's body/surface/surface-2
+        are three distinct values, so a card is a card in both themes.
+   ============================================================================ */
+
+/* DARK — the base. `[data-theme]` (not `[data-theme='dark']`) so that any value
+   the host sends which is not exactly 'light' lands here, matching the rule the
+   rest of the app follows: unknown means DARK (src/bootTheme.ts, index.html). */
+[data-pc-skin][data-theme] {
+  --civitai-color-text: #f4e9ec;
+  --civitai-color-text-dimmed: #b9a0a7;
+  --civitai-color-body: #12090c;
+  --civitai-color-surface: #1f1319;
+  --civitai-color-surface-2: #291b23;
+  --civitai-color-border: #452f38;
+  --civitai-color-primary: #fa6478;
+  --civitai-color-primary-hover: #ff8093;
+  --civitai-color-primary-fg: #2a0611;
+  --civitai-color-primary-light: rgba(250, 100, 120, 0.16);
+  --civitai-color-error: #ff7a7a;
+  --civitai-color-success: #5bc99e;
+  --civitai-color-warning: #f5a55a;
+  --civitai-color-info: #fa6478;
+
+  /* Softer than the platform's 0.25rem — this app is a shelf of media cards, and
+     a 4px corner on a 16:9 cover reads as an accident rather than a decision. */
+  --civitai-radius: 0.625rem;
+}
+
+/* LIGHT — same key set, asserted (skin.test.ts fails if the two blocks diverge,
+   which is the mechanical form of "the pass verified both themes"). */
+[data-pc-skin][data-theme='light'] {
+  --civitai-color-text: #20141a;
+  --civitai-color-text-dimmed: #6e545c;
+  --civitai-color-body: #fbf1f3;
+  --civitai-color-surface: #ffffff;
+  --civitai-color-surface-2: #f4e3e7;
+  --civitai-color-border: #e0c3ca;
+  --civitai-color-primary: #c8324b;
+  --civitai-color-primary-hover: #a82740;
+  --civitai-color-primary-fg: #ffffff;
+  --civitai-color-primary-light: rgba(200, 50, 75, 0.1);
+  --civitai-color-error: #b3261e;
+  --civitai-color-success: #1f6f55;
+  --civitai-color-warning: #8a4b10;
+  --civitai-color-info: #c8324b;
+
+  --civitai-radius: 0.625rem;
+}

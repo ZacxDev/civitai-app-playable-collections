@@ -56,16 +56,20 @@
 
       🔴 WHY THE COLOURS ARE LITERALS HERE AND VAR REFERENCES EVERYWHERE ELSE.
       src/theme.ts is `var(--civitai-*)` with zero hardcoded colour, and those tokens
-      arrive with `@civitai/theme/styles.css` — which Vite emits as a render-blocking
-      `<link>`, i.e. one round trip that has NOT completed during the window this file
-      exists to cover. An inline style cannot reference a token that has not loaded,
-      so the values below are copied from `@civitai/theme`'s own blocks and
-      src/bootTokens.test.ts asserts each against the INSTALLED package.
+      arrive with `@civitai/theme/styles.css` + src/skin.css — which Vite emits as
+      render-blocking `<link>`s, i.e. round trips that have NOT completed during the
+      window this file exists to cover. An inline style cannot reference a token that
+      has not loaded, so the values below are copied from **src/skin.css** and
+      src/bootTokens.test.ts asserts each against that file.
 
-      🔴 IN LIGHT, `body == surface == surface-2` (all #fefefe) in this design
-      system. So a placeholder cannot be a surface fill or it is invisible
-      white-on-white; it is a `color-mix()` of text into surface, exactly as
-      `elevate()` does in src/theme.ts, which reads in BOTH themes.
+      🔴 THE PLACEHOLDER FILL IS A `color-mix()` OF TEXT INTO SURFACE, NOT A SURFACE
+      FILL. Under `accent` that was forced: the platform's light theme had
+      `body == surface == surface-2` (all #fefefe), so a surface fill was invisible
+      white-on-white. The skin fixes that — light's body/surface/surface-2 are now
+      three distinct values — but the mix is KEPT, because it is what makes the
+      placeholder read as a placeholder rather than as an empty card, and it holds in
+      both themes. `elevate()` in src/theme.ts does the same thing for the same
+      reason.
 
       Removal needs no code: `createRoot(container).render(...)` in src/main.tsx
       clears the container's children before its first commit. That is MEASURED in
@@ -73,13 +77,37 @@
       and does not generalise to frameworks that append.
     -->
     <style>
+      /*
+        🔴 THIS LAYER STATEMENT MUST BE THE FIRST CSS IN THE DOCUMENT, and that is
+        the whole reason it lives in an inline <style> rather than in a stylesheet
+        the bundler emits.
+
+        Layer order is FIRST-ENCOUNTER order, and later layers win. src/index.css
+        wraps the app's reset + decorative rules in `@layer app` so they cannot
+        beat `@civitai/components` (which ships inside `@layer civitai.components`
+        and is injected at RUNTIME by injectBlocksStyles()). But a layer's rank is
+        fixed by wherever its name is first seen — so if the pack's injection got
+        there first, `civitai.components` would rank BELOW `app` and the app reset
+        would strip the pack's borders and backgrounds anyway. That is the design
+        system's "components render unstyled / borderless" trap.
+
+        An inline <style> in <head> is parsed before any script runs, so declaring
+        the order here cannot lose that race. Naming a layer in this statement does
+        not create any rule — it only fixes the ranking.
+
+        NOTE the app's own TOKEN overrides (src/skin.css) are deliberately
+        UNLAYERED and are not covered by this: they have to beat @civitai/theme,
+        which is unlayered too. Read skin.css's header before changing either.
+      */
+      @layer app, civitai.components;
+
       /* The app sets these in its own stylesheet, which arrives with the bundle —
          i.e. after this paint. Without them the skeleton is inset by the UA's
          default 8px body margin and then jumps when the bundle lands. */
       html {
         /* The strong guarantee, independent of `color-scheme` support entirely.
-           --civitai-color-body under [data-theme='dark']. */
-        background: #1a1b1e;
+           --civitai-color-body under the SKIN's dark block. */
+        background: #12090c;
       }
 
       body {
@@ -91,23 +119,31 @@
         font-family:
           -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
 
-        /* DARK — the base, unconditioned values, from @civitai/theme
-           [data-theme='dark']. */
-        --pc-boot-body: #1a1b1e;
-        --pc-boot-text: #c1c2c5;
-        --pc-boot-surface: #1a1b1e;
+        /* DARK — the base, unconditioned values.
+
+           🔴 SOURCED FROM src/skin.css, NOT @civitai/theme. Until 0.2.8 this app
+           was `brandDepth: accent` and these literals were copies of the package's
+           values; src/bootTokens.test.ts asserted them against the INSTALLED
+           package. The skin redefines those same tokens, so the package is no
+           longer what the first React commit paints — copying it here would hand
+           the viewer a platform-grey boot that snaps to rose at handoff. That test
+           now asserts against skin.css, which is the surface that can actually
+           drift out from under this block. */
+        --pc-boot-body: #12090c;
+        --pc-boot-text: #f4e9ec;
+        --pc-boot-surface: #1f1319;
       }
 
       @media (prefers-color-scheme: light) {
         html {
-          background: #fefefe;
+          background: #fbf1f3;
         }
 
         :root {
-          /* LIGHT — @civitai/theme `:root`. */
-          --pc-boot-body: #fefefe;
-          --pc-boot-text: #222;
-          --pc-boot-surface: #fefefe;
+          /* LIGHT — src/skin.css `[data-pc-skin][data-theme='light']`. */
+          --pc-boot-body: #fbf1f3;
+          --pc-boot-text: #20141a;
+          --pc-boot-surface: #ffffff;
         }
       }
 
