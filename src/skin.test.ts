@@ -107,9 +107,23 @@ function skinBlock(needle: string): Record<string, string> {
  *  host theme lands on dark, matching bootThemeGuess(). Light is the override. */
 const DARK = skinBlock('[data-pc-skin][data-theme]');
 const LIGHT = skinBlock("[data-pc-skin][data-theme='light']");
+
+/**
+ * What a LIGHT root actually resolves to.
+ *
+ * 🔴 The base selector is `[data-pc-skin][data-theme]`, which a light root ALSO
+ * matches — so light does not start from nothing, it starts from the base block
+ * and overrides. Anything light does not redefine (the invariant gray ramp) it
+ * inherits. Reading the raw light block as if it were the whole light palette
+ * models a cascade the browser does not have, and a token would look "missing"
+ * in light when the page renders it correctly.
+ *
+ * The RAW blocks are still what the parity checks read — the distinction between
+ * "defined here" and "resolves here" is exactly what those assert.
+ */
 const THEMES: Array<[string, Record<string, string>]> = [
   ['dark', DARK],
-  ['light', LIGHT],
+  ['light', { ...DARK, ...LIGHT }],
 ];
 
 const c = (p: Record<string, string>, name: string): string => {
@@ -129,8 +143,28 @@ describe('skin palette — both themes', () => {
   // replaces: upstream's dark block redefines 14 of 32 tokens, so the gray ramp
   // is theme-invariant and silently wrong in one theme. A key present in one of
   // our blocks and absent from the other has exactly that shape.
-  it('both themes define the SAME key set', () => {
-    expect(Object.keys(LIGHT).sort()).toEqual(Object.keys(DARK).sort());
+  //
+  // The ONE legitimate exception is the ramp the pack consumes: gray-1/2/5 are
+  // invariant BY DESIGN (upstream's own semantics — a "dark chip" stays dark),
+  // and a light root also matches the base selector, so light inherits them
+  // rather than repeating them. They are allowlisted BY NAME, so forgetting a
+  // theme-varying token still fails — the allowlist is the claim, not a hole.
+  const INVARIANT_BY_DESIGN = ['--civitai-color-gray-1', '--civitai-color-gray-2', '--civitai-color-gray-5'];
+
+  it('light redefines every theme-varying token the base block defines', () => {
+    const expected = Object.keys(DARK)
+      .filter((k) => !INVARIANT_BY_DESIGN.includes(k))
+      .sort();
+    expect(Object.keys(LIGHT).sort()).toEqual(expected);
+  });
+
+  it('the allowlist is exactly the ramp entries the pack pairs with no varying fg', () => {
+    // Guards the allowlist itself: widening it is how this test stops biting.
+    // gray-9 is deliberately NOT here — it pairs with primary-fg, so it must
+    // co-vary; see the pack-pairings block below.
+    expect(INVARIANT_BY_DESIGN.every((k) => k in DARK && !(k in LIGHT))).toBe(true);
+    expect(INVARIANT_BY_DESIGN).not.toContain('--civitai-color-gray-9');
+    expect('--civitai-color-gray-9' in LIGHT).toBe(true);
   });
 
   it.each(THEMES)('%s: body text is readable on every surface it lands on', (_name, p) => {
@@ -204,22 +238,76 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-describe('skin coverage of the tokens this app actually consumes', () => {
-  const used = new Set<string>();
+// 🔴 THIS BLOCK USED TO SCAN `src/**` ONLY, AND THAT WAS THE BUG. Its own
+// docstring named the failure mode — a token the app USES but the skin does not
+// DEFINE falls back to the platform's blue-grey inside a rose UI — and the whole
+// stated reason for skinning TOKENS rather than components is that it "skins the
+// app and the pack together". But the pack is not in `src/`, so the guard could
+// not see the pack's own references, and the pack reaches past the semantic
+// tokens into the theme-INVARIANT `--civitai-color-gray-*` ramp. Result, measured
+// in a browser: a Slider track painted #e9ecef on a rose light surface. The guard
+// read as coverage while providing half of it.
+//
+// It now scans the app AND both packages' shipped CSS.
+const PACK_CSS = [
+  '../node_modules/@civitai/components/dist/components.css',
+  '../node_modules/@civitai/blocks-react/dist/ui/styles.js',
+];
+
+describe('skin coverage of every token that reaches this app', () => {
+  const appUsed = new Set<string>();
   for (const f of sourceFiles(SRC)) {
     if (f.endsWith('skin.css')) continue; // the definitions, not a consumption
     for (const m of decomment(readFileSync(f, 'utf8')).matchAll(/var\(\s*(--civitai-color-[\w-]+)/g)) {
-      used.add(m[1]);
+      appUsed.add(m[1]);
     }
   }
 
-  it('found colour tokens to check (positive control — a zero here proves nothing)', () => {
-    expect(used.size).toBeGreaterThanOrEqual(6);
+  const packUsed = new Set<string>();
+  for (const rel of PACK_CSS) {
+    const src = readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+    for (const m of src.matchAll(/var\(\s*(--civitai-color-[\w-]+)/g)) packUsed.add(m[1]);
+  }
+
+  it('found tokens in BOTH populations (positive control — a zero passes everything)', () => {
+    expect(appUsed.size).toBeGreaterThanOrEqual(6);
+    // If this goes to zero the pack moved its stylesheet and the scan is reading
+    // nothing, which would look exactly like "the pack references no tokens".
+    expect(packUsed.size).toBeGreaterThanOrEqual(6);
   });
 
-  it('defines every --civitai-color-* the app references, in BOTH themes', () => {
-    const missing = [...used].filter((t) => !(t in DARK) || !(t in LIGHT)).sort();
-    expect(missing).toEqual([]);
+  it('defines every --civitai-color-* the APP references', () => {
+    expect([...appUsed].filter((t) => !(t in DARK)).sort()).toEqual([]);
+  });
+
+  it('defines every --civitai-color-* the PACK references', () => {
+    // The pack renders inside our root, so it resolves against our tokens. Any
+    // name we do not define silently keeps the platform value.
+    expect([...packUsed].filter((t) => !(t in DARK)).sort()).toEqual([]);
+  });
+});
+
+// The pack pairs one INVARIANT ramp token with a theme-VARYING foreground, and
+// that combination is what a skin can break without touching either file.
+describe('pack pairings the skin has to keep legible', () => {
+  it.each(THEMES)('%s: the tooltip bubble carries its own text', (_name, p) => {
+    // @civitai/components: [data-civitai-ui-tooltip-bubble] is
+    // `background: gray-9; color: primary-fg`. Upstream that is always safe
+    // because primary-fg is #fefefe in both themes. Here it is NOT: our dark
+    // primary-fg is a near-black (it has to be, to carry 6.3:1 on a light rose
+    // primary), and near-black on the platform's dark gray-9 measures 1.20:1.
+    // No Tooltip renders in this app today — this pins it anyway, because
+    // "we do not use that component yet" is not a property anyone re-checks.
+    expect(contrast(c(p, 'primary-fg'), c(p, 'gray-9'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(THEMES)('%s: a pack Slider track is visible against the surface under it', (_name, p) => {
+    // light: gray-2; dark: the pack's own [data-theme='dark'] rule swaps in
+    // surface-2. Assert whichever this theme actually resolves to.
+    const track = _name === 'light' ? c(p, 'gray-2') : c(p, 'surface-2');
+    expect(contrast(track, c(p, 'surface'))).toBeGreaterThanOrEqual(1.06);
+    // ...and the filled portion (accent-color: primary) must read on that track.
+    expect(contrast(c(p, 'primary'), track)).toBeGreaterThanOrEqual(1.5);
   });
 });
 
@@ -240,16 +328,63 @@ describe('structural — the skin cannot be made inert without failing here', ()
   // @civitai/components (which ships inside `@layer civitai.components` and is
   // injected here at runtime by injectBlocksStyles()) and strips the pack's
   // borders and backgrounds. That is the design system's most-repeated gotcha.
-  it('index.css IS layered, and its style rules are inside the layer', () => {
+  // 🔴 REWRITTEN AFTER AN AUDIT SHOWED THE FIRST VERSION WAS HALF-BLIND. It
+  // removed the layer block with `.replace(/@layer\s+app\s*\{[\s\S]*\n\}/, '')`,
+  // and `[\s\S]*` is GREEDY: it backtracks to the LAST `\n}` in the file, so the
+  // replace ate everything from `@layer app {` to EOF. An unlayered rule appended
+  // AFTER the layer — the direction a maintainer actually edits a file — was
+  // deleted along with it and never checked. Measured: appending
+  // `.pc-evil-unlayered { border: 0 }` left this guard green at 30/30, while the
+  // same rule placed BEFORE the layer went red. The docstring claimed the
+  // coverage; the body provided half of it.
+  //
+  // Brace-matching instead, which does not care where the rule sits.
+  it('index.css IS layered, and EVERY style rule is inside the layer', () => {
     const css = decomment(INDEX_CSS);
-    expect(css).toMatch(/@layer\s+app\s*\{/);
-    // Everything after the layer's closing brace must be at-rules only — today
-    // that is the @keyframes block, which takes no part in the cascade.
-    const tail = css.slice(css.lastIndexOf('}') === -1 ? 0 : 0);
-    const outsideRules = tail
-      .replace(/@layer\s+app\s*\{[\s\S]*\n\}/, '') // the layer block itself
-      .match(/(^|\n)\s*[^@\s][^{}]*\{/g);
-    expect(outsideRules ?? []).toEqual([]);
+    const open = css.search(/@layer\s+app\s*\{/);
+    expect(open).toBeGreaterThan(-1);
+
+    // Walk to the layer's own matching close brace.
+    let depth = 0;
+    let close = -1;
+    for (let i = css.indexOf('{', open); i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          close = i;
+          break;
+        }
+      }
+    }
+    expect(close).toBeGreaterThan(open); // the layer block is balanced
+
+    let outside = css.slice(0, open) + css.slice(close + 1);
+    // Drop whole at-rule blocks first. @keyframes is not a style rule and takes
+    // no part in the cascade, but its stops (`0% {`, `50% {`) are shaped exactly
+    // like selectors, so scanning without this reports them as stray rules.
+    outside = outside.replace(/@[\w-]+[^{;]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
+    const strayRules = outside.match(/(^|\n)\s*[^@\s}][^{}]*\{/g);
+    expect(strayRules ?? []).toEqual([]);
+  });
+
+  // The control the first version silently lacked: prove the walk can SEE a rule
+  // on the far side of the layer, so a future green is worth something.
+  it('...and that check can actually see a rule appended AFTER the layer', () => {
+    const css = decomment(INDEX_CSS);
+    const open = css.search(/@layer\s+app\s*\{/);
+    let depth = 0;
+    let close = -1;
+    for (let i = css.indexOf('{', open); i < css.length; i += 1) {
+      if (css[i] === '{') depth += 1;
+      else if (css[i] === '}' && --depth === 0) {
+        close = i;
+        break;
+      }
+    }
+    const mutated = `${css.slice(0, open)}${css.slice(open, close + 1)}\n.pc-appended-unlayered { border: 0; }\n${css.slice(close + 1)}`;
+    const outside = mutated.slice(0, open) + mutated.slice(mutated.indexOf('}', close) + 1);
+    expect(outside).toContain('.pc-appended-unlayered');
   });
 
   // Layer RANK is fixed by first encounter, and @civitai/components arrives at
@@ -317,6 +452,33 @@ describe('structural — the skin cannot be made inert without failing here', ()
     it('there are exactly three roots (boot / player / browse)', () => {
       expect(allRoots.length).toBe(3);
     });
+  });
+
+  // (4) 🔴 THE ROUTE THIS PR ORIGINALLY CALLED "the two ways" AND MISSED. An
+  // audit commented out `import './skin.css'` in main.tsx and the FULL suite
+  // stayed green at 436/436, both tiers — the app shipping with every surface
+  // reverted to platform blue-grey, stylesheet loaded nowhere, no console error.
+  // Every other guard here reads the CSS off disk, and jsdom applies no CSS at
+  // all, so the one line that makes the skin reach a browser was unpinned.
+  //
+  // 🔴 AND IT MUST IGNORE COMMENTED-OUT CODE. The first version of this guard
+  // searched the file text for `'./skin.css'`, which is a claim about a WORD, not
+  // about a code path — the mutant that disables an import is `// import …`, and
+  // the word survives it. It passed the mutation it was written for. `decomment`
+  // only strips /* */ blocks, so line comments have to go too.
+  it('main.tsx actually IMPORTS the skin, after the tokens it overrides', () => {
+    const main = decomment(read('./main.tsx'))
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('//'))
+      .join('\n');
+    const theme = main.indexOf("'@civitai/theme/styles.css'");
+    const skin = main.indexOf("'./skin.css'");
+    expect(theme).toBeGreaterThan(-1); // positive control: we are reading main.tsx
+    expect(skin).toBeGreaterThan(-1);
+    // Order is not what makes the skin win — specificity is — but importing the
+    // overrides before the thing they override is the readable arrangement, and
+    // an accidental reorder is worth a look rather than a silent pass.
+    expect(skin).toBeGreaterThan(theme);
   });
 
   it('states every value as a literal colour, never a var() back into the tokens', () => {

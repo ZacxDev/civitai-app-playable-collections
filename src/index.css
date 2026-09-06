@@ -22,10 +22,11 @@
    too. Same file-level rule, opposite direction; do not merge the two files. */
 
 @layer app {
-  :root {
-    /* Dark first, matching <meta name="color-scheme"> and bootThemeGuess(). */
-    color-scheme: dark light;
-  }
+  /* 🔴 NOT DECLARED HERE. `color-scheme` is set by index.html's inline <style>,
+     which is UNLAYERED and therefore beats anything in `@layer app` outright — a
+     copy here would be permanently shadowed, so editing it would do nothing while
+     reading as the place the value lives. index.html is the single site; keep it
+     in step with <meta name="color-scheme"> and bootThemeGuess(). */
 
   * {
     box-sizing: border-box;

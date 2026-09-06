@@ -55,8 +55,8 @@ function bootValue(selector: string, prop: string): string {
   return tokenValue(BOOT_CSS, selector, prop);
 }
 
-describe('boot token parity with @civitai/theme', () => {
-  it('the DARK literals match the package [data-theme=dark] block', () => {
+describe('boot token parity with src/skin.css (NOT @civitai/theme — see the header)', () => {
+  it('the DARK literals match the skin base block', () => {
     const body = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-body');
     const text = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-text');
     const surface = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme]", '--civitai-color-surface');
@@ -66,7 +66,7 @@ describe('boot token parity with @civitai/theme', () => {
     expect(bootValue(':root', '--pc-boot-surface')).toBe(surface);
   });
 
-  it('the LIGHT literals match the package :root block', () => {
+  it('the LIGHT literals match the skin light block', () => {
     const body = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-body');
     const text = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-text');
     const surface = tokenValue(SKIN_CSS, "[data-pc-skin][data-theme='light']", '--civitai-color-surface');

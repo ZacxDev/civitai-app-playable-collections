@@ -43,6 +43,18 @@
    🔴 So do NOT "tidy" this file into `@layer app`. That would look like
    consistency and would turn the skin off, with no error anywhere.
 
+   ── 🔴 THERE ARE THREE WAYS TO SWITCH THIS SKIN OFF, NOT TWO ─────────────────
+   This file's first draft named two — the layer trap above and the missing
+   `data-pc-skin` attribute below — and an audit found the third by simply
+   commenting out `import './skin.css'` in main.tsx: the FULL suite stayed green
+   at 436/436 across both tiers, with every surface reverted to platform
+   blue-grey and no console error. Every other guard here reads CSS off disk, and
+   jsdom applies no CSS at all, so the one line that makes any of this reach a
+   browser was the one line nothing checked. `skin.test.ts` now pins the import
+   too — with line comments stripped, because the first version of THAT guard
+   searched for the string `'./skin.css'` and a commented-out import still
+   contains it.
+
    ── 🔴 WHY EVERY SELECTOR IS DOUBLED ─────────────────────────────────────────
    `@civitai/theme`'s blocks are `:root`, `[data-theme='light']`, `[data-theme=
    'dark']` — all specificity (0,1,0). A bare `[data-pc-skin]` would TIE with
@@ -90,6 +102,46 @@
   /* Softer than the platform's 0.25rem — this app is a shelf of media cards, and
      a 4px corner on a 16:9 cover reads as an accident rather than a decision. */
   --civitai-radius: 0.625rem;
+
+  /* ── the gray ramp the PACK consumes ──────────────────────────────────────
+     🔴 ADDED AFTER AN AUDIT CAUGHT THIS SKIN HALF-APPLYING. The claim was that
+     overriding tokens "skins the app and the pack together"; it did not, because
+     `@civitai/components` reaches past the semantic tokens into the
+     `--civitai-color-gray-*` ramp — which is theme-INVARIANT upstream and which
+     this skin was not overriding. Measured in a browser against the shipped
+     bundle: a pack Slider track rendered `rgb(233,236,239)` (#e9ecef, the
+     platform's cold blue-grey) on a rose light surface.
+
+     Only these four are referenced by @civitai/components@0.4.1 +
+     @civitai/blocks-react@0.47.0 — re-derive rather than assuming, the coverage
+     guard in skin.test.ts now scans BOTH packages and fails if the set grows:
+       gray-1  segmented-control track   (light only; dark uses surface-2)
+       gray-2  slider track, image bg    (light only; dark uses surface-2)
+       gray-5  slider disabled accent    (both themes)
+       gray-9  tooltip bubble bg         (both themes) — see the exception below
+
+     These three stay INVARIANT, matching upstream's own semantics: they are
+     defined here in the base block, which a light root ALSO matches, so light
+     inherits them rather than redefining them. */
+  --civitai-color-gray-1: #f7ebee;
+  --civitai-color-gray-2: #f0dfe3;
+  --civitai-color-gray-5: #a98d95;
+
+  /* 🔴 gray-9 IS THE EXCEPTION, AND IT IS THE INTERESTING ONE. The pack pairs it
+     with a theme-VARYING foreground: the tooltip bubble is
+     `background: gray-9; color: primary-fg`. Upstream that is safe because
+     `primary-fg` is `#fefefe` in both themes, so a dark chip always carries light
+     text. This skin cannot keep that: our `primary` is a light rose, so dark's
+     `primary-fg` has to be a near-black (#2a0611) to carry 6.3:1 on it — and
+     near-black on the platform's dark gray-9 measures **1.20:1**, i.e. an
+     invisible tooltip. No Tooltip is rendered in this app today, so it was
+     latent, not broken; it is pinned by skin.test.ts either way, because "we do
+     not use that component yet" is not a property anyone will re-check.
+
+     So gray-9 co-varies with primary-fg instead: dark below, light in the light
+     block. This inverts the tooltip in dark (light chip, dark text), which is
+     legible and simply not what upstream drew. */
+  --civitai-color-gray-9: #f4e9ec;
 }
 
 /* LIGHT — same key set, asserted (skin.test.ts fails if the two blocks diverge,
@@ -111,4 +163,10 @@
   --civitai-color-info: #c8324b;
 
   --civitai-radius: 0.625rem;
+
+  /* The tooltip chip, dark against light's white `primary-fg`. gray-1/2/5 are
+     deliberately NOT repeated here — they are invariant and inherited from the
+     base block above, which a light root also matches. skin.test.ts allowlists
+     exactly that set, so forgetting a THEME-VARYING token still fails. */
+  --civitai-color-gray-9: #231017;
 }

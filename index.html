@@ -173,8 +173,12 @@
         gap: 10px;
       }
 
-      /* `color-mix` of text into surface — `elevate()` in src/theme.ts. A surface
-         fill would be invisible in light, where body == surface. */
+      /* `color-mix` of text into surface — `elevate()` in src/theme.ts.
+         🔴 The reason is NOT "a surface fill would be invisible in light" any
+         more: that was true under `accent`, where the platform made
+         body == surface == #fefefe, and the skin fixed it (see the note above).
+         The mix is kept for the reason that still holds — it reads as a
+         PLACEHOLDER rather than as an empty card, in both themes. */
       [data-boot-skeleton] [data-boot-dot] {
         box-sizing: border-box;
         width: 20px;
