@@ -22,9 +22,14 @@
 // recorded because the workarounds are still visible in the code below and read
 // as superstition without this note:
 //   1. The `--civitai-color-gray-*` ramp is theme-INVARIANT upstream (not
-//      redefined under [data-theme='dark']). Still true, and still never used
-//      here — the skin does not override the ramp either, so the hazard is intact
-//      for anyone who reaches for it. THIS ONE IS NOT FIXED, only avoided.
+//      redefined under [data-theme='dark']). Still true, and still never used by
+//      THIS MODULE. ⚠ But "the skin does not override the ramp either, so the
+//      hazard is intact" — which this comment said until an audit — was wrong
+//      about the app: @civitai/components consumes the ramp, so a pack Slider
+//      painted platform blue-grey on a rose surface. src/skin.css now defines the
+//      four ramp tokens the pack references. Avoiding a token is not the same as
+//      that token being unreachable, and the difference is a dependency you did
+//      not write.
 //   2. In LIGHT theme upstream, `body == surface == surface-2` (all `#fefefe`), so
 //      a card got NO fill contrast. FIXED: the skin gives light three distinct
 //      values (`#fbf1f3` / `#ffffff` / `#f4e3e7`), asserted with a minimum

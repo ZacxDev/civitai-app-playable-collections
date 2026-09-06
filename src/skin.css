@@ -68,13 +68,15 @@
    ── THE VALUES ───────────────────────────────────────────────────────────────
    Tonal, per brand/README.md: one hue at different lightnesses, no second hue.
    Dark keeps the plate `#FA6478` as `primary` unchanged. Light CANNOT — white on
-   `#FA6478` is 2.35:1 — so light's primary is the same hue driven down in
+   `#FA6478` is 2.93:1 — so light's primary is the same hue driven down in
    lightness to `#C8324B`, which carries white at 5.23:1. That is the "-0.13 for
    bodies" move in the brand kit, applied to a UI need rather than to a mark.
 
    🔴 This also RETIRES the two traps src/theme.ts documented under `accent`:
-     1. the theme-INVARIANT `--civitai-color-gray-*` ramp — unused here, and the
-        skin does not depend on it;
+     1. the theme-INVARIANT `--civitai-color-gray-*` ramp. ⚠ This line used to say
+        the ramp was "unused here, and the skin does not depend on it" — TRUE of
+        the app's own code, and FALSE of the app, because the PACK consumes it.
+        The skin now defines the four ramp tokens the pack references (below);
      2. light `body == surface == surface-2` (all `#fefefe` upstream), which left
         a card with no fill contrast. Under the skin light's body/surface/surface-2
         are three distinct values, so a card is a card in both themes.

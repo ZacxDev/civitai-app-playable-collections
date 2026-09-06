@@ -12,10 +12,11 @@
 // free until it makes something unreadable, at which point the pair that broke is
 // named in the failure.
 //
-// 🔴 It also pins the two INERTNESS mechanisms, which are the ways this skin can
-// be switched off while looking present — see the structural describe block. Both
-// were live risks in the design, not hypotheticals: one is the cascade-layer trap
-// the design-system skill has recorded three times.
+// 🔴 It also pins the THREE INERTNESS mechanisms — the ways this skin can be
+// switched off while looking present. See the structural describe block. All three
+// were live risks, not hypotheticals: one is the cascade-layer trap the
+// design-system skill has recorded three times, and the third (main.tsx simply not
+// importing the skin) was found by an audit AFTER this file claimed there were two.
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -158,12 +159,28 @@ describe('skin palette — both themes', () => {
     expect(Object.keys(LIGHT).sort()).toEqual(expected);
   });
 
-  it('the allowlist is exactly the ramp entries the pack pairs with no varying fg', () => {
-    // Guards the allowlist itself: widening it is how this test stops biting.
-    // gray-9 is deliberately NOT here — it pairs with primary-fg, so it must
-    // co-vary; see the pack-pairings block below.
-    expect(INVARIANT_BY_DESIGN.every((k) => k in DARK && !(k in LIGHT))).toBe(true);
-    expect(INVARIANT_BY_DESIGN).not.toContain('--civitai-color-gray-9');
+  // 🔴 PINS THE SET, NOT ITS SHAPE. The previous version asserted only that each
+  // entry was in DARK, absent from LIGHT, and that gray-9 was not listed — which
+  // is a property ANY token can satisfy. Measured: appending
+  // '--civitai-color-info' to the array and deleting it from the light block left
+  // the suite 444/444 green, while light silently inherited dark's #fa6478 and
+  // `info` fell to 2.93:1 on white against the correct 5.23:1. `info` carries no
+  // contrast assertion, so nothing else caught it. The comment claimed "widening
+  // it is how this test stops biting" — and widening it was free.
+  it('the allowlist is EXACTLY the three invariant ramp entries', () => {
+    expect([...INVARIANT_BY_DESIGN].sort()).toEqual([
+      '--civitai-color-gray-1',
+      '--civitai-color-gray-2',
+      '--civitai-color-gray-5',
+    ]);
+    // ...and each behaves the way "invariant" means: defined once in the base
+    // block, inherited by light rather than redeclared.
+    for (const k of INVARIANT_BY_DESIGN) {
+      expect(k in DARK).toBe(true);
+      expect(k in LIGHT).toBe(false);
+    }
+    // gray-9 is the deliberate non-member: it pairs with the theme-varying
+    // primary-fg, so it must co-vary. See the pack-pairings block below.
     expect('--civitai-color-gray-9' in LIGHT).toBe(true);
   });
 
@@ -217,10 +234,25 @@ describe('skin palette — both themes', () => {
 
   it('keeps the brand plate itself as the dark primary', () => {
     // brand/README.md: the plate is #FA6478. Dark can carry it unchanged; light
-    // cannot (white on it is 2.35:1), which is why light drives the same hue down
-    // in lightness rather than introducing a second hue.
+    // cannot, which is why light drives the same hue down in lightness rather
+    // than introducing a second hue.
     expect(c(DARK, 'primary').toLowerCase()).toBe('#fa6478');
     expect(contrast('#ffffff', '#fa6478')).toBeLessThan(4.5); // the reason light differs
+  });
+
+  // 🔴 PINS THE NUMBER THE PROSE QUOTES. The figure for white-on-plate was written
+  // as 2.35:1 in five places — a comment, skin.css, taste.json, a commit message
+  // and the PR body — and it was simply WRONG; the value is 2.93:1, and 2.35
+  // corresponds to nothing in this palette. The CONCLUSION was unaffected (both
+  // are under 4.5, so light still cannot use the plate), which is exactly why
+  // nobody noticed: no assertion read it, so it was unpinned by construction and
+  // drifted into four more documents. Asserting it here makes the next quote
+  // checkable instead of copied.
+  it('the white-on-plate figure the docs quote is the real one', () => {
+    expect(Number(contrast('#ffffff', '#fa6478').toFixed(2))).toBe(2.93);
+    // and the two that justify the split, quoted in the same breath
+    expect(Number(contrast(c(DARK, 'primary-fg'), c(DARK, 'primary')).toFixed(2))).toBe(6.32);
+    expect(Number(contrast(c(LIGHT, 'primary-fg'), c(LIGHT, 'primary')).toFixed(2))).toBe(5.23);
   });
 });
 
@@ -229,11 +261,11 @@ describe('skin palette — both themes', () => {
 // platform's blue-grey inside a rose UI, with no error.
 // ---------------------------------------------------------------------------
 
-function sourceFiles(dir: string, acc: string[] = []): string[] {
+function sourceFiles(dir: string, acc: string[] = [], match = /\.(ts|tsx|css)$/): string[] {
   for (const e of readdirSync(dir)) {
     const p = join(dir, e);
-    if (statSync(p).isDirectory()) sourceFiles(p, acc);
-    else if (/\.(ts|tsx|css)$/.test(e) && !/\.test\.tsx?$/.test(e)) acc.push(p);
+    if (statSync(p).isDirectory()) sourceFiles(p, acc, match);
+    else if (match.test(e) && !/\.test\.tsx?$/.test(e)) acc.push(p);
   }
   return acc;
 }
@@ -248,11 +280,16 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
 // in a browser: a Slider track painted #e9ecef on a rose light surface. The guard
 // read as coverage while providing half of it.
 //
-// It now scans the app AND both packages' shipped CSS.
-const PACK_CSS = [
-  '../node_modules/@civitai/components/dist/components.css',
-  '../node_modules/@civitai/blocks-react/dist/ui/styles.js',
-];
+// It now scans the app AND both packages — 🔴 EVERY file in them, not a list of
+// two. The previous version named `components/dist/components.css` and
+// `blocks-react/dist/ui/styles.js` while the comment and the ledger both claimed
+// it "scans BOTH packages and fails if the set grows". Nine files across the two
+// packages reference tokens; the two named ones happen to contribute the whole
+// 16-token union today, so there was no live gap — but a reference added to, say,
+// `blocks-react/dist/ui/Button.js` would have been invisible, which is precisely
+// the growth the sentence promised to catch. Walking the packages costs nothing
+// and makes the claim true.
+const PACK_ROOTS = ['../node_modules/@civitai/components', '../node_modules/@civitai/blocks-react'];
 
 describe('skin coverage of every token that reaches this app', () => {
   const appUsed = new Set<string>();
@@ -264,16 +301,25 @@ describe('skin coverage of every token that reaches this app', () => {
   }
 
   const packUsed = new Set<string>();
-  for (const rel of PACK_CSS) {
-    const src = readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
-    for (const m of src.matchAll(/var\(\s*(--civitai-color-[\w-]+)/g)) packUsed.add(m[1]);
+  const packFilesScanned: string[] = [];
+  for (const root of PACK_ROOTS) {
+    const dir = fileURLToPath(new URL(root, import.meta.url));
+    for (const f of sourceFiles(dir, [], /\.(css|js|mjs|cjs)$/)) {
+      const src = readFileSync(f, 'utf8');
+      if (!src.includes('--civitai-color-')) continue;
+      packFilesScanned.push(f);
+      for (const m of src.matchAll(/var\(\s*(--civitai-color-[\w-]+)/g)) packUsed.add(m[1]);
+    }
   }
 
   it('found tokens in BOTH populations (positive control — a zero passes everything)', () => {
     expect(appUsed.size).toBeGreaterThanOrEqual(6);
-    // If this goes to zero the pack moved its stylesheet and the scan is reading
-    // nothing, which would look exactly like "the pack references no tokens".
+    // If this goes to zero the packages moved their stylesheets and the scan is
+    // reading nothing, which looks exactly like "the pack references no tokens".
     expect(packUsed.size).toBeGreaterThanOrEqual(6);
+    // ...and the walk really did reach more than the two files the previous
+    // version hardcoded, which is the whole point of widening it.
+    expect(packFilesScanned.length).toBeGreaterThanOrEqual(3);
   });
 
   it('defines every --civitai-color-* the APP references', () => {
@@ -284,6 +330,52 @@ describe('skin coverage of every token that reaches this app', () => {
     // The pack renders inside our root, so it resolves against our tokens. Any
     // name we do not define silently keeps the platform value.
     expect([...packUsed].filter((t) => !(t in DARK)).sort()).toEqual([]);
+  });
+});
+
+// 🔴 THE RUBRIC LINE `noHardcodedThemeColour` IS A CLAIM ABOUT THIS SET, AND IT
+// HAS NOW BEEN WRONG TWICE. First it said the only literals outside skin.css were
+// the stage chrome and the mark (there were seven other files). The correction
+// then listed SEVEN files including ModeSwitcher.tsx — which the very same commit
+// had emptied, four lines earlier in its own diff. A hand-counted set in prose is
+// a claim nothing checks, so it drifts every time someone edits a colour. This
+// pins it: the rubric quotes what this test enumerates.
+describe('which files carry colour literals — the rubric line, made checkable', () => {
+  // Comment-stripped, because a hex inside a comment explaining a hex is not one.
+  const stripAll = (s: string) =>
+    decomment(s)
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('//'))
+      .join('\n');
+
+  const carriers = sourceFiles(SRC)
+    .filter((f) => /\.tsx?$/.test(f))
+    .filter((f) => /#[0-9a-fA-F]{3,8}\b|rgba?\(|'(?:black|white)'/.test(stripAll(readFileSync(f, 'utf8'))))
+    .map((f) => f.slice(SRC.length))
+    .sort();
+
+  it('is exactly the documented set — two exceptions plus six media-overlay files', () => {
+    expect(carriers).toEqual([
+      // The two DOCUMENTED exceptions, each with its reason in the file:
+      'components/BrandMark.tsx', // an identity, invariant across themes
+      'components/CollectionGrid.tsx',
+      'components/CollectionViewer.tsx',
+      'components/Maturity.tsx',
+      'components/Player.tsx',
+      'components/styles.ts',
+      'components/toast.tsx',
+      'theme.ts', // `stage` — must read against arbitrary media, not a page bg
+    ]);
+    // The count the rubric quotes, derived rather than typed.
+    expect(carriers.length).toBe(8);
+    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(6);
+  });
+
+  it('skin.css remains the ONLY home for a theme-responsive literal', () => {
+    // The app's own surfaces resolve through var(); anything above is overlay
+    // chrome or an identity. A literal appearing in a NEW file fails the list.
+    expect(carriers).not.toContain('App.tsx');
+    expect(carriers).not.toContain('components/ModeSwitcher.tsx');
   });
 });
 
@@ -312,7 +404,8 @@ describe('pack pairings the skin has to keep legible', () => {
 });
 
 // ---------------------------------------------------------------------------
-// the two ways this skin can be silently switched off
+// the ways this skin can be silently switched off — there are four numbered
+// below, because the layer trap has an opposite-facing half (see (1))
 // ---------------------------------------------------------------------------
 
 describe('structural — the skin cannot be made inert without failing here', () => {
@@ -328,51 +421,34 @@ describe('structural — the skin cannot be made inert without failing here', ()
   // @civitai/components (which ships inside `@layer civitai.components` and is
   // injected here at runtime by injectBlocksStyles()) and strips the pack's
   // borders and backgrounds. That is the design system's most-repeated gotcha.
-  // 🔴 REWRITTEN AFTER AN AUDIT SHOWED THE FIRST VERSION WAS HALF-BLIND. It
-  // removed the layer block with `.replace(/@layer\s+app\s*\{[\s\S]*\n\}/, '')`,
-  // and `[\s\S]*` is GREEDY: it backtracks to the LAST `\n}` in the file, so the
-  // replace ate everything from `@layer app {` to EOF. An unlayered rule appended
-  // AFTER the layer — the direction a maintainer actually edits a file — was
-  // deleted along with it and never checked. Measured: appending
-  // `.pc-evil-unlayered { border: 0 }` left this guard green at 30/30, while the
-  // same rule placed BEFORE the layer went red. The docstring claimed the
-  // coverage; the body provided half of it.
+  // 🔴 THIS CHECK HAS BEEN WRONG TWICE, IN OPPOSITE DIRECTIONS. Both are recorded
+  // because the second was introduced by the fix for the first, and a reader who
+  // knows only one of them will re-derive the other.
   //
-  // Brace-matching instead, which does not care where the rule sits.
-  it('index.css IS layered, and EVERY style rule is inside the layer', () => {
-    const css = decomment(INDEX_CSS);
+  //   v1 (too narrow) — removed the layer block with
+  //   `.replace(/@layer\s+app\s*\{[\s\S]*\n\}/, '')`. `[\s\S]*` is GREEDY, so it
+  //   backtracked to the LAST `\n}` in the file and the replace ate everything
+  //   from `@layer app {` to EOF: a rule appended AFTER the layer was deleted
+  //   before scanning and never checked.
+  //   🔴 The reproduction recorded for this was ALSO wrong, and re-deriving it
+  //   gives a RED that reads as "the finding was imagined". The greedy pattern
+  //   ends at `\n}`, so it needs a `}` at the START OF A LINE: a ONE-LINE rule at
+  //   EOF (`.x { border: 0 }`) supplies none, the replace stops at the @keyframes
+  //   closer, and v1 CATCHES it. Only the MULTI-LINE shape reproduces.
+  //
+  //   v2 (too wide) — fixed the walk, then stripped at-rules with
+  //   `/@[\w-]+[^{;]*\{(?:[^{}]|\{[^{}]*\})*\}/g` to stop `@keyframes` stops
+  //   (`0% {`) reading as selectors. That drops EVERY at-rule, contents included,
+  //   so an unlayered `@media screen { * { border-width: 0 } }` became invisible
+  //   — in BOTH positions, a hazard v1 had caught. Net regression, under a title
+  //   widened to say EVERY style rule.
+  //
+  // v3: brace-match the layer, strip ONLY @keyframes (the one at-rule whose
+  // children are not style rules), and scan everything else — including the
+  // inside of an @media, which is exactly where a reset likes to hide.
+  const styleRulesOutsideLayer = (css: string): string[] => {
     const open = css.search(/@layer\s+app\s*\{/);
-    expect(open).toBeGreaterThan(-1);
-
-    // Walk to the layer's own matching close brace.
-    let depth = 0;
-    let close = -1;
-    for (let i = css.indexOf('{', open); i < css.length; i += 1) {
-      if (css[i] === '{') depth += 1;
-      else if (css[i] === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          close = i;
-          break;
-        }
-      }
-    }
-    expect(close).toBeGreaterThan(open); // the layer block is balanced
-
-    let outside = css.slice(0, open) + css.slice(close + 1);
-    // Drop whole at-rule blocks first. @keyframes is not a style rule and takes
-    // no part in the cascade, but its stops (`0% {`, `50% {`) are shaped exactly
-    // like selectors, so scanning without this reports them as stray rules.
-    outside = outside.replace(/@[\w-]+[^{;]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
-    const strayRules = outside.match(/(^|\n)\s*[^@\s}][^{}]*\{/g);
-    expect(strayRules ?? []).toEqual([]);
-  });
-
-  // The control the first version silently lacked: prove the walk can SEE a rule
-  // on the far side of the layer, so a future green is worth something.
-  it('...and that check can actually see a rule appended AFTER the layer', () => {
-    const css = decomment(INDEX_CSS);
-    const open = css.search(/@layer\s+app\s*\{/);
+    if (open === -1) return ['<no @layer app block>'];
     let depth = 0;
     let close = -1;
     for (let i = css.indexOf('{', open); i < css.length; i += 1) {
@@ -382,9 +458,35 @@ describe('structural — the skin cannot be made inert without failing here', ()
         break;
       }
     }
-    const mutated = `${css.slice(0, open)}${css.slice(open, close + 1)}\n.pc-appended-unlayered { border: 0; }\n${css.slice(close + 1)}`;
-    const outside = mutated.slice(0, open) + mutated.slice(mutated.indexOf('}', close) + 1);
-    expect(outside).toContain('.pc-appended-unlayered');
+    if (close === -1) return ['<unbalanced @layer app block>'];
+    const outside = (css.slice(0, open) + css.slice(close + 1))
+      // @keyframes ONLY. Its stops are shaped like selectors but are not style
+      // rules and take no part in the cascade. Every other at-rule keeps its body.
+      .replace(/@keyframes[^{]*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
+    return outside.match(/(^|\n)\s*[^@\s}][^{}]*\{/g) ?? [];
+  };
+
+  it('index.css IS layered, and EVERY style rule is inside the layer', () => {
+    expect(decomment(INDEX_CSS)).toMatch(/@layer\s+app\s*\{/);
+    expect(styleRulesOutsideLayer(decomment(INDEX_CSS))).toEqual([]);
+  });
+
+  // 🔴 THE CONTROL RUNS THE REAL FUNCTION. The previous version re-implemented the
+  // brace walk inline and asserted its own copy, so it passed with the v1 greedy
+  // defect fully restored — a control that cannot fail when the guard regresses,
+  // which is the one property it existed to provide. Feeding mutated CSS through
+  // `styleRulesOutsideLayer` is what makes a future green worth something.
+  it.each([
+    ['appended AFTER the layer, multi-line', (css: string) => `${css}\n.pc-evil {\n  border-width: 0;\n}\n`],
+    ['appended AFTER the layer, one-line', (css: string) => `${css}\n.pc-evil { border-width: 0; }\n`],
+    ['placed BEFORE the layer', (css: string) => `.pc-evil {\n  border-width: 0;\n}\n${css}`],
+    [
+      'hidden inside an unlayered @media',
+      (css: string) => `${css}\n@media screen {\n  * {\n    border-width: 0;\n  }\n}\n`,
+    ],
+  ])('the check SEES an unlayered rule %s', (_shape, mutate) => {
+    const found = styleRulesOutsideLayer(mutate(decomment(INDEX_CSS)));
+    expect(found.length).toBeGreaterThan(0);
   });
 
   // Layer RANK is fixed by first encounter, and @civitai/components arrives at
