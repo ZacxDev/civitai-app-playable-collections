@@ -413,7 +413,25 @@ export function TipSplitModal({
           {/* ---- partial failure: what landed, what did not, and a retry ---- */}
           {failed && (
             <div style={partialBox} data-testid="split-partial" role="alert">
-              <strong style={{ fontSize: 13 }}>Part of that tip did not go through.</strong>
+              {/* 🔴 SAME STANDARD AS THE DISCARD NOTE BELOW, AND IT HAD TO BE
+                  APPLIED HERE TOO. This headline used to read "Part of that tip
+                  did not go through." in EVERY failure state — making, in bolder
+                  type and above the note, the exact unknowable claim the note was
+                  just corrected to stop making. A leg marked `failed` may have
+                  reached the server and lost only its reply, so "did not go
+                  through" is not observable from in here. And in the
+                  fully-failed state "Part of" was simply wrong: nothing was
+                  confirmed, not merely some of it.
+
+                  Both variants now claim only `status === 'sent'`, which is what
+                  the app actually knows. Pinned verbatim by a test, for the same
+                  reason the note is: this is money copy, and a keyword guard
+                  walks past a reword. */}
+              <strong style={{ fontSize: 13 }} data-testid="split-partial-headline">
+                {nothingLanded
+                  ? 'None of that tip came back confirmed.'
+                  : 'Only part of that tip came back confirmed.'}
+              </strong>
               {plan?.map((leg) => (
                 <span key={leg.kind} data-testid={`split-leg-${leg.kind}`} data-status={leg.status}>
                   {leg.kind === 'creator' ? 'Creator' : 'Curator'}: {leg.amount.toLocaleString()} Buzz —{' '}

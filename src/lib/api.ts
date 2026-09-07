@@ -303,9 +303,25 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
  * merely dropped — `.then(resolve, reject)` attaches a rejection handler, so a
  * later rejection cannot surface as an unhandled rejection.
  *
- * ⚠️ The `signal.aborted` early return is DEFENSIVE and its mutant SURVIVES: the
- * abort listener below covers the already-aborted case on its own. Kept as a
- * cheap short-circuit, labelled so it is not mistaken for a tested branch.
+ * ⚠️ The `signal.aborted` early return is DEFENSIVE and its mutant SURVIVES —
+ * but NOT for the reason this comment gave until an audit measured it. It said
+ * "the abort listener below covers the already-aborted case on its own", and
+ * that is FALSE: `addEventListener('abort', …)` on a signal that has ALREADY
+ * aborted never fires, because the event dispatches once, at abort time.
+ * Measured on Node v26, and measured again by deleting the early return — the
+ * promise then RESOLVES WITH THE BODY TEXT instead of rejecting.
+ *
+ * 🔴 So deleting this line is not neutral, and the old comment invited exactly
+ * that: a maintainer trusting it would, in any environment where a mocked or
+ * non-spec `fetchImpl` can resolve after an abort, get a silently successful
+ * JSON parse of a body read AFTER a timeout was already reported.
+ *
+ * The line's real status is STRONGER than "defensive": it is UNREACHABLE in
+ * production. Nothing yields between `res = await doFetch(...)` resolving and
+ * the synchronous call to this function — timers are macrotasks, and only
+ * microtasks run in between — and a real `fetch` rejects on abort rather than
+ * resolving. That is why the mutant survives: the branch cannot be entered, not
+ * because something else catches it.
  */
 function readTextBounded(res: Response, signal: AbortSignal): Promise<string> {
   if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));

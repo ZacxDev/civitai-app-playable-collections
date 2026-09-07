@@ -275,6 +275,14 @@ describe('partial failure + retry (hazard 1)', () => {
     expect(partial).toBeInTheDocument();
     expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
     expect(screen.getByTestId('split-leg-curator')).toHaveAttribute('data-status', 'failed');
+    // 🔴 The OTHER headline variant, pinned verbatim. A leg marked `failed` may
+    // have reached the server and lost only its reply, so the copy claims only
+    // what `status === 'sent'` establishes — never that a transfer did not
+    // happen. The two variants are pairwise distinct, so a mutant collapsing
+    // them to one constant cannot survive both pins.
+    expect(screen.getByTestId('split-partial-headline').textContent).toBe(
+      'Only part of that tip came back confirmed.',
+    );
     expect(onDone).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByTestId('split-retry'));
@@ -547,6 +555,13 @@ describe('🔴 the plan OUTLIVES this component (the close → reopen double-pay
     // the guard was green throughout. This is the arc's standing rule for prose
     // under test: pin the WHOLE normalised string. A cosmetic reword then fails
     // here — pay that, for a claim about money that cannot silently drift.
+    // 🔴 The headline above the note is money copy too, and it used to make the
+    // same unknowable claim in bolder type. Pinned verbatim, both variants.
+    expect(screen.getByTestId('split-partial-headline').textContent).toBe(
+      'None of that tip came back confirmed.',
+    );
+    expect(screen.getByTestId('split-partial-headline').textContent).not.toMatch(/did not go through/i);
+
     const note = screen.getByTestId('split-discard-note').textContent?.replace(/\s+/g, ' ').trim() ?? '';
     expect(note).toBe(
       'Nothing came back confirmed, so you can start over at a different amount — but Retry is the safer ' +
