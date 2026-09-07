@@ -238,9 +238,33 @@ export function TipSplitModal({
     if (plan) void runPlan(plan);
   };
 
+  /**
+   * Retire a plan on which NOTHING landed, so the viewer can pick a different
+   * amount instead of being locked to the one that failed.
+   *
+   * 🔴 THIS IS NEVER AUTOMATIC, AND THAT IS THE WHOLE DESIGN. A leg marked
+   * `failed` may be one whose transfer actually reached the server and only
+   * whose RESPONSE was lost — from inside the iframe those two are
+   * indistinguishable — so its key is still worth replaying. Auto-discarding a
+   * failed plan is precisely how a recoverable state turns into a double-spend.
+   * The viewer presses this deliberately, next to copy that says what it costs.
+   */
+  const discard = () => {
+    if (sendingRef.current) return;
+    onPlanChange(null);
+  };
+
   const failed = plan?.some((l) => l.status === 'failed') ?? false;
   const sentLegs = plan?.filter((l) => l.status === 'sent') ?? [];
   const busy = sending || submitting;
+  /**
+   * 🔴 OFFERED ONLY WHEN NOTHING LANDED. Once a leg is `sent`, discarding would
+   * mint fresh keys and re-send it — paying that recipient twice, which is the
+   * exact failure the plan exists to prevent. In that state Retry is the only
+   * safe move forward, so this affordance is ABSENT there rather than disabled:
+   * a greyed-out button still reads as "an option I could have".
+   */
+  const nothingLanded = failed && sentLegs.length === 0;
 
   const title = bothEligible
     ? 'Split a tip'
@@ -400,6 +424,34 @@ export function TipSplitModal({
                 cannot be sent twice. Closing is safe too: reopening this split picks the same tip back up, for as long as
                 this page stays open.
               </span>
+
+              {/* ---- the way OUT of a tip where nothing landed ---- */}
+              {nothingLanded && (
+                <div style={discardBox}>
+                  <span style={{ fontSize: 12 }} data-testid="split-discard-note">
+                    {/* 🔴 WRITTEN FROM WHAT THE CODE DOES. Retry re-sends under the
+                        ORIGINAL keys, so a transfer the server already took cannot
+                        be taken again. Starting over throws those keys away and
+                        mints new ones — which is safe only if none of these
+                        transfers actually reached the server, and that is the one
+                        thing this app cannot see from inside the iframe. Say so,
+                        rather than presenting a free-looking reset. */}
+                    Nothing went through, so you can start over at a different amount — but Retry is the safer button.
+                    Retrying re-sends these same transfers under their original keys, so anything the server already
+                    took cannot be taken twice. Starting over throws those keys away: if one of these transfers did
+                    reach the server and only its reply was lost, your new tip would become a second transfer.
+                  </span>
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={discard}
+                    disabled={busy}
+                    data-testid="split-discard"
+                  >
+                    Start a new tip
+                  </Button>
+                </div>
+              )}
             </div>
           )}
 
@@ -441,6 +493,16 @@ const previewBox: CSSProperties = {
   fontSize: 13,
   background: 'var(--civitai-color-surface-2)',
   border: '1px solid var(--civitai-color-border)',
+};
+/** The secondary escape, set apart from the Retry it must not compete with. */
+const discardBox: CSSProperties = {
+  display: 'grid',
+  gap: 6,
+  justifyItems: 'start',
+  marginTop: 4,
+  paddingTop: 8,
+  borderTop: '1px solid var(--civitai-color-border)',
+  color: 'var(--civitai-color-text-dimmed)',
 };
 const partialBox: CSSProperties = {
   display: 'grid',

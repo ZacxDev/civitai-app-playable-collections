@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError, asMessageString, createHttpApiClient, parseRetryAfter } from './api.js';
 
@@ -254,6 +254,104 @@ describe('network + parse helpers', () => {
     const future = new Date(Date.now() + 10000).toUTCString();
     const ms = parseRetryAfter(future);
     expect(ms).toBeGreaterThan(5000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 🔴 THE ABORT CEILING MUST COVER THE BODY, NOT ONLY THE HEADERS.
+//
+// `clearTimeout` used to live in the `finally` attached to the FETCH, i.e. it
+// fired the instant the response headers arrived — leaving `await res.text()`
+// on the next line completely unbounded. A server that returns 200 headers and
+// then stalls the body (half-open connection, stalled proxy) therefore left the
+// request pending FOREVER.
+//
+// That is a money defect, not a nuisance: every exit from both tip pickers is
+// gated on the in-flight flag, and that flag is released by the `finally` that
+// waits on this promise. A never-settling body means the viewer keeps a modal
+// with no ×, dead Escape on BOTH handlers, a dead overlay and a disabled Cancel
+// — recoverable only by reloading the page.
+// ---------------------------------------------------------------------------
+describe('the abort ceiling covers the BODY, not just the headers', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /**
+   * 200 headers, then a body read that never settles on its own.
+   *
+   * 🔴 IT DELIBERATELY IGNORES THE SIGNAL. A real fetch `Response` errors its
+   * body stream when the signal aborts, so a stub that rejected on abort would
+   * be testing the SPEC rather than this client — and would pass even if the
+   * client dropped the ceiling entirely and merely happened to hold a signal.
+   * By never settling, the ONLY thing that can end this request is the client
+   * racing the read against its own still-armed abort.
+   */
+  function stalledBodyResponse(): Response {
+    const res = new Response('{"ok":true}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    Object.defineProperty(res, 'text', { value: () => new Promise<string>(() => {}) });
+    return res;
+  }
+
+  it('rejects a stalled 2xx BODY as a `network` ApiError at the timeout bound', async () => {
+    const fetchImpl = vi.fn(async () => stalledBodyResponse()) as unknown as typeof fetch;
+    const api = createHttpApiClient({ getToken: () => 't', fetchImpl, timeoutMs: 15000 });
+
+    let outcome: unknown = null;
+    // Driven through `tip` on purpose: it is the call that moves money and the
+    // one whose in-flight flag holds the picker's exits shut.
+    void api.tip({ toUserId: 3, amount: 5, idempotencyKey: 'k-1' }).then(
+      (v) => { outcome = { resolved: v }; },
+      (e) => { outcome = e; },
+    );
+
+    // Still pending just BEFORE the ceiling — otherwise "it rejected" would not
+    // be evidence that the ceiling is what rejected it.
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(outcome).toBeNull();
+
+    // …and rejected just after it.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(outcome).toBeInstanceOf(ApiError);
+    expect((outcome as ApiError).code).toBe('network');
+    expect((outcome as ApiError).status).toBe(0);
+    // Same taxonomy as a connection-phase abort, so callers keep ONE branch.
+    expect((outcome as ApiError).message).toMatch(/timed out/i);
+  });
+
+  it('bounds a stalled ERROR body too, classifying on the status it already has', async () => {
+    // `toApiError` reads the body as well, so the same stall on a 429 would wedge
+    // just as hard. The status is already known here, so the bounded outcome is
+    // the status-derived error (429 → rate_limited), not a `network` one.
+    const res = new Response('nope', { status: 429, headers: { 'Retry-After': '3' } });
+    Object.defineProperty(res, 'text', { value: () => new Promise<string>(() => {}) });
+    const fetchImpl = vi.fn(async () => res) as unknown as typeof fetch;
+    const api = createHttpApiClient({ getToken: () => 't', fetchImpl, timeoutMs: 15000 });
+
+    let outcome: unknown = null;
+    void api.getTipAllowance().then((v) => { outcome = { resolved: v }; }, (e) => { outcome = e; });
+
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(outcome).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(outcome).toBeInstanceOf(ApiError);
+    expect((outcome as ApiError).code).toBe('rate_limited');
+    expect((outcome as ApiError).retryAfterMs).toBe(3000);
+  });
+
+  it('POSITIVE CONTROL: a normal response resolves, clears the timer, and never late-aborts', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(200, { ok: true, tip: { amount: 5, toUserId: 3 } }),
+    ) as unknown as typeof fetch;
+    const api = createHttpApiClient({ getToken: () => 't', fetchImpl, timeoutMs: 15000 });
+
+    await expect(api.tip({ toUserId: 3, amount: 5 })).resolves.toMatchObject({ ok: true });
+    // The ceiling is disarmed exactly once on the success path — a client that
+    // moved `clearTimeout` past the body read but forgot one exit would leave a
+    // pending timer here.
+    expect(vi.getTimerCount()).toBe(0);
+    // …and nothing fires late.
+    await vi.advanceTimersByTimeAsync(60_000);
   });
 });
 

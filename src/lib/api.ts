@@ -157,51 +157,88 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
     if (token) headers.Authorization = `Bearer ${token}`;
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
 
-    // Per-request abort ceiling: a hung fetch is aborted after `timeoutMs` so a
+    // Per-request abort ceiling: a hung request is aborted after `timeoutMs` so a
     // single stalled request can't wedge a loader indefinitely.
+    //
+    // 🔴 THE CEILING SPANS THE WHOLE IN-FLIGHT WINDOW — HEADERS *AND* BODY.
+    // `clearTimeout` used to sit in the `finally` attached to the fetch below,
+    // which disarms it the instant the response headers arrive; the body read
+    // that follows was then completely unbounded, so a server answering 200 and
+    // then stalling the body (half-open connection, stalled proxy) left this
+    // promise pending FOREVER. That is a money defect: every exit from both tip
+    // pickers is gated on an in-flight flag released only when this settles, so
+    // a stalled body leaves the viewer in a modal with no ×, dead Escape on both
+    // handlers, a dead overlay and a disabled Cancel — page reload or nothing.
     const controller = new AbortController();
     const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    let disarmed = false;
+    /** Disarm the ceiling. Idempotent, so every exit clears exactly once. */
+    const disarm = () => {
+      if (timer && !disarmed) {
+        disarmed = true;
+        clearTimeout(timer);
+      }
+    };
 
-    let res: Response;
     try {
-      res = await doFetch(baseUrl ? url.toString() : path + url.search, {
-        method: init.method ?? 'GET',
-        headers,
-        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
-        signal: controller.signal,
-      });
-    } catch (err) {
-      // Our timeout fired → a retryable network error; otherwise the raw failure.
-      if (controller.signal.aborted) {
-        throw new ApiError('network', 0, 'The request timed out.');
-      }
-      throw new ApiError('network', 0, err instanceof Error ? err.message : 'Network error');
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-
-    if (res.ok) {
-      // 204 / empty body tolerance.
-      const text = await res.text();
-      if (!text) return {} as T;
+      let res: Response;
       try {
-        return JSON.parse(text) as T;
-      } catch {
-        // A 2xx whose body isn't JSON — the classic "block fetched its own
-        // subdomain and got the SPA index.html" failure. NON-retryable: retrying
-        // the same URL returns the same HTML, so surface it as an error state
-        // instead of looping.
-        throw new ApiError('parse', res.status, 'The API returned an unexpected (non-JSON) response.');
+        res = await doFetch(baseUrl ? url.toString() : path + url.search, {
+          method: init.method ?? 'GET',
+          headers,
+          body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        // Our timeout fired → a retryable network error; otherwise the raw failure.
+        if (controller.signal.aborted) {
+          throw new ApiError('network', 0, 'The request timed out.');
+        }
+        throw new ApiError('network', 0, err instanceof Error ? err.message : 'Network error');
       }
-    }
 
-    // 401 → try one token re-mint + retry (expired-token path).
-    if (res.status === 401 && !_isRetry && opts.refreshToken) {
-      await opts.refreshToken().catch(() => {});
-      return request<T>(path, init, true);
-    }
+      if (res.ok) {
+        // 204 / empty body tolerance.
+        let text: string;
+        try {
+          text = await readTextBounded(res, controller.signal);
+        } catch (err) {
+          // An abort raised out of the BODY read is the same failure as one raised
+          // out of the connection — one taxonomy, so callers keep one branch.
+          if (controller.signal.aborted) {
+            throw new ApiError('network', 0, 'The request timed out.');
+          }
+          throw new ApiError('network', 0, err instanceof Error ? err.message : 'Network error');
+        }
+        if (!text) return {} as T;
+        try {
+          return JSON.parse(text) as T;
+        } catch {
+          // A 2xx whose body isn't JSON — the classic "block fetched its own
+          // subdomain and got the SPA index.html" failure. NON-retryable: retrying
+          // the same URL returns the same HTML, so surface it as an error state
+          // instead of looping.
+          throw new ApiError('parse', res.status, 'The API returned an unexpected (non-JSON) response.');
+        }
+      }
 
-    throw await toApiError(res);
+      // 401 → try one token re-mint + retry (expired-token path).
+      if (res.status === 401 && !_isRetry && opts.refreshToken) {
+        // Disarm before handing off: the retry arms its OWN ceiling, and
+        // `refreshToken` is a separate (host-mediated) wait this one must not
+        // straddle.
+        disarm();
+        await opts.refreshToken().catch(() => {});
+        return await request<T>(path, init, true);
+      }
+
+      // `toApiError` reads the body too, so the same stall would wedge here.
+      // The signal keeps that read bounded; the status is already known, so a
+      // stalled error body still classifies on status rather than hanging.
+      throw await toApiError(res, controller.signal);
+    } finally {
+      disarm();
+    }
   }
 
   return {
@@ -234,15 +271,44 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
   };
 }
 
+/**
+ * Read a response body under the request's abort ceiling.
+ *
+ * 🔴 THE RACE IS EXPLICIT, NOT INCIDENTAL. Per the fetch spec a real `Response`
+ * errors its body stream when the request's signal aborts, so a bare
+ * `await res.text()` would *usually* be bounded — but "usually" is doing all the
+ * work in that sentence, and this is the call that decides whether a viewer can
+ * ever close the tip modal. Racing the read against the signal makes the bound a
+ * property of THIS client instead of a property of whatever `fetch`
+ * implementation the host page happens to ship.
+ *
+ * The losing `res.text()` is left dangling deliberately: the connection is being
+ * torn down by the same abort, and there is nothing useful to do with a body
+ * that arrives after we have already reported a timeout.
+ */
+function readTextBounded(res: Response, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise<string>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    res.text().then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Status + body -> ApiError mapping. Centralized so every endpoint reports the
 // same UI-actionable codes.
 // ---------------------------------------------------------------------------
-async function toApiError(res: Response): Promise<ApiError> {
+async function toApiError(res: Response, signal?: AbortSignal): Promise<ApiError> {
   let bodyText = '';
   let bodyMsg = '';
   try {
-    bodyText = await res.text();
+    // Bounded by the request's ceiling — an error response whose body stalls
+    // must not wedge the caller either. The read failing (including by abort) is
+    // caught below and the error is classified on its status alone, which is
+    // strictly more useful here than reporting a `network` failure for a
+    // response whose status we already have.
+    bodyText = signal ? await readTextBounded(res, signal) : await res.text();
     if (bodyText) {
       const parsed = JSON.parse(bodyText) as { error?: unknown; message?: unknown; code?: unknown };
       // 🔴 The server can return a NON-STRING error (e.g. `{ error: <ZodError

@@ -478,6 +478,129 @@ describe('🔴 the plan OUTLIVES this component (the close → reopen double-pay
     ]);
   });
 
+  it('offers no discard while the plan is only PARTLY failed — replay is the only safe move there', async () => {
+    // 🔴 THE OTHER HALF OF THE ESCAPE HATCH BELOW, AND THE ONE THAT KEEPS IT
+    // FROM BEING THE EASY DEFAULT. With a leg already `sent`, discarding the
+    // plan and starting over mints fresh keys and re-sends that leg — the exact
+    // double-pay the plan exists to prevent. So here there is Retry and nothing
+    // else; the affordance is ABSENT, not merely disabled.
+    // (Its positive control is the next test, where the same testid IS present.)
+    const { close, reopen } = setup({ send: async (target) => target.kind !== 'curator' });
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+    expect(screen.getByTestId('split-leg-curator')).toHaveAttribute('data-status', 'failed');
+
+    expect(screen.getByTestId('split-retry')).toBeInTheDocument();
+    expect(screen.queryByTestId('split-discard')).toBeNull();
+
+    // …and it does not appear on a reopen either.
+    close();
+    reopen();
+    expect(screen.getByTestId('split-retry')).toBeInTheDocument();
+    expect(screen.queryByTestId('split-discard')).toBeNull();
+  });
+
+  it('🔴 a FULLY-failed plan can be DISCARDED, and the picker comes back usable at a NEW amount', async () => {
+    // Every leg refused (a 403, a burst rate-limit, a network failure at an
+    // unknown balance) used to leave the viewer with: the amount input disabled
+    // and pinned to the original, the presets disabled, no Confirm, and a Retry
+    // that can only ever re-send the SAME amount. No discard, no reset — a page
+    // reload was the only way to tip this media a different number of Buzz.
+    //
+    // 🔴 THE PLAN IS NOT AUTO-RETIRED. A "failed" leg may be one whose response
+    // was merely LOST, so its key is still worth replaying; discarding it
+    // silently is how a recoverable state becomes a double-spend. The viewer
+    // chooses, and the copy tells them what the choice costs.
+    let attempt = 0;
+    const { calls, onDone, close, reopen } = setup({
+      send: async () => {
+        attempt += 1;
+        return attempt > 2; // the first press's two legs both refuse
+      },
+    });
+    const input = screen.getByTestId('split-amount-input');
+    await userEvent.clear(input);
+    await userEvent.type(input, '100');
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'failed');
+    expect(screen.getByTestId('split-leg-curator')).toHaveAttribute('data-status', 'failed');
+
+    // The locked state the viewer is stuck in, and it survives close → reopen.
+    close();
+    reopen();
+    expect(screen.getByTestId('split-amount-input')).toBeDisabled();
+    expect(screen.getByTestId('split-amount-input')).toHaveValue('100');
+    expect(screen.queryByTestId('split-confirm')).toBeNull();
+
+    // Retry stays the primary action; the discard is the secondary escape …
+    expect(screen.getByTestId('split-retry')).toBeInTheDocument();
+    // … and it is HONEST about the trade rather than silent about it.
+    const note = screen.getByTestId('split-discard-note').textContent?.replace(/\s+/g, ' ') ?? '';
+    expect(note).toMatch(/retry/i);
+    expect(note).toMatch(/second transfer/i);
+
+    await userEvent.click(screen.getByTestId('split-discard'));
+
+    // A fresh picker: nothing locked, no failure panel, a live Send.
+    expect(screen.queryByTestId('split-partial')).toBeNull();
+    expect(screen.queryByTestId('split-discard')).toBeNull();
+    const fresh = screen.getByTestId('split-amount-input');
+    expect(fresh).not.toBeDisabled();
+    expect(screen.getByTestId('split-preset-100')).not.toBeDisabled();
+
+    // …usable at a DIFFERENT amount, under keys the server has never seen.
+    await userEvent.clear(fresh);
+    await userEvent.type(fresh, '10');
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(calls).toEqual([
+      { toUserId: 22, amount: 50, key: 'key-1' },
+      { toUserId: 11, amount: 50, key: 'key-2' },
+      { toUserId: 22, amount: 5, key: 'key-3' },
+      { toUserId: 11, amount: 5, key: 'key-4' },
+    ]);
+  });
+
+  it('cannot discard a plan whose retry is already on the wire', async () => {
+    // The discard is a plan mutation like any other, so it carries the same TWO
+    // gates the confirm does, and both are separately reachable.
+    let park = false;
+    const parked: Array<(ok: boolean) => void> = [];
+    setup({
+      send: () => (park ? new Promise<boolean>((r) => parked.push(r)) : Promise.resolve(false)),
+    });
+    // An all-failed plan, settled: both buttons live.
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(screen.getByTestId('split-discard')).not.toBeDisabled();
+    expect(screen.getByTestId('split-retry')).not.toBeDisabled();
+
+    // GATE 1 — the same tick. `setSending(true)` only disables the button on the
+    // NEXT render, so a discard click landing in the same tick as the Retry
+    // press still sees an ENABLED button. Without the synchronous ref check that
+    // click retires the plan out from under the legs being re-sent right now,
+    // throwing away the very keys that make the replay safe.
+    park = true;
+    act(() => {
+      fireEvent.click(screen.getByTestId('split-retry'));
+      fireEvent.click(screen.getByTestId('split-discard'));
+    });
+    expect(screen.getByTestId('split-partial')).toBeInTheDocument();
+    expect(screen.getByTestId('split-leg-creator')).toBeInTheDocument();
+
+    // GATE 2 — the rendered state, now that React has caught up.
+    expect(screen.getByTestId('split-discard')).toBeDisabled();
+
+    // Drain the retry (both legs refuse again) and the escape hatch returns.
+    await act(async () => parked.splice(0).forEach((r) => r(false)));
+    await waitFor(() => expect(parked).toHaveLength(1));
+    await act(async () => parked.splice(0).forEach((r) => r(false)));
+    await screen.findByTestId('split-partial');
+    expect(screen.getByTestId('split-discard')).not.toBeDisabled();
+  });
+
   it('pins the partial-failure promise VERBATIM against the behaviour it describes', async () => {
     // 🔴 THE WHOLE NORMALISED STRING, NOT A KEYWORD. A guard on words is walkable
     // by rewording, and this sentence is the one the arc keeps getting wrong: it

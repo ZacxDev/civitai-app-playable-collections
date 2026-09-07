@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -76,5 +76,84 @@ describe('TipModal — per-tip cap readout', () => {
     // Even clicking (defensive) does not fire onConfirm.
     await userEvent.click(screen.getByTestId('tip-confirm'));
     expect(onConfirm).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 🔴 THE MID-SEND DISMISSAL GATE — ALL FOUR AFFORDANCES, IN ONE PLACE.
+//
+// `closeOnEscape`, `closeOnOverlayClick`, `withCloseButton` and the Cancel
+// button are each gated on `submitting`, and until this suite existed NONE of
+// them had a killing test: deleting all four left the whole 551-test suite
+// green. None of them cancels the POST that is already on the wire, so a
+// dismissal mid-send spends the Buzz with no confirmation and no error surface —
+// the same gate the split popover carries, and the same reason.
+//
+// The split popover's equivalent lives in TipSplitModal.test.tsx; this one is
+// scoped to the SINGLE-TARGET picker on purpose, so it stays a witness for this
+// component's gates and nothing else. Player's own window-level Escape handler
+// is a separate joint, pinned separately in Player.test.tsx.
+// ---------------------------------------------------------------------------
+describe('🔴 the single-target picker cannot be DISMISSED while a transfer is on the wire', () => {
+  const overlay = () => document.querySelector('[data-civitai-ui="modal-overlay"]') as HTMLElement;
+
+  function renderPicker(submitting: boolean) {
+    const onClose = vi.fn();
+    render(
+      <TipModal
+        target={target}
+        balance={100000}
+        submitting={submitting}
+        onConfirm={() => {}}
+        onClose={onClose}
+      />,
+    );
+    return { onClose };
+  }
+
+  it('POSITIVE CONTROL: every exit works while nothing is on the wire', async () => {
+    // Without this, the four absences asserted below would be indistinguishable
+    // from a picker that never had those affordances at all.
+    const { onClose } = renderPicker(false);
+
+    // 1. the ×
+    const x = screen.getByRole('button', { name: 'Close' });
+    await userEvent.click(x);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    // 2. Escape (the Modal's own document-level handler)
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(2);
+
+    // 3. an overlay click
+    fireEvent.mouseDown(overlay());
+    expect(onClose).toHaveBeenCalledTimes(3);
+
+    // 4. Cancel
+    expect(screen.getByTestId('tip-cancel')).not.toBeDisabled();
+    await userEvent.click(screen.getByTestId('tip-cancel'));
+    expect(onClose).toHaveBeenCalledTimes(4);
+  });
+
+  it('offers NO exit at all while the transfer is on the wire', async () => {
+    const { onClose } = renderPicker(true);
+
+    // 1. the × is gone (not merely inert)
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+
+    // 2. Escape does nothing
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // 3. an overlay click does nothing
+    fireEvent.mouseDown(overlay());
+
+    // 4. Cancel is disabled, and clicking it changes nothing
+    expect(screen.getByTestId('tip-cancel')).toBeDisabled();
+    await userEvent.click(screen.getByTestId('tip-cancel'));
+
+    expect(onClose).not.toHaveBeenCalled();
+    // The picker is still on screen — the viewer can see what their Buzz is doing.
+    expect(screen.getByTestId('tip-modal')).toBeInTheDocument();
   });
 });
