@@ -1,0 +1,356 @@
+// The %-split tip popover: one amount, one slider, one confirm — Buzz divided
+// between the creator of the media on screen and the collection's curator
+// (operator feedback round 3).
+//
+// Built on the same `@civitai/blocks-react/ui` shell as `TipModal` (Modal +
+// preset Buttons + TextInput + FocusTrap) with a percentage `Slider` added, and
+// on the app's own `ApiClient.tip` underneath.
+//
+// 🔴 NOT `TipButton` FROM THE UI PACK, AND THAT IS A DECISION, NOT AN OVERSIGHT.
+// The upstream control takes a FIXED `amount` prop and owns its own confirm — it
+// has no amount picker. Adopting it would delete the store description's promise
+// that the amount and the split are "picked and confirmed by you first", which is
+// the whole point of this surface.
+//
+// 🔴 THE RETRY IS THE REASON THIS COMPONENT OWNS A STATE MACHINE. Two transfers
+// leave one press, so "it failed" has a THIRD outcome besides ok/failed: one leg
+// landed and the other did not. Re-running the whole press would re-send the leg
+// that already succeeded. So a confirm builds a PLAN — one leg per recipient,
+// each with its own idempotency key minted ONCE — and the retry re-runs only the
+// legs not yet marked `sent`, WITH THEIR ORIGINAL KEYS. The status guard covers
+// the leg we know landed; the key covers the leg whose response was lost (from
+// inside the iframe those two are indistinguishable, which is exactly why both
+// are needed).
+
+import { useCallback, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+
+import { Button, Modal, Slider, TextInput } from '@civitai/blocks-react/ui';
+
+import {
+  DEFAULT_CREATOR_PERCENT,
+  TIP_TOTAL_MAX,
+  newIdempotencyKey,
+  splitTipTotal,
+  validateTipSplit,
+  type TipLegKind,
+} from '../lib/tip-split.js';
+import { effectiveTipCap } from '../lib/tip-allowance.js';
+import { FocusTrap } from './FocusTrap.js';
+import type { TipTarget } from './TipModal.js';
+
+/** Preset totals, mirroring `TipModal`'s so the two pickers feel like one control. */
+export const SPLIT_PRESETS = [10, 50, 100, 500] as const;
+/** Preset splits, as the creator's share. */
+export const SPLIT_PERCENT_PRESETS = [100, 75, 50, 25, 0] as const;
+
+/** One side of the split, or `null` when that side cannot receive (self / absent). */
+export type SplitRecipient = TipTarget | null;
+
+/** A leg of the plan, plus everything needed to send and re-send it. */
+interface PlannedLeg {
+  kind: TipLegKind;
+  amount: number;
+  target: TipTarget;
+  /** Minted ONCE when the plan is built; reused on every retry. */
+  idempotencyKey: string;
+  status: 'pending' | 'sent' | 'failed';
+}
+
+export interface TipSplitModalProps {
+  /** The creator of the media on screen, or `null` when it is the viewer / absent. */
+  creator: SplitRecipient;
+  /** The collection's curator, or `null` when it is the viewer. */
+  curator: SplitRecipient;
+  balance: number | null;
+  /** A tip request is in flight (App's shared flag). */
+  submitting: boolean;
+  /** The viewer's REAL remaining daily allowance; omit when it is unknown. */
+  dailyRemaining?: number;
+  /**
+   * Send ONE leg. Resolves `true` only on a confirmed transfer. MUST pass
+   * `idempotencyKey` through to the server unchanged — the retry depends on it.
+   */
+  onSendLeg: (target: TipTarget, amount: number, idempotencyKey: string) => Promise<boolean>;
+  /** Every leg landed. The caller closes the popover and marks the tip done. */
+  onDone: (legs: ReadonlyArray<{ kind: TipLegKind; amount: number }>) => void;
+  onClose: () => void;
+  /** Key minter (test seam) — default `newIdempotencyKey`. */
+  newKey?: () => string;
+}
+
+export function TipSplitModal({
+  creator,
+  curator,
+  balance,
+  submitting,
+  dailyRemaining,
+  onSendLeg,
+  onDone,
+  onClose,
+  newKey = newIdempotencyKey,
+}: TipSplitModalProps) {
+  const [amount, setAmount] = useState<string>(String(SPLIT_PRESETS[1]));
+  const [creatorPercent, setCreatorPercent] = useState<number>(DEFAULT_CREATOR_PERCENT);
+  const [touched, setTouched] = useState(false);
+  const [plan, setPlan] = useState<PlannedLeg[] | null>(null);
+  const [sending, setSending] = useState(false);
+  // Guards a second confirm/retry entering the send loop in the same tick, before
+  // `setSending(true)` re-renders the disabled button (the split's equivalent of
+  // App's `tipInFlightRef`, and it matters more here — a double entry would run
+  // the loop twice over the same plan).
+  const sendingRef = useRef(false);
+
+  const eligibility = useMemo(
+    () => ({ creatorEligible: creator != null, curatorEligible: curator != null }),
+    [creator, curator],
+  );
+  const bothEligible = eligibility.creatorEligible && eligibility.curatorEligible;
+
+  const error = touched ? validateTipSplit(amount, balance, creatorPercent, eligibility, dailyRemaining) : null;
+  // The preview the viewer reads BEFORE confirming — the actual per-recipient
+  // amounts, clamps applied, not the raw percentage.
+  const preview = splitTipTotal(Number(amount), creatorPercent, eligibility);
+  const previewFor = (kind: TipLegKind) => preview.find((l) => l.kind === kind)?.amount ?? 0;
+
+  const ceiling = effectiveTipCap(dailyRemaining ?? TIP_TOTAL_MAX);
+
+  const runPlan = useCallback(
+    async (legs: PlannedLeg[]) => {
+      if (sendingRef.current) return;
+      sendingRef.current = true;
+      setSending(true);
+      // Work on a copy so a failure part-way still reports the legs that landed.
+      const next = legs.map((l) => ({ ...l }));
+      try {
+        for (const leg of next) {
+          // 🔴 SKIP WHAT ALREADY LANDED. Without this a retry re-sends a
+          // confirmed transfer; the idempotency key would collapse it server-side,
+          // but relying on that would make the key the ONLY thing between a retry
+          // and a double-spend.
+          if (leg.status === 'sent') continue;
+          const ok = await onSendLeg(leg.target, leg.amount, leg.idempotencyKey);
+          leg.status = ok ? 'sent' : 'failed';
+          setPlan(next.map((l) => ({ ...l })));
+        }
+      } finally {
+        sendingRef.current = false;
+        setSending(false);
+      }
+      setPlan(next);
+      if (next.every((l) => l.status === 'sent')) {
+        onDone(next.map((l) => ({ kind: l.kind, amount: l.amount })));
+      }
+    },
+    [onSendLeg, onDone],
+  );
+
+  const confirm = () => {
+    setTouched(true);
+    if (validateTipSplit(amount, balance, creatorPercent, eligibility, dailyRemaining)) return;
+    const legs = splitTipTotal(Number(amount), creatorPercent, eligibility);
+    const planned: PlannedLeg[] = legs.map((leg) => {
+      const target = leg.kind === 'creator' ? creator : curator;
+      // `splitTipTotal` only emits a leg whose side is eligible, and eligibility
+      // IS "the recipient is non-null" — so this cannot be null in practice. The
+      // non-null assertion is the type system catching up, not a claim.
+      return { kind: leg.kind, amount: leg.amount, target: target as TipTarget, idempotencyKey: newKey(), status: 'pending' };
+    });
+    setPlan(planned);
+    void runPlan(planned);
+  };
+
+  const retry = () => {
+    if (plan) void runPlan(plan);
+  };
+
+  const failed = plan?.some((l) => l.status === 'failed') ?? false;
+  const sentLegs = plan?.filter((l) => l.status === 'sent') ?? [];
+  const busy = sending || submitting;
+
+  const title = bothEligible
+    ? 'Split a tip'
+    : eligibility.creatorEligible
+      ? `Tip ${creator?.username ? `@${creator.username}` : 'the creator'}`
+      : `Tip ${curator?.username ? `@${curator.username}` : 'the curator'}`;
+
+  return (
+    <Modal opened onClose={onClose} title={title} size="sm">
+      <FocusTrap>
+        <div data-testid="tip-split-modal" aria-label="Split a tip" style={bodyStyle}>
+          {/* ---- what the viewer is buying ---- */}
+          <p style={leadText}>
+            {bothEligible
+              ? 'One tip, divided between the creator of this media and the collection curator.'
+              : eligibility.creatorEligible
+                ? // Hazard 3, made visible: the curator leg is GONE, not disabled,
+                  // and the copy says why rather than leaving a missing half.
+                  'You curate this collection, so the whole tip goes to the creator of this media.'
+                : 'This is your media, so the whole tip goes to the collection curator.'}
+            {balance != null && ` · You have ${balance.toLocaleString()} Buzz.`}
+          </p>
+
+          <p style={leadText} data-testid="tip-split-allowance">
+            {/* The ceiling is the SMALLER of the per-press total cap and what the
+                server says is left in today's allowance — a real, server-read
+                number since 0.2.10, not the localStorage estimate that tracked
+                nothing. When the read has not resolved it is just the cap. */}
+            Up to {ceiling.toLocaleString()} Buzz in total.
+          </p>
+
+          {/* ---- total ---- */}
+          <div style={presetRow} role="group" aria-label="Preset amounts">
+            {SPLIT_PRESETS.map((p) => (
+              <Button
+                key={p}
+                size="sm"
+                variant={amount === String(p) ? 'filled' : 'light'}
+                onClick={() => {
+                  setAmount(String(p));
+                  setTouched(true);
+                }}
+                aria-pressed={amount === String(p)}
+                disabled={plan != null}
+                data-testid={`split-preset-${p}`}
+              >
+                {p}
+              </Button>
+            ))}
+          </div>
+
+          <TextInput
+            id="tip-split-amount"
+            label="Total amount (Buzz)"
+            inputMode="numeric"
+            value={amount}
+            onChange={(e) => {
+              setAmount(e.target.value);
+              setTouched(true);
+            }}
+            // 🔴 LOCKED ONCE A PLAN EXISTS. The plan's legs carry keys the server
+            // has already seen; letting the amount change under a retry would ask
+            // for a different transfer under a key that replays the first one.
+            disabled={plan != null}
+            error={error ? <span data-testid="split-error">{error}</span> : undefined}
+            data-testid="split-amount-input"
+            aria-label="Total tip amount in Buzz"
+          />
+
+          {/* ---- the split itself (only when both sides can receive) ---- */}
+          {bothEligible && (
+            <>
+              <div style={presetRow} role="group" aria-label="Preset splits">
+                {SPLIT_PERCENT_PRESETS.map((p) => (
+                  <Button
+                    key={p}
+                    size="sm"
+                    variant={creatorPercent === p ? 'filled' : 'light'}
+                    onClick={() => {
+                      setCreatorPercent(p);
+                      setTouched(true);
+                    }}
+                    aria-pressed={creatorPercent === p}
+                    disabled={plan != null}
+                    data-testid={`split-percent-${p}`}
+                  >
+                    {p}/{100 - p}
+                  </Button>
+                ))}
+              </div>
+              <Slider
+                min={0}
+                max={100}
+                step={1}
+                value={creatorPercent}
+                onChange={(v) => {
+                  setCreatorPercent(v);
+                  setTouched(true);
+                }}
+                disabled={plan != null}
+                aria-label="Creator's share, percent"
+                data-testid="split-percent"
+              />
+            </>
+          )}
+
+          {/* ---- the preview: exactly how much each side gets, before confirming ---- */}
+          <div style={previewBox} data-testid="split-preview">
+            {eligibility.creatorEligible && (
+              <span data-testid="split-preview-creator">
+                {creator?.username ? `@${creator.username}` : 'Creator'} (creator): {previewFor('creator').toLocaleString()} Buzz
+              </span>
+            )}
+            {eligibility.curatorEligible && (
+              <span data-testid="split-preview-curator">
+                {curator?.username ? `@${curator.username}` : 'Curator'} (curator): {previewFor('curator').toLocaleString()} Buzz
+              </span>
+            )}
+          </div>
+
+          {/* ---- partial failure: what landed, what did not, and a retry ---- */}
+          {failed && (
+            <div style={partialBox} data-testid="split-partial" role="alert">
+              <strong style={{ fontSize: 13 }}>Part of that tip did not go through.</strong>
+              {plan?.map((leg) => (
+                <span key={leg.kind} data-testid={`split-leg-${leg.kind}`} data-status={leg.status}>
+                  {leg.kind === 'creator' ? 'Creator' : 'Curator'}: {leg.amount.toLocaleString()} Buzz —{' '}
+                  {leg.status === 'sent' ? 'sent' : 'not sent'}
+                </span>
+              ))}
+              <span style={{ fontSize: 12 }}>
+                {/* Written from what `runPlan` does: sent legs are skipped, and an
+                    unsent leg is re-sent under the key it was minted with. */}
+                Retrying sends only what is still outstanding — the {sentLegs.length === 1 ? 'part' : 'parts'} already sent
+                cannot be sent twice.
+              </span>
+            </div>
+          )}
+
+          <div style={actionRow}>
+            <Button variant="subtle" onClick={onClose} data-testid="split-cancel">
+              {failed ? 'Close' : 'Cancel'}
+            </Button>
+            {failed ? (
+              <Button onClick={retry} loading={sending} disabled={busy} data-testid="split-retry">
+                {sending ? 'Retrying…' : 'Retry'}
+              </Button>
+            ) : (
+              <Button
+                onClick={confirm}
+                loading={busy}
+                disabled={busy || Boolean(error) || plan != null}
+                data-testid="split-confirm"
+              >
+                {busy ? 'Sending…' : `Send ${amount || '0'} Buzz`}
+              </Button>
+            )}
+          </div>
+        </div>
+      </FocusTrap>
+    </Modal>
+  );
+}
+
+// ---- styles ----
+const bodyStyle: CSSProperties = { display: 'grid', gap: 12 };
+const leadText: CSSProperties = { margin: 0, fontSize: 13, color: 'var(--civitai-color-text-dimmed)' };
+const presetRow: CSSProperties = { display: 'flex', gap: 8, flexWrap: 'wrap' };
+const actionRow: CSSProperties = { display: 'flex', gap: 8, justifyContent: 'flex-end' };
+const previewBox: CSSProperties = {
+  display: 'grid',
+  gap: 4,
+  padding: 10,
+  borderRadius: 8,
+  fontSize: 13,
+  background: 'var(--civitai-color-surface-2)',
+  border: '1px solid var(--civitai-color-border)',
+};
+const partialBox: CSSProperties = {
+  display: 'grid',
+  gap: 4,
+  padding: 10,
+  borderRadius: 8,
+  fontSize: 13,
+  background: 'var(--civitai-color-surface-2)',
+  border: '1px solid var(--civitai-color-border)',
+};

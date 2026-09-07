@@ -20,7 +20,9 @@ import { shouldBlur } from '../lib/maturity.js';
 import { useMatureGate } from '../lib/mature-session.js';
 import { iconBtn } from './styles.js';
 import { MaturityBadge, MaturityRevealOverlay, MATURITY_BLUR_PX } from './Maturity.js';
-import { TipModal, type TipTarget } from './TipModal.js';
+import { TipModal, type TipSender, type TipTarget } from './TipModal.js';
+import { TipSplitModal, type SplitRecipient } from './TipSplitModal.js';
+import type { TipLegKind } from '../lib/tip-split.js';
 
 const SWIPE_THRESHOLD = 48;
 /**
@@ -59,8 +61,8 @@ export interface PlayerProps {
   onFollowChange: (followed: boolean) => void;
   /** Surface a renderable message (a real server error, or a timeout notice). */
   onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
-  /** Perform the tip. Resolves true on success (Player then marks it tipped). */
-  onTip: (target: TipTarget, amount: number) => Promise<boolean>;
+  /** Perform one transfer. Resolves true on success (Player then marks it tipped). */
+  onTip: TipSender;
   /**
    * Prompt a logged-out viewer to sign in. Tipping requires an account, so for an
    * anon viewer the tip triggers call this UP FRONT (before the amount picker)
@@ -68,7 +70,11 @@ export interface PlayerProps {
    */
   onRequestSignIn?: () => void;
   tipping: boolean;
-  /** Estimated remaining daily tip allowance (app-local) for the tip modal. */
+  /**
+   * The viewer's REAL remaining daily tip allowance (server-read, 0.2.10).
+   * Omitted while unresolved / after a failed read — the pickers then fall back
+   * to the full cap rather than pre-blocking a tip the server would accept.
+   */
   dailyTipRemaining?: number;
   /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
   cast?: boolean;
@@ -157,6 +163,10 @@ export function Player(props: PlayerProps) {
   const touchStartX = useRef<number | null>(null);
 
   const [tipTarget, setTipTarget] = useState<TipTarget | null>(null);
+  // The %-split popover (operator feedback round 3). Separate from `tipTarget`:
+  // that one is a single recipient, this one is a press that can produce TWO
+  // transfers, so it owns its own plan + retry (see TipSplitModal).
+  const [splitOpen, setSplitOpen] = useState(false);
   const [tippedKeys, setTippedKeys] = useState<Set<string>>(new Set());
   // Maturity gate: mature items render blurred until the viewer accepts a SINGLE
   // session-level "I'm 18+" confirmation, which then unblurs the whole
@@ -190,6 +200,34 @@ export function Player(props: PlayerProps) {
   const creatorTipped = current != null && tippedKeys.has(`Image:${current.mediaId}`);
   const curatorTipped = tippedKeys.has(`Collection:${detail.id}`);
 
+  // ---- the two sides of a split, with the self-tip legs already collapsed ----
+  // 🔴 `null` MEANS "THIS LEG DOES NOT EXIST", NOT "DISABLED". The server 403s a
+  // self-tip, so offering the leg and letting it fail would take the viewer's
+  // confirmation and then half-fail. `splitTipTotal` gives the whole total to
+  // the surviving side, and the popover says why.
+  const splitCreator: SplitRecipient =
+    current != null && !creatorIsSelf
+      ? {
+          kind: 'creator',
+          toUserId: current.creator.userId,
+          username: current.creator.username,
+          entityType: 'Image',
+          entityId: current.mediaId,
+        }
+      : null;
+  const splitCurator: SplitRecipient = curatorIsSelf
+    ? null
+    : {
+        kind: 'curator',
+        toUserId: detail.curator.userId,
+        username: detail.curator.username,
+        entityType: 'Collection',
+        entityId: detail.id,
+      };
+  // Both sides collapsed = the viewer owns the media AND the collection; there is
+  // nobody to pay, so the control is disabled rather than opening an empty picker.
+  const splitPossible = splitCreator != null || splitCurator != null;
+
   // ---- keyboard (all viewports; the platform routes real key events to the
   // focused iframe, and arrow keys are the desktop-primary control) ----
   useEffect(() => {
@@ -205,8 +243,13 @@ export function Player(props: PlayerProps) {
       }
       // Cast mode is passive (TV / second-screen) — swallow all shortcuts.
       if (cast) return;
-      if (tipTarget) {
-        if (e.key === 'Escape') setTipTarget(null);
+      // A picker is open: Escape closes IT, and no shortcut reaches the player
+      // underneath (Escape would otherwise exit the collection behind the modal).
+      if (tipTarget || splitOpen) {
+        if (e.key === 'Escape') {
+          setTipTarget(null);
+          setSplitOpen(false);
+        }
         return;
       }
       switch (e.key) {
@@ -236,7 +279,7 @@ export function Player(props: PlayerProps) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player.next, player.prev, player.toggle, tipTarget, onExit, cast]);
+  }, [player.next, player.prev, player.toggle, tipTarget, splitOpen, onExit, cast]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -300,6 +343,30 @@ export function Player(props: PlayerProps) {
         entityId: detail.id,
       });
     }
+  };
+
+  const openSplit = () => {
+    // Same up-front sign-in bounce as the single-target pickers: tipping needs an
+    // account, so ask before the amount picker rather than after a selection.
+    if (viewerUserId == null) {
+      onRequestSignIn?.();
+      return;
+    }
+    if (!splitPossible) return;
+    setSplitOpen(true);
+  };
+
+  /** Every leg of a split landed — mark each recipient tipped and close. */
+  const onSplitDone = (legs: ReadonlyArray<{ kind: TipLegKind; amount: number }>) => {
+    setTippedKeys((prev) => {
+      const next = new Set(prev);
+      for (const leg of legs) {
+        const target = leg.kind === 'creator' ? splitCreator : splitCurator;
+        if (target) next.add(`${target.entityType}:${target.entityId}`);
+      }
+      return next;
+    });
+    setSplitOpen(false);
   };
 
   const confirmTip = async (amount: number) => {
@@ -463,6 +530,21 @@ export function Player(props: PlayerProps) {
             testid="tip-curator"
             title={curatorIsSelf ? "You can't tip your own collection." : undefined}
           />
+          {/* The split press. It sits BETWEEN the two single-target tips it
+              combines, so the rail reads creator → both → curator. Disabled only
+              when there is genuinely nobody to pay (the viewer owns the media AND
+              the collection); a single collapsed side still opens, and gives the
+              whole total to the side that survives. */}
+          <ChromeButton
+            c={c}
+            glyph="🤝"
+            label="Split tip"
+            disabled={!splitPossible || tipping}
+            active={false}
+            onClick={openSplit}
+            testid="tip-split"
+            title={!splitPossible ? "This is your own media in your own collection — there's no one to tip." : undefined}
+          />
           <ChromeButton
             c={c}
             glyph={followed ? '★' : '☆'}
@@ -559,6 +641,20 @@ export function Player(props: PlayerProps) {
           dailyRemaining={dailyTipRemaining}
           onConfirm={confirmTip}
           onClose={() => setTipTarget(null)}
+        />
+      )}
+
+      {splitOpen && (
+        <TipSplitModal
+          creator={splitCreator}
+          curator={splitCurator}
+          balance={buzzBalance}
+          submitting={tipping}
+          dailyRemaining={dailyTipRemaining}
+          // Each leg is one `ApiClient.tip` POST carrying the plan's key.
+          onSendLeg={(target, amount, idempotencyKey) => onTip(target, amount, idempotencyKey)}
+          onDone={onSplitDone}
+          onClose={() => setSplitOpen(false)}
         />
       )}
     </div>

@@ -13,11 +13,12 @@ import type { CSSProperties } from 'react';
 
 import { Button, Modal, TextInput } from '@civitai/blocks-react/ui';
 
-import { TIP_DAILY_MAX, TIP_MAX_PER_TIP } from '../lib/tip-allowance.js';
+import { TIP_DAILY_MAX, TIP_MAX_PER_TIP, TIP_MIN } from '../lib/tip-allowance.js';
 import { FocusTrap } from './FocusTrap.js';
 
 export const TIP_PRESETS = [10, 50, 100, 500] as const;
-export const TIP_MIN = 1;
+/** Re-exported from the caps module, where the split popover also reads it. */
+export { TIP_MIN };
 /** Client per-tip cap — aligned to the server's `BLOCK_TIP_MAX_PER_TIP` (5000). */
 export const TIP_MAX = TIP_MAX_PER_TIP;
 
@@ -28,6 +29,16 @@ export interface TipTarget {
   entityType: 'Image' | 'Collection';
   entityId: number;
 }
+
+/**
+ * Perform one transfer. Resolves `true` only on a confirmed tip.
+ *
+ * 🔴 `idempotencyKey` IS LOAD-BEARING FOR THE SPLIT, and optional only because
+ * the single-target picker has no retry affordance to protect. A split press
+ * fires two transfers, so it can half-fail; the retry re-sends the outstanding
+ * leg under the SAME key so the server replays rather than transfers again.
+ */
+export type TipSender = (target: TipTarget, amount: number, idempotencyKey?: string) => Promise<boolean>;
 
 /**
  * Validate a tip amount against the per-tip cap (5000), the estimated remaining
@@ -90,12 +101,18 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
         </p>
 
         <p style={leadText} data-testid="tip-allowance">
-          {/* Show ONLY the real per-tip cap. The former "of 25,000 left today"
-              framing was inert in the opaque-origin sandbox (localStorage throws
-              → the daily estimate was always the full cap, tracking nothing), so
-              it presented an untracked number as if tracked. The server rate
-              limit is the real daily gate. (Host-provided daily store owed
-              upstream — see NOTE.) */}
+          {/* Show ONLY the per-tip cap. The former "of 25,000 left today" framing
+              was inert in the opaque-origin sandbox (localStorage throws → the
+              daily estimate was always the full cap, tracking nothing), so it
+              presented an untracked number as if tracked.
+
+              🔴 As of 0.2.10 the `dailyRemaining` this modal receives IS real —
+              it comes from the server's `GET /blocks/tip-allowance` — and
+              `validateTipAmount` above pre-blocks against it. This readout still
+              does not render it: the number is a per-day figure and this control
+              sends one tip, so the per-tip cap is the sentence that answers the
+              question the picker asks. The split popover, whose cap genuinely IS
+              min(per-press cap, remaining), does render it. */}
           Up to {TIP_MAX_PER_TIP.toLocaleString()} Buzz per tip.
         </p>
 

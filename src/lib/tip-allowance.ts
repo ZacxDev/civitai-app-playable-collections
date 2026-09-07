@@ -1,4 +1,4 @@
-// Buzz-tip caps + an app-local daily-allowance estimate.
+// Buzz-tip caps + the viewer's REAL remaining daily allowance.
 //
 // The block-tip server enforces TWO limits (mirrored here as constants):
 //   - BLOCK_TIP_MAX_PER_TIP = 5000  — the max Buzz in a SINGLE tip.
@@ -10,77 +10,96 @@
 // wasting a round-trip and confusing the user. Client validation now caps at the
 // real per-tip limit BEFORE the request.
 //
-// The server stays authoritative for BOTH caps. `remainingDaily` is a
-// best-effort, APP-LOCAL estimate (it only counts tips made through THIS app on
-// THIS device, persisted in localStorage) used to surface "how much of your
-// daily tip allowance is left" and to pre-block an obviously over-allowance
-// amount. A genuine daily-cap breach still surfaces as the server's
-// `rate_limited` path — never a silent success.
+// 🔴 THE FIX (0.2.10): the remaining daily allowance is READ FROM THE SERVER
+// (`GET /api/v1/blocks/tip-allowance`, via `ApiClient.getTipAllowance`) instead
+// of being derived from a localStorage running total. The old estimate could
+// never work: localStorage throws in the opaque-origin sandbox, so the "spent"
+// figure was always 0 and the remaining was always the full cap — and even where
+// it did persist it counted only tips made through THIS app on THIS device.
+// `readDailySpent` / `recordTipSpend` / `remainingDaily` / `useDailyTipAllowance`
+// are gone with it; `TIP_DAILY_MAX` survives only as the fallback ceiling used
+// when the server read has not resolved (or failed).
+//
+// The server stays authoritative for BOTH caps either way — this pre-blocks an
+// amount it would reject, it does not decide anything.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getLocalStorage } from '../settings.js';
+import type { ApiClient } from './api.js';
 
 /** Server per-tip cap (`BLOCK_TIP_MAX_PER_TIP`). A single tip cannot exceed this. */
 export const TIP_MAX_PER_TIP = 5000;
 /** Server per-viewer daily tip ceiling (enforced as a rate limit). */
 export const TIP_DAILY_MAX = 25000;
-
-const KEY_PREFIX = 'playable-collections:tips:';
-
-/** UTC calendar-day key so the app-local running total resets each day. */
-function dayKey(now: number): string {
-  return KEY_PREFIX + new Date(now).toISOString().slice(0, 10);
-}
-
-/** App-local Buzz tipped so far TODAY (this device). Missing/corrupt → 0. */
-export function readDailySpent(storage: Storage | null = getLocalStorage(), now: number = Date.now()): number {
-  if (!storage) return 0;
-  try {
-    const raw = storage.getItem(dayKey(now));
-    const n = raw == null ? 0 : Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/** Add a successful tip to today's app-local running total. Returns the new total. */
-export function recordTipSpend(amount: number, storage: Storage | null = getLocalStorage(), now: number = Date.now()): number {
-  const next = readDailySpent(storage, now) + Math.max(0, Math.floor(amount));
-  try {
-    storage?.setItem(dayKey(now), String(next));
-  } catch {
-    /* ignore */
-  }
-  return next;
-}
-
-/** Estimated Buzz still available in today's tip allowance (never negative). */
-export function remainingDaily(storage: Storage | null = getLocalStorage(), now: number = Date.now()): number {
-  return Math.max(0, TIP_DAILY_MAX - readDailySpent(storage, now));
-}
+/** The smallest Buzz a single transfer may carry. Also the per-LEG floor of a split. */
+export const TIP_MIN = 1;
 
 /** The effective ceiling on a single tip: min(per-tip cap, remaining daily allowance). */
 export function effectiveTipCap(dailyRemaining: number): number {
   return Math.max(0, Math.min(TIP_MAX_PER_TIP, dailyRemaining));
 }
 
+/** What `useServerTipAllowance` hands the view. */
+export interface ServerTipAllowance {
+  /**
+   * Buzz the viewer may still tip today, or `null` while the read is in flight
+   * / after it failed.
+   *
+   * 🔴 `null` MUST NOT BLOCK TIPPING. A failed allowance read is not evidence
+   * the viewer is out of allowance, and the server rejects an over-allowance tip
+   * on its own (429 `rate_limited`). Callers pass `remaining ?? undefined` into
+   * the pickers, whose `dailyRemaining` default is the full cap — so an unknown
+   * allowance degrades to "don't pre-block", never to "can't tip".
+   */
+  remaining: number | null;
+  /** Re-read the allowance. Call after a successful tip. */
+  refetch: () => void;
+}
+
 /**
- * React hook: the estimated remaining daily tip allowance + a `record` setter to
- * call after a successful tip (so the next tip modal reflects the new remaining).
+ * Read the viewer's real remaining daily tip allowance once per view, and re-read
+ * it on demand.
+ *
+ * 🔴 ONE READ FOR THE WHOLE VIEW, NOT ONE PER CONTROL. There are three tip
+ * affordances on the player screens (`tip-creator`, `tip-curator`,
+ * `chrome-tip-curator`) plus the split popover; each mounting its own read would
+ * put N identical GETs on the wire for one number that is the same for all of
+ * them. App holds this hook and threads `remaining` down.
+ *
+ * Routed through the injected `ApiClient` rather than the SDK's own
+ * `useTipAllowance()` on purpose — that hook raw-`fetch`es the host origin,
+ * which would bypass the fake every test and the dev harness inject, and lose
+ * this client's ApiError taxonomy. Same endpoint, same scope.
  */
-export function useDailyTipAllowance(storage: Storage | null = getLocalStorage()): {
-  remaining: number;
-  record: (amount: number) => void;
-} {
-  const [remaining, setRemaining] = useState<number>(() => remainingDaily(storage));
-  const record = useCallback(
-    (amount: number) => {
-      recordTipSpend(amount, storage);
-      setRemaining(remainingDaily(storage));
-    },
-    [storage],
-  );
-  return { remaining, record };
+export function useServerTipAllowance(api: Pick<ApiClient, 'getTipAllowance'> | null): ServerTipAllowance {
+  const [remaining, setRemaining] = useState<number | null>(null);
+  // The live client, so `refetch` never closes over a stale one and never has to
+  // be re-created (it is a callback dep in App's tip flow).
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  // Bumped by `refetch`; the effect below keys on it so a re-read is one render.
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    const client = apiRef.current;
+    if (!client) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const allowance = await client.getTipAllowance();
+        if (!cancelled) setRemaining(Math.max(0, allowance.remaining));
+      } catch {
+        // Degrade to "unknown", NOT to zero: the pickers treat `null` as
+        // "no local pre-block" and let the server decide.
+        if (!cancelled) setRemaining(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, tick]);
+
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
+
+  return { remaining, refetch };
 }

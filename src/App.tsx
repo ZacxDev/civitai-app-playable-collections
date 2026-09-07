@@ -60,7 +60,7 @@ import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { useDebouncedValue } from './lib/use-debounced-value.js';
-import { useDailyTipAllowance } from './lib/tip-allowance.js';
+import { useServerTipAllowance } from './lib/tip-allowance.js';
 import { buildShareUrl, decodeDeepLink, encodeDeepLink } from './lib/deep-link.js';
 import { shareLink } from './lib/share.js';
 import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
@@ -175,10 +175,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // viewer settings on a page app (see settings.ts).
   const { settings: playerSettings, setSecondsPerImage, setVideoLoopCount } = usePlayerSettings();
 
-  // Estimated remaining daily tip allowance (app-local; the server is the real
-  // gate). Surfaced in the tip modal and pre-blocks an over-allowance amount.
-  const tipAllowance = useDailyTipAllowance();
-
   // Recently-played collections (Feature #7) — the "Continue watching" rail.
   const { recent, record: recordRecentPlay } = useRecent();
 
@@ -261,6 +257,19 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // Data-fetching is gated on a usable client (injected fake, or the real client
   // once host+token are established).
   const canFetch = api != null;
+
+  // The viewer's REAL remaining daily tip allowance — ONE read for the whole
+  // view, threaded down to all four tip affordances (`tip-creator`,
+  // `tip-curator`, `chrome-tip-curator`, and the split popover) and re-read
+  // after each successful transfer.
+  //
+  // 🔴 THIS REPLACED A localStorage RUNNING TOTAL THAT COULD NEVER WORK (0.2.10).
+  // The old `useDailyTipAllowance` derived "remaining" from a per-device counter
+  // that (a) throws in the opaque-origin sandbox, so the estimate was always the
+  // full cap and tracked nothing, and (b) counted only tips made through THIS app
+  // on THIS device even where it did persist. `getTipAllowance()` is the server's
+  // own figure over the same bearer + scope the app already holds to tip.
+  const tipAllowance = useServerTipAllowance(api);
 
   // ---- browse state ----
   const [tab, setTab] = useState<Tab>('discover');
@@ -675,7 +684,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
 
   // ---- tip flow ----
   const doTip = useCallback(
-    async (target: TipTarget, amount: number): Promise<boolean> => {
+    async (target: TipTarget, amount: number, idempotencyKey?: string): Promise<boolean> => {
       // Synchronous double-tip gate (M1): reject a second call that arrives in the
       // same tick, before `setTipping(true)`'s re-render can disable the button.
       if (tipInFlightRef.current) return false;
@@ -692,6 +701,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           amount,
           entityType: target.entityType,
           entityId: target.entityId,
+          // Passed through verbatim. The split popover mints one key per leg and
+          // reuses it on retry; the server replays the first terminal result for
+          // a repeated key, which is what makes retrying a half-failed split safe.
+          idempotencyKey,
         });
         // A non-throwing soft-failure (`{ ok: false }`) must NOT count as success —
         // no allowance debit, no success toast, no optimistic "tipped" state.
@@ -702,8 +715,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
         // Use the SERVER's committed figure (O2), not the client amount — the two
         // can diverge (host clamping / rounding). Fall back to the requested amount.
         const sent = result.tip?.amount ?? amount;
-        // Record against today's app-local allowance so the next modal reflects it.
-        tipAllowance.record(sent);
+        // Re-read the SERVER's allowance so the next picker opens on the real
+        // remaining figure. (This is where `tipAllowance.record(sent)` used to
+        // add `sent` to a localStorage running total that tracked nothing.)
+        tipAllowance.refetch();
         analytics.track({ type: 'tip', kind: target.kind, amount: sent });
         toasts.push('success', `Sent ${sent.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
         refetchBalance();
@@ -713,7 +728,13 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           // AMBIGUOUS (M2): a timed-out / dropped tip POST may have ALREADY
           // committed server-side — a "clean" one-click retry risks a double-spend.
           // Warn the viewer to verify their balance before retrying instead.
-          // (Full fix needs a host idempotency key — owed upstream; see NOTE.)
+          //
+          // 🔴 STILL THE RIGHT WARNING FOR *THIS* PATH, even though the
+          // idempotency key it was waiting on now exists (0.2.10). The key only
+          // helps a retry that REUSES it, and the single-target picker has no
+          // retry affordance — the viewer re-opens the modal, which is a NEW
+          // logical tip and mints nothing to replay. The split popover, which
+          // does own its retry, carries the key and is safe to press again.
           toasts.push('info', 'This tip may have gone through — check your Buzz balance before retrying.');
         } else if (err instanceof ApiError && err.code === 'insufficient_balance') {
           toasts.push('error', "You don't have enough Buzz for that tip.");
@@ -771,7 +792,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           onTip={doTip}
           onRequestSignIn={() => requestSignIn()}
           tipping={tipping}
-          dailyTipRemaining={tipAllowance.remaining}
+          // `null` (unresolved / failed read) becomes `undefined`, which is the
+          // pickers' "no local pre-block" default. A failed allowance read must
+          // never make tipping impossible — the server stays the real gate.
+          dailyTipRemaining={tipAllowance.remaining ?? undefined}
           onShare={onShareCollection}
           onCast={(on) => analytics.track({ type: 'cast', on })}
           onViewStateChange={handleViewStateChange}

@@ -36,7 +36,7 @@ import {
 import { Player } from './Player.js';
 import { ContinuousView } from './ContinuousView.js';
 import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
-import { TipModal, type TipTarget } from './TipModal.js';
+import { TipModal, type TipSender } from './TipModal.js';
 import { FocusTrap } from './FocusTrap.js';
 import { useOnboarding } from '../lib/onboarding.js';
 
@@ -53,11 +53,16 @@ export interface CollectionViewerProps {
   onFollowChange: (followed: boolean) => void;
   /** Surface a renderable message from the follow bridge (Player's rail). */
   onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
-  onTip: (target: TipTarget, amount: number) => Promise<boolean>;
+  onTip: TipSender;
   /** Prompt a logged-out viewer to sign in (tipping requires an account). */
   onRequestSignIn?: () => void;
   tipping: boolean;
-  /** Estimated remaining daily tip allowance (app-local) for the tip modals. */
+  /**
+   * The viewer's REAL remaining daily tip allowance, read once per view from the
+   * server (0.2.10). Omitted while that read is unresolved or after it failed —
+   * the pickers then fall back to the full cap and let the server decide, so a
+   * failed read never makes tipping impossible.
+   */
   dailyTipRemaining?: number;
   isMobile: boolean;
   c: Palette;
