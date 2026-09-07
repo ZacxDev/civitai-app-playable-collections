@@ -191,12 +191,20 @@ describe('tip', () => {
 describe('401 re-mint + retry', () => {
   it('refreshes the token once on a 401 then retries', async () => {
     const refreshToken = vi.fn(async () => {});
-    const { api, fetchImpl } = makeClient(
-      [jsonResponse(401, { error: 'expired' }), jsonResponse(200, { cap: 1, spent: 0, remaining: 1 })],
+    const { api, fetchImpl, calls } = makeClient(
+      [jsonResponse(401, { error: 'expired' }), jsonResponse(200, { ok: true, tip: { amount: 7, toUserId: 3 } })],
       { refreshToken },
     );
-    const res = await api.getTipAllowance();
-    expect(res.remaining).toBe(1);
+    // 🔴 DRIVEN THROUGH `tip`, A POST WITH A BODY — deliberately, and it was a
+    // GET for one commit. `request()` re-serializes `init.body` on the recursive
+    // retry, so a GET-only case cannot see a regression that drops or corrupts
+    // the body on re-send. `tip` is the only remaining POST on this client, and
+    // it is the one carrying money.
+    const res = await api.tip({ toUserId: 3, amount: 7, idempotencyKey: 'k-1' });
+    expect(res.ok).toBe(true);
+    // The RETRY must carry the same body — including the idempotency key, or a
+    // 401-then-retry would mint a second transfer.
+    expect(calls[1].body).toEqual({ toUserId: 3, amount: 7, idempotencyKey: 'k-1' });
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });

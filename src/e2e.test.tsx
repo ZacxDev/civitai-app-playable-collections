@@ -249,7 +249,13 @@ describe('follow toggle', () => {
     expect(api.__isFollowed(101)).toBe(false);
   });
 
-  it('uses ONE consistent "follow" verb across the button and both toasts (dogfood: described 3 ways)', async () => {
+  // 🔴 TITLE NARROWED (0.2.10): this drives the PLAYER RAIL's `follow-toggle`
+  // only. It used to say "the button and both toasts", which since the bridge
+  // adoption is wider than the body: the chrome-row control is now upstream's
+  // `FollowButton`, which renders an inline `role="alert"` note and emits NO
+  // toast at all. A title claiming coverage the body does not provide is the
+  // defect this arc keeps finding, so it is fixed rather than left as prose.
+  it('uses ONE consistent "follow" verb across the RAIL button and its two toasts', async () => {
     const api = createFakeApi({ viewerUserId: 99 }) as FakeApi;
     await openNeon(api);
     const btn = screen.getByTestId('follow-toggle');
@@ -276,6 +282,26 @@ describe('follow toggle', () => {
     await userEvent.click(screen.getByTestId('follow-toggle'));
     await waitFor(() => expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'false'));
     expect(await screen.findByTestId('toast-error')).toBeInTheDocument();
+  });
+
+  it('🔴 a successful follow DROPS THE CACHED READS — the seam nobody owned', async () => {
+    // This test could not exist before 0.2.10's audit round. `cachedApi` was
+    // keyed on PROVENANCE (`injectedApi ? null : realApi`), and every test
+    // injects a client — so `invalidateReads()` never executed in ANY suite and
+    // deleting the call left the suite green. It is now keyed on CAPABILITY, so
+    // a fake that CAN invalidate is used, and the obligation is observable.
+    //
+    // Why it matters: `followed` is embedded in the cached list AND detail
+    // payloads, and following no longer goes through the client at all, so
+    // nothing else drops them. Without this, re-opening the collection inside
+    // the 5-minute TTL shows the pre-follow flag and the grid badge disagrees
+    // with the button.
+    const invalidateReads = vi.fn();
+    const api = { ...createFakeApi({ viewerUserId: 99 }), invalidateReads } as unknown as ApiClient;
+    await openNeon(api);
+    expect(invalidateReads).not.toHaveBeenCalled(); // control: not fired by merely opening
+    await userEvent.click(screen.getByTestId('follow-toggle'));
+    await waitFor(() => expect(invalidateReads).toHaveBeenCalledTimes(1));
   });
 
   it('🔴 a DECLINED follow says NOTHING — the viewer chose no, the app did not fail', async () => {

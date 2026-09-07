@@ -32,10 +32,11 @@ function harness(followed = false) {
   const onChange = vi.fn();
   const onSignInRequired = vi.fn();
   const onNotice = vi.fn();
+  const onUncertain = vi.fn();
   const { result } = renderHook(() =>
-    useFollowToggle({ collectionId: 42, followed, onChange, onSignInRequired, onNotice }),
+    useFollowToggle({ collectionId: 42, followed, onChange, onSignInRequired, onNotice, onUncertain }),
   );
-  return { result, onChange, onSignInRequired, onNotice };
+  return { result, onChange, onSignInRequired, onNotice, onUncertain };
 }
 
 beforeEach(() => {
@@ -54,7 +55,86 @@ describe('useFollowToggle', () => {
 
     expect(setFollow).toHaveBeenCalledWith({ collectionId: 42, follow: true });
     // Asked for true, host said false → we must report FALSE.
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith(false));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(42, false));
+  });
+
+  it("🔴 reports the ECHO's collection id, not the one the closure captured", async () => {
+    // The fixtures disagree ON PURPOSE: the hook was constructed for 42 and the
+    // host answers about 77. A implementation that reports its captured id
+    // passes every same-id fixture anyone would think to write, and mis-files
+    // the write when the viewer navigates during the consent dialog.
+    setFollow.mockResolvedValue({ collectionId: 77, followed: true });
+    const { result, onChange } = harness(false);
+
+    await act(async () => result.current.toggle());
+
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(77, true));
+    expect(onChange).not.toHaveBeenCalledWith(42, true);
+  });
+
+  it('🔴 renders a SENTENCE for a host refusal code, never the raw code', async () => {
+    // `CollectionFollowError` is `super(error)`, so for these codes `.message`
+    // IS the code. `collection-unavailable` is the reachable one: the host caps
+    // a block instance at 20 DISTINCT collection ids and answers every id past
+    // that with it — and this app is a collection browser.
+    setFollow.mockRejectedValue(new CollectionFollowError('collection-unavailable'));
+    const { result, onNotice } = harness(false);
+
+    await act(async () => result.current.toggle());
+
+    await waitFor(() => expect(onNotice).toHaveBeenCalledTimes(1));
+    const [kind, message] = onNotice.mock.calls[0];
+    expect(kind).toBe('error');
+    expect(message).not.toContain('collection-unavailable');
+    expect(message).not.toMatch(/-/); // no kebab-case code leaked in any form
+    expect(message).toBe("That collection can't be followed right now.");
+  });
+
+  it('maps every other closed refusal code to its own sentence', async () => {
+    // Pairwise-distinct expectations, so a mutant returning one constant for
+    // all of them cannot survive.
+    const cases: Array<[string, string]> = [
+      ['review-mode', 'Following is unavailable while this app is in review.'],
+      ['not-ready', 'Still loading — try that again in a moment.'],
+      ['invalid-request', 'Something went wrong with that request — please try again.'],
+    ];
+    for (const [code, expected] of cases) {
+      setFollow.mockRejectedValue(new CollectionFollowError(code));
+      const { result, onNotice } = harness(false);
+      await act(async () => result.current.toggle());
+      await waitFor(() => expect(onNotice).toHaveBeenCalledTimes(1));
+      expect(onNotice).toHaveBeenCalledWith('error', expected);
+    }
+  });
+
+  it('🔴 a TIMEOUT drops the cached reads, because the notice tells them to look again', async () => {
+    // Without this the app's own advice produces the wrong answer: the 5-minute
+    // read cache would serve the PRE-follow flag to a viewer who was just told
+    // the write may have landed.
+    setFollow.mockRejectedValue(
+      new CollectionFollowError('timed out', { timedOut: true }),
+    );
+    const { result, onUncertain } = harness(false);
+
+    await act(async () => result.current.toggle());
+
+    await waitFor(() => expect(onUncertain).toHaveBeenCalledTimes(1));
+  });
+
+  it('does NOT drop the cache when nothing is uncertain (success, declined)', async () => {
+    // The negative arm: `onUncertain` firing on every path would be
+    // indistinguishable from firing on the right one.
+    setFollow.mockResolvedValue({ collectionId: 42, followed: true });
+    const ok = harness(false);
+    await act(async () => ok.result.current.toggle());
+    await waitFor(() => expect(ok.onChange).toHaveBeenCalled());
+    expect(ok.onUncertain).not.toHaveBeenCalled();
+
+    setFollow.mockRejectedValue(new CollectionFollowError('declined'));
+    const declined = harness(false);
+    await act(async () => declined.result.current.toggle());
+    await waitFor(() => expect(declined.result.current.pending).toBe(false));
+    expect(declined.onUncertain).not.toHaveBeenCalled();
   });
 
   it('🔴 a DECLINED follow reports NOTHING — no onChange, no notice', async () => {

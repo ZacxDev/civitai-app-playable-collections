@@ -50,9 +50,11 @@ export interface CollectionViewerProps {
   buzzBalance: number | null;
   followed: boolean;
   /** Adopt the host's echo after a confirmed follow write (host bridge). */
-  onFollowChange: (followed: boolean) => void;
+  onFollowChange: (collectionId: number, followed: boolean) => void;
   /** Surface a renderable message from the follow bridge (Player's rail). */
   onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
+  /** A follow timed out — outcome unknown; drop cached reads. */
+  onFollowUncertain?: () => void;
   onTip: TipSender;
   /** Prompt a logged-out viewer to sign in (tipping requires an account). */
   onRequestSignIn?: () => void;
@@ -103,6 +105,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
     followed,
     onFollowChange,
     onNotice,
+    onFollowUncertain,
     onTip,
     onRequestSignIn,
     tipping,
@@ -348,7 +351,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
           </Button>
           {/* 🔴 UPSTREAM CONTROL, NOT A HAND-ROLLED ONE (0.2.10). This row's
               button was already a `Button` with the same size + variant shape,
-              so adopting `FollowButton` costs no visual change here and buys the
+              so adopting `FollowButton` costs almost no visual change here (the
+              `☆`/`★` glyphs DO go — the labels become plain "Follow" /
+              "Following") and buys the
               three outcomes a hand-rolled follow reliably gets wrong: `declined`
               renders NOTHING (the viewer dismissed the host's confirm — the old
               code toasted an error at them), `sign-in-required` routes to
@@ -365,7 +370,11 @@ export function CollectionViewer(props: CollectionViewerProps) {
             collectionId={detail.id}
             collectionName={detail.name}
             followed={followed}
-            onChange={onFollowChange}
+            // Upstream's `onChange` reports only the flag, so supply the id this
+            // control is BOUND to. That is safe where deriving it from "what is
+            // open" is not: the binding cannot drift mid-flight, because a
+            // different collection remounts this subtree (`key={detail.id}`).
+            onChange={(f) => onFollowChange(detail.id, f)}
             data-testid="chrome-follow"
           />
           <Button
@@ -506,6 +515,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             followed={followed}
             onFollowChange={onFollowChange}
             onNotice={onNotice}
+            onFollowUncertain={onFollowUncertain}
             onTip={onTip}
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}
@@ -563,6 +573,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             followed={followed}
             onFollowChange={onFollowChange}
             onNotice={onNotice}
+            onFollowUncertain={onFollowUncertain}
             onTip={onTip}
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}

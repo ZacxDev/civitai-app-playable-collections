@@ -250,10 +250,24 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     [host, tokenRaw],
   );
   const api = injectedApi ?? realApi;
-  // Only the REAL client is cache-wrapped; an injected fake (tests / dev
-  // harness) has no cache to drop, so follow invalidation is a no-op there —
-  // correctly, since there is nothing stale to serve.
-  const cachedApi = injectedApi ? null : realApi;
+  /**
+   * The client to drop cached reads on after a follow write.
+   *
+   * 🔴 KEYED ON CAPABILITY, NOT ON PROVENANCE — and that distinction is the
+   * whole reason this guard is testable. It was `injectedApi ? null : realApi`,
+   * which read reasonably (only the real client is cache-wrapped) and had one
+   * fatal consequence an audit found: EVERY test injects a client, so
+   * `cachedApi` was ALWAYS null under test and `invalidateReads()` never
+   * executed in any suite. The call could be deleted outright and the whole
+   * suite stayed green — on the one obligation this release newly created, and
+   * which `lib/cache.ts` itself warns "is easy to miss".
+   *
+   * Asking whether the client can invalidate lets a test inject one that can.
+   */
+  const cachedApi =
+    api && typeof (api as Partial<CachedApiClient>).invalidateReads === 'function'
+      ? (api as CachedApiClient)
+      : null;
   // Data-fetching is gated on a usable client (injected fake, or the real client
   // once host+token are established).
   const canFetch = api != null;
@@ -664,23 +678,47 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // makes wrong: dismissing the host's consent dialog rejects with `declined`,
   // and the viewer who just chose "no" would have been told the app failed.
   const onFollowChange = useCallback(
-    (followed: boolean) => {
-      setOpen((o) => (o ? { ...o, followed } : o));
-      const id = openRef.current?.detail.id;
-      if (id == null) return;
-      analytics.track({ type: 'follow', collectionId: id, followed });
-      // Keep the grid card badge in sync.
-      applyFollowedToLists(id, followed);
-      // 🔴 AND DROP THE CACHED READS. `followed` is embedded in both the cached
-      // list and detail payloads. The cache wrapper used to do this for us by
-      // intercepting `api.setFollow`; the bridge never touches the client, so
-      // without this call re-opening the collection serves the pre-follow flag
-      // and the badge silently disagrees with the button.
+    (collectionId: number, followed: boolean) => {
+      // 🔴 THE ID COMES FROM THE HOST'S ECHO, NOT FROM `openRef`. This used to
+      // read `openRef.current?.detail.id` and bail when it was null, which was
+      // wrong in two ways an audit found. The reply lands after a round trip
+      // PLUS the time the viewer spends in the host consent dialog, and the
+      // viewer can navigate in that window:
+      //   - exit the player first  -> `openRef` is null -> the whole handler
+      //     returned early, so a follow that DID land produced no badge and no
+      //     cache drop, and looked to the viewer like it silently failed;
+      //   - open a DIFFERENT collection first -> `openRef` names the new one, so
+      //     the analytics event and the list patch were applied to a collection
+      //     the viewer never followed.
+      // Keyed on the echo, both cases are attributed correctly and neither
+      // depends on what is open now.
+
+      // 🔴 INVALIDATE FIRST — before any early return. `followed` is embedded in
+      // both the cached list and detail payloads, the cache wrapper used to do
+      // this by intercepting `api.setFollow`, and the bridge never touches the
+      // client. Ordering it after an `open`-dependent guard is what made a
+      // real write serve a stale flag for the 5-minute TTL.
       cachedApi?.invalidateReads();
+      analytics.track({ type: 'follow', collectionId, followed });
+      // Keep the grid card badge in sync.
+      applyFollowedToLists(collectionId, followed);
+      // Only touch the OPEN collection's own flag, and only if it is still the
+      // one that was written.
+      setOpen((o) => (o && o.detail.id === collectionId ? { ...o, followed } : o));
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [analytics, applyFollowedToLists, cachedApi],
   );
+
+  /**
+   * A follow whose outcome is UNKNOWN (transport timeout). We cannot say whether
+   * it landed, so we drop the cached reads and let the next read tell the truth
+   * — the notice shown to the viewer tells them to look again, and the cache
+   * would otherwise answer that with the pre-follow flag.
+   */
+  const onFollowUncertain = useCallback(() => {
+    cachedApi?.invalidateReads();
+  }, [cachedApi]);
 
   // ---- tip flow ----
   const doTip = useCallback(
@@ -789,6 +827,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           followed={open.followed}
           onFollowChange={onFollowChange}
           onNotice={(kind, message) => toasts.push(kind, message)}
+          onFollowUncertain={onFollowUncertain}
           onTip={doTip}
           onRequestSignIn={() => requestSignIn()}
           tipping={tipping}

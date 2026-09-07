@@ -58,9 +58,11 @@ export interface PlayerProps {
    * app-side pending flag to pass in — `useFollowToggle` owns that window,
    * which includes the time the viewer spends in the host's consent dialog.
    */
-  onFollowChange: (followed: boolean) => void;
+  onFollowChange: (collectionId: number, followed: boolean) => void;
   /** Surface a renderable message (a real server error, or a timeout notice). */
   onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
+  /** A follow timed out — outcome unknown; drop cached reads. */
+  onFollowUncertain?: () => void;
   /** Perform one transfer. Resolves true on success (Player then marks it tipped). */
   onTip: TipSender;
   /**
@@ -107,6 +109,7 @@ export function Player(props: PlayerProps) {
     followed,
     onFollowChange,
     onNotice,
+    onFollowUncertain,
     onTip,
     onRequestSignIn,
     tipping,
@@ -131,6 +134,7 @@ export function Player(props: PlayerProps) {
     onChange: onFollowChange,
     onSignInRequired: () => onRequestSignIn?.(),
     onNotice,
+    onUncertain: onFollowUncertain,
   });
 
   const player = usePlayer({
