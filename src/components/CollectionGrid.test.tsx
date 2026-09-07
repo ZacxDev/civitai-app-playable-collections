@@ -275,19 +275,48 @@ describe('CoverImage — a cover is painted only if the ceiling permits its rati
     expect(screen.getAllByTestId('cover-placeholder')).toHaveLength(1);
   });
 
-  it('🔴 FAIL CLOSED — an UNRATED (0) cover is refused even on an all-levels ceiling', async () => {
-    renderAtCeiling(CEILING_ALL, [coverAt({ coverNsfwLevel: 0 })]);
-    await waitFor(() => expect(screen.getByTestId('cover-placeholder')).toBeInTheDocument());
-    expect(document.querySelector('img')).toBeNull();
-    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+  // ---- the THREE cover states, and why none may be collapsed into another ----
+  // 🔴 `toCoverFields` OMITS `coverNsfwLevel` when there is no cover, and publishes
+  // `0` for an UNRATED cover (<civitai>@origin/release:146-150). So absent and 0
+  // are different facts arriving on the same key, and this app has already shipped
+  // a bug in each direction: `nsfwLevel ?? 0` blurred every card, and a later fix
+  // hid every unrated one. These three tests are what make the states distinct by
+  // TEST rather than by comment — each fails if any pair is re-merged.
+
+  it('🔴 an UNRATED (0) cover is PAINTED, on a SFW ceiling, badged "Unrated"', async () => {
+    // 🔴 REVERSED from "an UNRATED (0) cover is refused even on an all-levels
+    // ceiling". Refusing it was the app overriding the server, which permits
+    // unrated everywhere (block-collections.service.ts:193, :359).
+    renderAtCeiling(SFW_LEVELS, [coverAt({ coverNsfwLevel: 0 })]);
+    await waitFor(() => expect(screen.getByTestId('cover-badged')).toBeInTheDocument());
+    expect(document.querySelector('img')).not.toBeNull();
+    expect(screen.queryByTestId('cover-placeholder')).toBeNull();
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 
   it('🔴 FAIL CLOSED — an ABSENT coverNsfwLevel is refused on EVERY ceiling', async () => {
-    // Against a #4663 host this state implies `coverImageUrl === null`, which the
-    // `!src` branch already handles; this pins the OLDER-host path.
+    // Unknowable, NOT unrated. Against a #4663 host this state implies
+    // `coverImageUrl === null` (the two fields travel together), which the `!src`
+    // branch already handles; this pins the OLDER-host path, where a `src` arrives
+    // with no level at all.
     renderAtCeiling(CEILING_ALL, [coverAt({ coverNsfwLevel: undefined })]);
     await waitFor(() => expect(screen.getByTestId('cover-placeholder')).toBeInTheDocument());
     expect(document.querySelector('img')).toBeNull();
+  });
+
+  it('🔴 THE PAIR, SIDE BY SIDE: an unrated cover paints while an absent-level cover does not', async () => {
+    // The anti-merge witness at the surface. One grid, one ceiling, two rows that
+    // differ ONLY in absent-vs-0 — so any collapse in either direction changes the
+    // image count and fails here, which neither single-row test above can promise.
+    renderAtCeiling(SFW_LEVELS, [
+      coverAt({ id: 1, coverNsfwLevel: 0 }),
+      coverAt({ id: 2, coverNsfwLevel: undefined }),
+    ]);
+    await waitFor(() => expect(screen.getAllByTestId('collection-card')).toHaveLength(2));
+    expect(document.querySelectorAll('img')).toHaveLength(1);
+    expect(screen.getAllByTestId('cover-placeholder')).toHaveLength(1);
+    expect(screen.getAllByTestId('maturity-badge')).toHaveLength(1);
+    expect(screen.getAllByTestId('maturity-badge')[0]).toHaveTextContent('Unrated');
   });
 
   it('the rule lives in CoverImage, so the RAILS inherit it — a call site cannot forget', async () => {

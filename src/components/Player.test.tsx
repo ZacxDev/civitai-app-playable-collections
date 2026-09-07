@@ -375,4 +375,16 @@ describe('Player — over-ceiling items never reach the stage, whatever the call
     expect(screen.getByTestId('player-empty')).toBeInTheDocument();
     expect(screen.queryByTestId('media-image')).toBeNull();
   });
+
+  it('🔴 an UNRATED (0) item PLAYS on the strictest ceiling, badged "Unrated"', () => {
+    // The server permits unrated at every ceiling
+    // (<civitai>@origin/release block-collections.service.ts:193, :359), so the
+    // app must too — being stricter is the app overriding a platform decision, and
+    // hiding is worse than the blur it replaced. No <Harness>, i.e. the
+    // fail-closed SFW ceiling, which is where a wrongly-strict rule shows first.
+    render(<Host items={[at(1, 0), at(2, BrowsingLevel.PG)]} onTip={makeTip()} />);
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2');
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', at(1, 0).url);
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+  });
 });

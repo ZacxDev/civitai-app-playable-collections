@@ -111,12 +111,23 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
   // and its play affordance all survive, because the COLLECTION is not what the
   // ceiling excluded; one image is.
   //
-  // ABSENT `coverNsfwLevel` lands here too, and that is deliberate. The server
-  // publishes the level of the image it actually served (`toCoverFields`), and
-  // OMITS the field exactly when `coverImageUrl` is null — so against a host with
-  // civitai #4663 an absent level always arrives with no `src` and the `!src`
-  // branch has already fired. Against an older host it degrades a cover to the
-  // placeholder rather than painting an image whose rating nobody stated.
+  // 🔴 THREE DISTINCT COVER STATES, AND COLLAPSING ANY PAIR IS A BUG THIS APP HAS
+  // ALREADY SHIPPED ONCE IN EACH DIRECTION (`nsfwLevel ?? 0` blurred every card;
+  // a later fix hid every unrated one):
+  //
+  //   NO COVER      — `coverNsfwLevel` ABSENT and `src` null. `toCoverFields`
+  //                   omits the key exactly when `coverImageUrl === null`, so the
+  //                   two always travel together. → placeholder, via `!src`.
+  //   UNRATED COVER — `coverNsfwLevel === 0`, a real level the server assigned and
+  //                   PERMITS at every ceiling. → PAINTED, badged "Unrated".
+  //   RATED COVER   — a level bit; painted iff it intersects the ceiling.
+  //
+  // An absent level arriving WITH a `src` is therefore only possible against a
+  // host predating civitai #4663. That is genuine unknowable input, so it is
+  // refused — the cover degrades to the placeholder rather than painting an image
+  // whose rating nobody stated. `withinCeiling` owns that distinction; the point
+  // here is that this branch must not be rewritten as `nsfwLevel ?? 0` or
+  // `!nsfwLevel`, either of which re-merges two of the three states.
   if (!src || failed || !withinCeiling(nsfwLevel, ceiling)) {
     return (
       <div style={coverPlaceholder(c)} aria-hidden="true" data-testid="cover-placeholder">

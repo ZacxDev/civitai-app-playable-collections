@@ -79,10 +79,6 @@ describe('withinCeiling — the one predicate the whole app renders from', () =>
     expect(withinCeiling(XXX, UP_TO_R)).toBe(false);
   });
 
-  it('a PERMISSIVE ceiling is not a licence: it still refuses an unrated (0) item', () => {
-    expect(withinCeiling(0, ALL)).toBe(false);
-  });
-
   it('FAILS CLOSED on an unknown CEILING (pre-BLOCK_INIT / a host that omits it) — SFW only', () => {
     for (const ceiling of [undefined, Number.NaN, Infinity]) {
       expect(withinCeiling(PG, ceiling)).toBe(true);
@@ -93,38 +89,76 @@ describe('withinCeiling — the one predicate the whole app renders from', () =>
     }
   });
 
-  it('FAILS CLOSED on an unrated / malformed ITEM level, under EVERY ceiling', () => {
+  // ---- an EXPLICIT UNRATED 0 is PERMITTED; UNKNOWABLE input is REFUSED -------
+  // 🔴 THESE TWO ARE THE SAME LINE OF CODE'S TWO HALVES, AND THEY MUST BE
+  // SEPARATELY WITNESSED. An earlier revision refused BOTH — stricter than the
+  // server, which is not "safe", it is the app overriding a platform decision, and
+  // it is worse than the blur it replaced (a blurred item was still reachable; a
+  // hidden one is gone). The server permits unrated at every ceiling:
+  //
+  //   <civitai>@origin/release block-collections.service.ts:193
+  //     AND ((i."nsfwLevel" & ${browsingLevel}) != 0 OR i."nsfwLevel" = 0)
+  //   ...and its own predicate, :359  `if (!nsfwLevel) return true;`
+  //
+  // Written the server's truthy way (`!nsfwLevel`) `undefined` and `NaN` would be
+  // permitted too. Any test that only checked ONE of these halves would pass with
+  // the two re-merged in either direction, which is precisely how this shipped.
+
+  it('🔴 an EXPLICIT UNRATED (0) item is PERMITTED, at EVERY ceiling incl. SFW (mirrors the server)', () => {
+    for (const ceiling of [undefined, SFW_LEVELS, UP_TO_R, ALL, Number.NaN]) {
+      expect(withinCeiling(0, ceiling)).toBe(true);
+    }
+  });
+
+  it('🔴 UNKNOWABLE input is REFUSED — absent/null/NaN/Infinity/negative are NOT the same as 0', () => {
     for (const ceiling of [undefined, SFW_LEVELS, UP_TO_R, ALL]) {
-      expect(withinCeiling(0, ceiling)).toBe(false);
+      expect(withinCeiling(undefined, ceiling)).toBe(false);
+      expect(withinCeiling(null, ceiling)).toBe(false);
       expect(withinCeiling(Number.NaN, ceiling)).toBe(false);
+      expect(withinCeiling(Infinity, ceiling)).toBe(false);
+      // 🔴 -5 & 3 === 3 in two's complement, so without an explicit sign guard a
+      // negative level would sail through the bitwise test as PERMITTED.
+      expect(withinCeiling(-5, ceiling)).toBe(false);
       expect(withinCeiling(-1, ceiling)).toBe(false);
     }
   });
 
-  it('FAILS CLOSED on an ABSENT level — no claim is not a permission', () => {
-    // The only field that can be absent is `CollectionSummary.coverNsfwLevel`.
+  it('🔴 THE PAIR, IN ONE ASSERTION: 0 and undefined must DISAGREE on every ceiling', () => {
+    // The anti-merge witness. Either collapse — refusing 0, or permitting absent —
+    // makes these two equal and fails here, whichever direction someone merges in.
     for (const ceiling of [undefined, SFW_LEVELS, ALL]) {
+      expect(withinCeiling(0, ceiling)).toBe(true);
       expect(withinCeiling(undefined, ceiling)).toBe(false);
+      expect(withinCeiling(0, ceiling)).not.toBe(withinCeiling(undefined, ceiling));
     }
   });
 
-  it('CONTAINMENT, not intersection: an OR-ed level needs EVERY bit permitted', () => {
-    // 3 = PG|PG13 fits a SFW ceiling; 5 = PG|R does not, even though it shares
-    // the PG bit. An `&` "intersects" test would wrongly permit the second.
+  it('🔴 INTERSECTION, not containment: a MIXED level sharing ONE permitted bit is permitted', () => {
+    // The server's test is bitwise `& != 0` and its own comment says why a `<=`
+    // (or a containment) test would be wrong: "29 is a mixed bucket that
+    // intersects a SFW ceiling". The SDK's `isLevelAllowed` is containment BY
+    // DESIGN — it answers "may I offer an R affordance?" for a single bit — so it
+    // is deliberately NOT used here. The two agree on every single-bit level and
+    // diverge only on OR-ed values, which is exactly what this pins.
     expect(withinCeiling(PG | PG13, SFW_LEVELS)).toBe(true);
-    expect(withinCeiling(PG | R, SFW_LEVELS)).toBe(false);
-    expect(withinCeiling(PG | R, UP_TO_R)).toBe(true);
+    expect(withinCeiling(PG | R, SFW_LEVELS)).toBe(true); // shares the PG bit
+    expect(withinCeiling(29, SFW_LEVELS)).toBe(true); // the server's own example
+    // …and a level sharing NO bit with the ceiling is still refused.
+    expect(withinCeiling(R | X, SFW_LEVELS)).toBe(false);
+    expect(withinCeiling(XXX, UP_TO_R)).toBe(false);
   });
 });
 
 describe('filterToCeiling', () => {
   const item = (id: number, nsfwLevel: number) => ({ id, nsfwLevel });
 
-  it('keeps only the permitted items, preserving order', () => {
+  it('keeps only the permitted items, preserving order — and item 5 is UNRATED, so it stays', () => {
     const items = [item(1, PG), item(2, X), item(3, PG13), item(4, R), item(5, 0)];
-    expect(filterToCeiling(items, SFW_LEVELS).map((i) => i.id)).toEqual([1, 3]);
-    expect(filterToCeiling(items, UP_TO_R).map((i) => i.id)).toEqual([1, 3, 4]);
-    expect(filterToCeiling(items, ALL).map((i) => i.id)).toEqual([1, 2, 3, 4]);
+    // 🔴 Item 5 (`nsfwLevel: 0`) survives EVERY ceiling. It used to be dropped
+    // from all three of these lists; that was the app overriding the server.
+    expect(filterToCeiling(items, SFW_LEVELS).map((i) => i.id)).toEqual([1, 3, 5]);
+    expect(filterToCeiling(items, UP_TO_R).map((i) => i.id)).toEqual([1, 3, 4, 5]);
+    expect(filterToCeiling(items, ALL).map((i) => i.id)).toEqual([1, 2, 3, 4, 5]);
   });
 
   it('is IDEMPOTENT — the surfaces re-apply it over an already-filtered list', () => {
@@ -133,8 +167,8 @@ describe('filterToCeiling', () => {
     expect(filterToCeiling(once, UP_TO_R)).toEqual(once);
   });
 
-  it('drops EVERYTHING above SFW when the ceiling is unknown', () => {
+  it('drops everything above SFW when the ceiling is unknown — but keeps the unrated one', () => {
     const items = [item(1, PG13), item(2, R), item(3, 0)];
-    expect(filterToCeiling(items, undefined).map((i) => i.id)).toEqual([1]);
+    expect(filterToCeiling(items, undefined).map((i) => i.id)).toEqual([1, 3]);
   });
 });

@@ -18,14 +18,22 @@
 //
 // So maturity is the viewer's own NSFW viewing level, set by the native control
 // in the civitai site header and enforced server-side. The app's job is to RENDER
-// that decision, never to re-ask it: an item the ceiling excludes is not shown at
-// all, and there is no affordance anywhere that reveals one.
+// that decision, never to re-ask it AND NEVER TO OVERRIDE IT: an item the ceiling
+// excludes is not shown at all, an item the ceiling permits IS shown, and there is
+// no affordance anywhere that reveals or conceals one.
+//
+// 🔴 "NEVER TO OVERRIDE IT" IS NOT DECORATION — being STRICTER than the server is
+// the same defect wearing safety colours. This file's first attempt hid every
+// unrated (`nsfwLevel === 0`) item, which the server permits at every ceiling; that
+// is worse than the blur it replaced, because a blurred item was still reachable.
+// `withinCeiling` below therefore mirrors the server's SQL exactly, with the
+// citation, and diverges only for wire values the server can never receive.
 //
 // Civitai `nsfwLevel` is a power-of-two tier (PG=1, PG-13=2, R=4, X=8, XXX=16);
 // values can be OR'd, so the badge buckets by the HIGHEST tier present. Pure +
 // tested.
 
-import { isLevelAllowed } from '@civitai/app-sdk/blocks';
+import { SFW_LEVELS } from '@civitai/app-sdk/blocks';
 
 export type MaturityBucket = 'pg' | 'pg13' | 'r' | 'x' | 'xxx' | 'unknown';
 
@@ -38,30 +46,64 @@ const XXX = 16;
  * Is an item at `nsfwLevel` permitted by the platform's `ceiling` bitmask?
  * This is the ONE predicate the whole app renders from.
  *
- * 🔴 FAILS CLOSED, THREE WAYS, AND ALL THREE ARE LOAD-BEARING:
- *   - an ABSENT level (`undefined`) is not a claim, so it is not permitted. The
- *     only field that can be absent is `CollectionSummary.coverNsfwLevel`, and
- *     against a #4663 host it is absent exactly when there is NO COVER, which the
- *     caller already renders as a placeholder tile. Against an older host it
- *     degrades a cover to that same placeholder rather than painting an image
- *     whose rating nobody stated.
- *   - an UNRATED / malformed level (`0`, `NaN`, negative) is not permitted, on
- *     every ceiling. Note this is deliberately STRICTER than the server, whose
- *     item query keeps `nsfwLevel = 0` rows; being stricter is the safe direction
- *     and matches what this app has always done with an unrated item.
- *   - an ABSENT ceiling (before `BLOCK_INIT` lands, or a host predating civitai
- *     #2670) permits SFW levels only. That posture is the SDK's, not ours —
- *     `isLevelAllowed` owns it, so the app cannot drift from the platform.
+ * 🔴 IT MIRRORS THE SERVER'S RULE, BECAUSE OVERRIDING THE SERVER IS THE EXACT
+ * BEHAVIOUR THIS FILE EXISTS TO REMOVE. Measured on `origin/release` in
+ * <civitai> `src/server/services/blocks/block-collections.service.ts`:
  *
- * The test is CONTAINMENT (`ceiling & level === level`), so an OR'd level is
- * permitted only when every bit it sets is permitted.
+ *     // the cover clamp (getFallbackCoverImages, ~line 193)
+ *     AND ((i."nsfwLevel" & ${browsingLevel}) != 0 OR i."nsfwLevel" = 0)
+ *
+ *     // the playable sample (~line 334) — the same test
+ *     OR (i."nsfwLevel" & ${browsingLevel}) != 0
+ *     OR i."nsfwLevel" = 0
+ *
+ *     // and its own TypeScript predicate, collectionWithinCeiling (~line 359)
+ *     if (!nsfwLevel) return true;
+ *     return Flags.intersects(nsfwLevel, browsingLevel);
+ *
+ * Two consequences, both of which an earlier revision of this function got wrong:
+ *
+ *   1. AN EXPLICIT UNRATED `0` IS PERMITTED, AT EVERY CEILING INCLUDING SFW. The
+ *      server has made a decision about it; hiding it would be the app
+ *      second-guessing that decision, and it is strictly worse than the blur it
+ *      replaced — a blurred item was at least reachable, a hidden one is gone.
+ *      `toCoverFields` publishes an unrated cover as the value `0` (~line 150),
+ *      so this is a real, common wire value, not an edge case.
+ *   2. THE TEST IS INTERSECTION, NOT CONTAINMENT. A MIXED bucket (e.g. 29) shares
+ *      a bit with a SFW ceiling and the server keeps it; a containment test would
+ *      drop it. That is why this does NOT use the SDK's `isLevelAllowed`, which is
+ *      containment by design — it answers "may I offer an R-rated AFFORDANCE?"
+ *      for one level bit, a different question from "may this ITEM be shown?".
+ *      The two agree on every single-bit level and diverge only on OR'd values.
+ *
+ * 🔴 STILL FAILS CLOSED ON GENUINELY UNKNOWABLE INPUT, AND THAT IS A DIFFERENT
+ * CASE FROM AN EXPLICIT `0` — conflating them is what produced the bug above.
+ *   - `undefined` / `null` / `NaN` / non-finite / negative → NOT permitted. An
+ *     absent value is US NOT KNOWING; `0` is a rating the server assigned. The
+ *     only field that can be absent is `CollectionSummary.coverNsfwLevel`, and per
+ *     civitai #4663 it is absent exactly when there is NO COVER (`toCoverFields`
+ *     omits it when `coverImageUrl === null`) — never for an unrated cover.
+ *   - an ABSENT CEILING (before `BLOCK_INIT`, or a host predating civitai #2670)
+ *     falls back to `SFW_LEVELS`, the SDK's own fail-closed default, so the
+ *     constant stays single-sourced from the platform.
+ *
+ * 🔴 NOTE THE DELIBERATE DIVERGENCE FROM THE SERVER'S `if (!nsfwLevel)`. That is
+ * TRUTHINESS, so it would also permit `undefined` and `NaN`. It is correct there —
+ * the argument is a non-null database column — and wrong here, where the value
+ * arrives over the wire from a host that may predate the field. Identical for
+ * every value the server can produce; tighter only for inputs it never has.
  */
 export function withinCeiling(
-  nsfwLevel: number | undefined,
+  nsfwLevel: number | undefined | null,
   ceiling: number | undefined,
 ): nsfwLevel is number {
-  if (nsfwLevel === undefined) return false;
-  return isLevelAllowed(nsfwLevel, ceiling);
+  // UNKNOWABLE first — this ordering is the whole guard. Written the server's way
+  // (`if (!nsfwLevel) return true`) an absent level would be permitted.
+  if (typeof nsfwLevel !== 'number' || !Number.isFinite(nsfwLevel) || nsfwLevel < 0) return false;
+  // An explicit unrated level. The server permits it on every ceiling; so do we.
+  if (nsfwLevel === 0) return true;
+  const mask = typeof ceiling === 'number' && Number.isFinite(ceiling) ? ceiling : SFW_LEVELS;
+  return (nsfwLevel & mask) !== 0;
 }
 
 /** Drop every item the ceiling excludes. The list a surface may render. */
@@ -74,9 +116,10 @@ export function filterToCeiling<T extends { nsfwLevel: number }>(
 
 /** Bucket a raw `nsfwLevel` bitmask into its highest maturity tier. */
 export function maturityBucket(nsfwLevel: number): MaturityBucket {
-  // Total over every number, so `0` / malformed has to map somewhere. Such an
-  // item is never rendered (`withinCeiling` refuses it), so this bucket reaches
-  // a badge only if a future caller labels something it did not first permit.
+  // 🔴 `unknown` IS A LIVE, REACHABLE BUCKET. An unrated `0` is PERMITTED (see
+  // `withinCeiling`), so it renders — and it renders badged "Unrated", which is
+  // the honest label for a level the server assigned no tier to. Malformed input
+  // maps here too, but never reaches a badge, because it is never permitted.
   if (!Number.isFinite(nsfwLevel) || nsfwLevel <= 0) return 'unknown';
   const n = nsfwLevel;
   if (n >= XXX) return 'xxx';

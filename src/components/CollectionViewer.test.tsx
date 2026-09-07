@@ -312,15 +312,26 @@ describe('CollectionViewer — the classic Player renders from the host ceiling'
     expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1');
   });
 
-  it('🔴 FAIL CLOSED — an UNRATED (0) item is refused even on an all-levels ceiling', async () => {
-    // A permissive domain is not a licence. `MediaItem.nsfwLevel` is required, so
-    // a 0 here is a real "unrated", and the app is stricter than the server's item
-    // query (which keeps unrated rows) in the safe direction.
+  it('🔴 an UNRATED (0) item RENDERS, on a SFW ceiling, badged "Unrated"', async () => {
+    // 🔴 REVERSED FROM ITS FIRST VERSION, WHICH ASSERTED THE OPPOSITE. That test
+    // pinned "an unrated item is refused even on an all-levels ceiling" and called
+    // it the safe direction. It was not safe, it was the app OVERRIDING the
+    // server, which permits unrated at every ceiling
+    // (<civitai>@origin/release block-collections.service.ts:193, :359) — and it
+    // was worse than the blur it replaced, because a blurred item was at least
+    // reachable. A 0 is a rating the server assigned; refusing it is not caution.
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, 0), img(2)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2'));
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', mature(1, 0).url);
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
+  });
+
+  it('🔴 an unrated (0) item renders on an ALL-LEVELS ceiling too — the level, not the ceiling, decides it', async () => {
     renderAtCeiling(CEILING_ALL, { items: [mature(1, 0), img(2)] });
     await settled();
-    await waitFor(() => expect(screen.getByTestId('media-image')).toHaveAttribute('src', img(2).url));
-    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1');
-    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2'));
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 
   it('🔴 FAIL CLOSED — an ANONYMOUS viewer on a host that projects no ceiling: SFW only', async () => {

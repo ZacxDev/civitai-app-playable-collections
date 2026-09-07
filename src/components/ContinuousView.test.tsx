@@ -123,11 +123,17 @@ describe('ContinuousView — content maturity is the HOST ceiling, not a local b
     expect(screen.getAllByTestId('continuous-image')[0]).not.toHaveStyle({ filter: 'blur(36px)' });
   });
 
-  it('🔴 FAIL CLOSED — an unrated (0) tile is absent even though 0 is "not mature"', () => {
+  it('🔴 an UNRATED (0) tile RENDERS on a SFW ceiling, badged "Unrated"', () => {
+    // 🔴 REVERSED: this asserted the tile was ABSENT. The server permits unrated at
+    // every ceiling (block-collections.service.ts:193, :359), so hiding it was the
+    // app overriding the platform — and strictly worse than the blur it replaced.
+    // No <Harness> here, i.e. the STRICTEST (fail-closed SFW) ceiling, which is
+    // where a wrongly-strict rule would show up first.
     renderView({ items: [at(0, 1), img(2)], reducedMotion: true });
     const tiles = screen.getAllByTestId('continuous-tile');
-    expect(tiles).toHaveLength(1);
-    expect(tiles[0]).toHaveAttribute('data-media-id', '2');
+    expect(tiles).toHaveLength(2);
+    expect(tiles.map((t) => t.getAttribute('data-media-id'))).toEqual(['1', '2']);
+    expect(screen.getAllByTestId('maturity-badge')[0]).toHaveTextContent('Unrated');
   });
 
   // ---- the ceiling and the item disagree, in both directions ---------------
