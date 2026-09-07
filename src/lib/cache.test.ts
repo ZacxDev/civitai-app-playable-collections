@@ -36,14 +36,15 @@ function detailPage(id: number): CollectionPage {
 function makeInner() {
   const listImpl = vi.fn(async (): Promise<Page<CollectionSummary>> => ({ items: [summary(1)] }));
   const getImpl = vi.fn(async (id: number): Promise<CollectionPage> => detailPage(id));
-  const setFollowImpl = vi.fn(async (_id: number, follow: boolean) => ({ followed: follow }));
+  const tipImpl = vi.fn(async () => ({ ok: true as const }));
+  const allowanceImpl = vi.fn(async () => ({ cap: 25000, spent: 0, remaining: 25000 }));
   const inner = {
     listCollections: listImpl,
     getCollection: getImpl,
-    setFollow: setFollowImpl,
-    tip: vi.fn(),
+    tip: tipImpl,
+    getTipAllowance: allowanceImpl,
   } as unknown as ApiClient;
-  return { inner, listImpl, getImpl, setFollowImpl };
+  return { inner, listImpl, getImpl, tipImpl, allowanceImpl };
 }
 
 describe('createCachedApiClient', () => {
@@ -99,16 +100,33 @@ describe('createCachedApiClient', () => {
     expect(inner.listCollections).toHaveBeenCalledTimes(2);
   });
 
-  it('setFollow invalidates the read caches (post-follow reads are fresh)', async () => {
+  it('invalidateReads() drops BOTH read caches (post-follow reads are fresh)', async () => {
     const { inner, listImpl, getImpl } = makeInner();
     const api = createCachedApiClient(inner);
     await api.listCollections({ mode: 'public' });
     await api.getCollection(5, { limit: 100 });
-    await api.setFollow(5, true);
+    // Was `api.setFollow(5, true)` until 0.2.10. Following moved to the host
+    // bridge and never reaches this client, so the invalidation it used to get
+    // for free is now an explicit call the caller owes — App makes it from the
+    // follow `onChange`.
+    api.invalidateReads();
     await api.listCollections({ mode: 'public' }); // cache cleared → re-fetch
     await api.getCollection(5, { limit: 100 }); // cache cleared → re-fetch
     expect(listImpl).toHaveBeenCalledTimes(2);
     expect(getImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('WITHOUT invalidateReads a stale followed flag would be served — the control', async () => {
+    // 🔴 The negative arm. Without it the test above passes even if
+    // `invalidateReads` were a no-op and the caches simply never cached.
+    const { inner, listImpl, getImpl } = makeInner();
+    const api = createCachedApiClient(inner);
+    await api.listCollections({ mode: 'public' });
+    await api.getCollection(5, { limit: 100 });
+    await api.listCollections({ mode: 'public' });
+    await api.getCollection(5, { limit: 100 });
+    expect(listImpl).toHaveBeenCalledTimes(1);
+    expect(getImpl).toHaveBeenCalledTimes(1);
   });
 
   it('expires an entry after ttlMs', async () => {
@@ -125,10 +143,14 @@ describe('createCachedApiClient', () => {
   });
 
   it('passes non-read methods straight through', async () => {
-    const { inner, setFollowImpl } = makeInner();
+    const { inner, tipImpl, allowanceImpl } = makeInner();
     const api = createCachedApiClient(inner);
-    const res = await api.setFollow(9, true);
-    expect(res).toEqual({ followed: true });
-    expect(setFollowImpl).toHaveBeenCalledWith(9, true);
+    await api.tip({ toUserId: 9, amount: 10 });
+    expect(tipImpl).toHaveBeenCalledWith({ toUserId: 9, amount: 10 });
+    // 🔴 The allowance must NOT be cached: it changes on every tip, and serving
+    // a stale one is how a viewer gets refused for Buzz they actually have.
+    await api.getTipAllowance();
+    await api.getTipAllowance();
+    expect(allowanceImpl).toHaveBeenCalledTimes(2);
   });
 });

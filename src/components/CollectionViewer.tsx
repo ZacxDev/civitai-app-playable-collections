@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Button, Card, Slider } from '@civitai/blocks-react/ui';
+import { Button, Card, FollowButton, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
@@ -49,8 +49,10 @@ export interface CollectionViewerProps {
   viewerUserId: number | null;
   buzzBalance: number | null;
   followed: boolean;
-  followPending: boolean;
-  onToggleFollow: () => void;
+  /** Adopt the host's echo after a confirmed follow write (host bridge). */
+  onFollowChange: (followed: boolean) => void;
+  /** Surface a renderable message from the follow bridge (Player's rail). */
+  onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
   /** Prompt a logged-out viewer to sign in (tipping requires an account). */
   onRequestSignIn?: () => void;
@@ -94,8 +96,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
     viewerUserId,
     buzzBalance,
     followed,
-    followPending,
-    onToggleFollow,
+    onFollowChange,
+    onNotice,
     onTip,
     onRequestSignIn,
     tipping,
@@ -339,16 +341,28 @@ export function CollectionViewer(props: CollectionViewerProps) {
           >
             {paused ? '▶ Resume' : '⏸ Pause'}
           </Button>
-          <Button
+          {/* 🔴 UPSTREAM CONTROL, NOT A HAND-ROLLED ONE (0.2.10). This row's
+              button was already a `Button` with the same size + variant shape,
+              so adopting `FollowButton` costs no visual change here and buys the
+              three outcomes a hand-rolled follow reliably gets wrong: `declined`
+              renders NOTHING (the viewer dismissed the host's confirm — the old
+              code toasted an error at them), `sign-in-required` routes to
+              sign-in rather than an error line, and the optimistic flip is
+              replaced by the HOST'S ECHO instead of the guess.
+
+              `variant` names the NOT-following state; the following state is
+              always `light` upstream so the two are distinguishable without
+              reading the label. That inverts this app's old filled/outline
+              pairing, which is the one deliberate visual delta. */}
+          <FollowButton
             size="sm"
-            variant={followed ? 'filled' : 'outline'}
-            onClick={onToggleFollow}
-            disabled={followPending}
-            aria-pressed={followed}
+            variant="outline"
+            collectionId={detail.id}
+            collectionName={detail.name}
+            followed={followed}
+            onChange={onFollowChange}
             data-testid="chrome-follow"
-          >
-            {followed ? '★ Following' : '☆ Follow'}
-          </Button>
+          />
           <Button
             size="sm"
             variant="light"
@@ -485,8 +499,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onPositionChange={onClassicPosition}
             showSettingsControl={false}
             followed={followed}
-            followPending={followPending}
-            onToggleFollow={onToggleFollow}
+            onFollowChange={onFollowChange}
+            onNotice={onNotice}
             onTip={onTip}
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}
@@ -542,8 +556,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
             muted={prefs.muted}
             initialItemIndex={lightboxIndex}
             followed={followed}
-            followPending={followPending}
-            onToggleFollow={onToggleFollow}
+            onFollowChange={onFollowChange}
+            onNotice={onNotice}
             onTip={onTip}
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}

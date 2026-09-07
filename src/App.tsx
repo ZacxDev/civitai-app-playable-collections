@@ -54,7 +54,7 @@ import {
 } from '@civitai/blocks-react/ui';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
-import { createCachedApiClient } from './lib/cache.js';
+import { createCachedApiClient, type CachedApiClient } from './lib/cache.js';
 import { readPopular, recordPlay, resolvePopularEntries, summaryFromPage, totalBuzz, type ResolvedPopular } from './lib/popular.js';
 import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
@@ -240,7 +240,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // collection is instant and doesn't re-hit the private,no-store origin. The
   // cache is bound to this memo (per host+token), and follow mutations clear it.
   // Media/CDN image URLs still browser-cache normally (untouched).
-  const realApi = useMemo<ApiClient | null>(
+  const realApi = useMemo<CachedApiClient | null>(
     () =>
       host && tokenRaw
         ? createCachedApiClient(
@@ -254,6 +254,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     [host, tokenRaw],
   );
   const api = injectedApi ?? realApi;
+  // Only the REAL client is cache-wrapped; an injected fake (tests / dev
+  // harness) has no cache to drop, so follow invalidation is a no-op there —
+  // correctly, since there is nothing stale to serve.
+  const cachedApi = injectedApi ? null : realApi;
   // Data-fetching is gated on a usable client (injected fake, or the real client
   // once host+token are established).
   const canFetch = api != null;
@@ -290,7 +294,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   const [openMorePending, setOpenMorePending] = useState(false);
   const openMorePendingRef = useRef(false);
   openMorePendingRef.current = openMorePending;
-  const [followPending, setFollowPending] = useState(false);
   const [tipping, setTipping] = useState(false);
   // Synchronous double-tip guard. `setTipping(true)` only disables the button on
   // the NEXT render; a fast double-click can fire two `doTip` calls before that
@@ -629,35 +632,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
 
   const exitPlayer = useCallback(() => setOpen(null), []);
 
-  // ---- follow toggle (optimistic + rollback) ----
-  const toggleFollow = useCallback(async () => {
-    if (!open || !api) return;
-    if (!viewer) {
-      requestSignIn();
-      return;
-    }
-    const nextFollowed = !open.followed;
-    setOpen((o) => (o ? { ...o, followed: nextFollowed } : o));
-    setFollowPending(true);
-    try {
-      const res = await api.setFollow(open.detail.id, nextFollowed);
-      setOpen((o) => (o ? { ...o, followed: res.followed } : o));
-      analytics.track({ type: 'follow', collectionId: open.detail.id, followed: res.followed });
-      // Keep the grid card badge in sync.
-      applyFollowedToLists(open.detail.id, res.followed);
-      // One consistent verb — "follow" — across the button (Follow/Following) and
-      // both toasts (dogfood: it was previously described three different ways).
-      toasts.push('success', res.followed ? 'Following this collection.' : 'Unfollowed this collection.');
-    } catch (err) {
-      // rollback
-      setOpen((o) => (o ? { ...o, followed: !nextFollowed } : o));
-      toasts.push('error', errMessage(err));
-    } finally {
-      setFollowPending(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, viewer, api, requestSignIn, toasts, analytics]);
-
   const applyFollowedToLists = useCallback((id: number, followed: boolean) => {
     const patch = (s: ListState): ListState => ({
       ...s,
@@ -666,6 +640,38 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     setDiscover(patch);
     setMine(patch);
   }, []);
+
+  // ---- follow: adopt the host's echo ----
+  //
+  // 🔴 THE OPTIMISTIC-FLIP-AND-ROLLBACK BLOCK THAT LIVED HERE IS GONE, AND ITS
+  // REMOVAL IS THE POINT (0.2.10). Following runs through the host-mediated
+  // `SET_COLLECTION_FOLLOW` bridge now, so the write, the optimism, the rollback
+  // and the sign-in bounce all belong to the control that owns the request
+  // (`FollowButton` upstream, `useFollowToggle` for the player's glyph rail).
+  // App keeps only what is genuinely app state: the flag, the two lists that
+  // render a badge from it, and the analytics event.
+  //
+  // 🔴 The old block treated EVERY rejection as an error toast, which the bridge
+  // makes wrong: dismissing the host's consent dialog rejects with `declined`,
+  // and the viewer who just chose "no" would have been told the app failed.
+  const onFollowChange = useCallback(
+    (followed: boolean) => {
+      setOpen((o) => (o ? { ...o, followed } : o));
+      const id = openRef.current?.detail.id;
+      if (id == null) return;
+      analytics.track({ type: 'follow', collectionId: id, followed });
+      // Keep the grid card badge in sync.
+      applyFollowedToLists(id, followed);
+      // 🔴 AND DROP THE CACHED READS. `followed` is embedded in both the cached
+      // list and detail payloads. The cache wrapper used to do this for us by
+      // intercepting `api.setFollow`; the bridge never touches the client, so
+      // without this call re-opening the collection serves the pre-follow flag
+      // and the badge silently disagrees with the button.
+      cachedApi?.invalidateReads();
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [analytics, applyFollowedToLists, cachedApi],
+  );
 
   // ---- tip flow ----
   const doTip = useCallback(
@@ -760,8 +766,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           viewerUserId={viewer?.id ?? null}
           buzzBalance={balance}
           followed={open.followed}
-          followPending={followPending}
-          onToggleFollow={toggleFollow}
+          onFollowChange={onFollowChange}
+          onNotice={(kind, message) => toasts.push(kind, message)}
           onTip={doTip}
           onRequestSignIn={() => requestSignIn()}
           tipping={tipping}

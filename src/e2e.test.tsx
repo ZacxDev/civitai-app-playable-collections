@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { Harness } from '@civitai/blocks-react/testing';
+import { Harness, type HarnessProps } from '@civitai/blocks-react/testing';
 import type { ViewerInfo } from '@civitai/app-sdk/blocks';
 
 import { App } from './App.js';
@@ -10,9 +10,17 @@ import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi, type FakeApi } from './fake-api.js';
 import type { TipResult } from './types.js';
 
-async function openNeon(api: ApiClient, viewer: ViewerInfo | null = { id: 99, username: 'me' }) {
+async function openNeon(
+  api: ApiClient,
+  viewer: ViewerInfo | null = { id: 99, username: 'me' },
+  // Mock-host knobs. `HarnessProps extends MockHostOptions`, so a host-side
+  // refusal (e.g. `collectionFollowError`) is driven from HERE now — following
+  // no longer goes through the injected `api`, so a throwing fake cannot
+  // reach it.
+  hostOptions: Partial<HarnessProps> = {},
+) {
   render(
-    <Harness viewer={viewer} theme="dark" showLog={false}>
+    <Harness viewer={viewer} theme="dark" showLog={false} {...hostOptions}>
       <App api={api} />
     </Harness>,
   );
@@ -222,14 +230,23 @@ describe('tip caps + rate limiting (ship-blocker #2)', () => {
 });
 
 describe('follow toggle', () => {
-  it('optimistically follows then confirms', async () => {
+  it('follows through the HOST BRIDGE and adopts the echo', async () => {
+    // 🔴 THIS USED TO ASSERT `api.__isFollowed(101)` AND THAT OBSERVABLE IS GONE
+    // ON PURPOSE. The fake ApiClient's follow map was the old HTTP path's
+    // server-side state; a bridge follow never touches the injected client, so
+    // the map stays false forever and the old assertion would fail against a
+    // perfectly working feature. The mock host deliberately keeps NO follow map
+    // either — it echoes the request — so the only honest observable is the UI
+    // adopting that echo.
     const api = createFakeApi({ viewerUserId: 99 }) as FakeApi;
     await openNeon(api);
     const btn = screen.getByTestId('follow-toggle');
     expect(btn).toHaveAttribute('aria-pressed', 'false');
     await userEvent.click(btn);
-    await waitFor(() => expect(api.__isFollowed(101)).toBe(true));
-    expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'true'));
+    // The fake client is NOT the path any more — pin that, so a silent
+    // regression back to the HTTP follow fails here instead of shipping.
+    expect(api.__isFollowed(101)).toBe(false);
   });
 
   it('uses ONE consistent "follow" verb across the button and both toasts (dogfood: described 3 ways)', async () => {
@@ -250,20 +267,40 @@ describe('follow toggle', () => {
     expect(screen.queryByText(/bookmark/i)).toBeNull();
   });
 
-  it('rolls back on a follow error', async () => {
-    const base = createFakeApi({ viewerUserId: 99 });
-    const api: ApiClient = {
-      ...base,
-      async setFollow() {
-        throw new ApiError('forbidden', 403, 'nope');
-      },
-    };
-    await openNeon(api);
-    const btn = screen.getByTestId('follow-toggle');
-    await userEvent.click(btn);
-    // optimistic true, then rollback to false + error toast
+  it('stays unfollowed and shows the error when the HOST refuses', async () => {
+    // The refusal is now HOST-side, not a throwing ApiClient — following does
+    // not touch the injected fake at all since 0.2.10.
+    await openNeon(createFakeApi({ viewerUserId: 99 }), { id: 99, username: 'me' }, {
+      collectionFollowError: 'You do not have permission to follow that collection.',
+    });
+    await userEvent.click(screen.getByTestId('follow-toggle'));
     await waitFor(() => expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'false'));
     expect(await screen.findByTestId('toast-error')).toBeInTheDocument();
+  });
+
+  it('🔴 a DECLINED follow says NOTHING — the viewer chose no, the app did not fail', async () => {
+    // The single most important behaviour change in 0.2.10. Every press now
+    // opens a host consent dialog, and dismissing it rejects with `declined`.
+    // The pre-0.2.10 code toasted `errMessage(err)` for every rejection, so a
+    // viewer who declined would have been told the app failed — which reads as
+    // a broken consent prompt.
+    await openNeon(createFakeApi({ viewerUserId: 99 }), { id: 99, username: 'me' }, {
+      collectionFollowError: 'declined',
+    });
+    await userEvent.click(screen.getByTestId('follow-toggle'));
+    await waitFor(() => expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'false'));
+    // No error toast, and no success toast either.
+    expect(screen.queryByTestId('toast-error')).toBeNull();
+    expect(screen.queryByText('Following this collection.')).toBeNull();
+  });
+
+  it('a follow refusal for a MISSING SESSION routes to sign-in, not an error', async () => {
+    await openNeon(createFakeApi({ viewerUserId: 99 }), { id: 99, username: 'me' }, {
+      collectionFollowError: 'sign-in-required',
+    });
+    await userEvent.click(screen.getByTestId('follow-toggle'));
+    await waitFor(() => expect(screen.getByTestId('follow-toggle')).toHaveAttribute('aria-pressed', 'false'));
+    expect(screen.queryByTestId('toast-error')).toBeNull();
   });
 });
 

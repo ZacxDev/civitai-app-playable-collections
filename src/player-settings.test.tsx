@@ -39,8 +39,8 @@ function Wrapper({ items }: { items: MediaItem[] }) {
       viewerUserId={99}
       buzzBalance={100}
       followed={false}
-      followPending={false}
-      onToggleFollow={() => {}}
+      
+      onFollowChange={() => {}} onNotice={() => {}}
       onTip={async () => true}
       tipping={false}
       isMobile={false}

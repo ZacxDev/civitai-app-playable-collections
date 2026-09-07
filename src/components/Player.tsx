@@ -15,6 +15,7 @@ import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
 import type { Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
+import { useFollowToggle } from '../lib/follow.js';
 import { shouldBlur } from '../lib/maturity.js';
 import { useMatureGate } from '../lib/mature-session.js';
 import { iconBtn } from './styles.js';
@@ -49,8 +50,15 @@ export interface PlayerProps {
    * embedding viewer hides it in classic mode because its toolbar owns them. */
   showSettingsControl?: boolean;
   followed: boolean;
-  followPending: boolean;
-  onToggleFollow: () => void;
+  /**
+   * Adopt the HOST's echo after a confirmed follow write. Following runs through
+   * the host bridge now (no `collections:write:self` scope), so there is no
+   * app-side pending flag to pass in — `useFollowToggle` owns that window,
+   * which includes the time the viewer spends in the host's consent dialog.
+   */
+  onFollowChange: (followed: boolean) => void;
+  /** Surface a renderable message (a real server error, or a timeout notice). */
+  onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
   /** Perform the tip. Resolves true on success (Player then marks it tipped). */
   onTip: (target: TipTarget, amount: number) => Promise<boolean>;
   /**
@@ -91,8 +99,8 @@ export function Player(props: PlayerProps) {
     onPositionChange,
     showSettingsControl = true,
     followed,
-    followPending,
-    onToggleFollow,
+    onFollowChange,
+    onNotice,
     onTip,
     onRequestSignIn,
     tipping,
@@ -106,6 +114,18 @@ export function Player(props: PlayerProps) {
     loadingMore = false,
     onLoadMore,
   } = props;
+
+  // The app's single follow action. Note it is NOT gated on `viewerUserId` here
+  // the way tipping is: the host answers an anonymous follow with
+  // `sign-in-required`, which routes into the same sign-in request, so gating
+  // locally would only duplicate a decision the host already makes correctly.
+  const follow = useFollowToggle({
+    collectionId: detail.id,
+    followed,
+    onChange: onFollowChange,
+    onSignInRequired: () => onRequestSignIn?.(),
+    onNotice,
+  });
 
   const player = usePlayer({
     items,
@@ -447,9 +467,9 @@ export function Player(props: PlayerProps) {
             c={c}
             glyph={followed ? '★' : '☆'}
             label={followed ? 'Following' : 'Follow collection'}
-            disabled={followPending}
+            disabled={follow.pending}
             active={followed}
-            onClick={onToggleFollow}
+            onClick={follow.toggle}
             testid="follow-toggle"
           />
         </div>
