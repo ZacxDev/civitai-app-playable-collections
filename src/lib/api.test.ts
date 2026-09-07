@@ -113,7 +113,8 @@ describe('getCollection', () => {
 
 // 🔴 THE `setFollow` SUITE IS GONE BECAUSE THE METHOD IS (0.2.10), not because
 // following stopped being tested. It moved to the host `SET_COLLECTION_FOLLOW`
-// bridge, which is exercised in lib/follow.test.ts against the SDK mock host.
+// bridge. Its branch selection is pinned in lib/follow.test.tsx, and the wiring
+// end-to-end in e2e.test.tsx against the SDK mock host.
 // This guard keeps the HTTP path from being quietly reintroduced: re-adding it
 // would need `collections:write:self`, which the manifest no longer declares, so
 // it would 403 in production while passing every test written against a fake.
