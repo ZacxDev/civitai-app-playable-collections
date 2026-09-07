@@ -1,10 +1,10 @@
 {
   "$schema": "https://civitai.com/schemas/app-block/v1.json",
   "blockId": "playable-collections",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "name": "Playable Collections",
   "tagline": "Press play on a collection.",
-  "description": "Open any Civitai collection and it plays straight through, images and videos alike.\n\nPick how it plays. Slideshow shows one item at a time and auto-advances, Ticker drifts sideways, Wall scrolls upward as a column feed. Set the seconds per image, the video loop count and the drift speed, shuffle the order, or narrow it to images or videos only. Play, pause, skip, scrub and go fullscreen from the transport bar, the arrow keys or a swipe. Ambient mode hides every control for passive, full-screen playback.\n\nBrowse public collections by most-followed or newest, search as you type, and keep scrolling for more. Sign in to reach your own — private ones included, once you grant access. Each collection you play counts as one vote per viewer, and a Popular rail builds out of those votes as more people use the app.\n\nAnything rated above PG-13 stays blurred until you confirm once that you're 18+. Follow a collection to keep it. The only Buzz the app spends is a tip you send — to the creator of the media on screen, or to the collection's curator — up to 5,000 Buzz per tip, with the amount picked and confirmed by you first.",
+  "description": "Open any Civitai collection and it plays straight through, images and videos alike.\n\nPick how it plays. Slideshow shows one item at a time and auto-advances, Ticker drifts sideways, Wall scrolls upward as a column feed. Set the seconds per image, the video loop count and the drift speed, shuffle the order, or narrow it to images or videos only. Play, pause, skip, scrub and go fullscreen from the transport bar, the arrow keys or a swipe. Ambient mode hides every control for passive, full-screen playback.\n\nBrowse public collections by most-followed or newest, search as you type, and keep scrolling for more. Sign in to reach your own \u2014 private ones included, once you grant access. Each collection you play counts as one vote per viewer, and a Popular rail builds out of those votes as more people use the app.\n\nAnything rated above PG-13 stays blurred until you confirm once that you're 18+. Follow a collection to keep it \u2014 Civitai asks you to confirm each follow itself, so the app never writes to your collections on its own. The only Buzz the app spends is a tip you send \u2014 to the creator of the media on screen, to the collection's curator, or split between the two \u2014 up to 5,000 Buzz per tip in total, with the amount and the split picked and confirmed by you first.",
   "type": "block",
   "bootSkeleton": true,
   "category": "discovery",
@@ -12,7 +12,6 @@
   "scopes": [
     "collections:read:self",
     "collections:read:private",
-    "collections:write:self",
     "social:tip:self",
     "buzz:read:self",
     "apps:storage:shared:read",

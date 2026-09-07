@@ -21,6 +21,7 @@ import type {
   CollectionSummary,
   ListCollectionsParams,
   Page,
+  TipAllowance,
   TipInput,
   TipResult,
 } from '../types.js';
@@ -57,11 +58,23 @@ export interface ApiClient {
   listCollections(params: ListCollectionsParams): Promise<Page<CollectionSummary>>;
   /** GET /blocks/collections/[id]?cursor&limit — scope collections:read:self */
   getCollection(id: number, opts?: { cursor?: string; limit?: number }): Promise<CollectionPage>;
-  /** POST /blocks/collections/[id]/follow — scope collections:write:self */
-  setFollow(id: number, follow: boolean): Promise<{ followed: boolean }>;
   /** POST /blocks/tip — scope social:tip:self */
   tip(input: TipInput): Promise<TipResult>;
+  /**
+   * GET /blocks/tip-allowance — scope social:tip:self (already held for `tip`).
+   * The viewer's REAL remaining daily allowance, replacing the app-local
+   * localStorage estimate that was inert in the sandbox. See `TipAllowance`.
+   */
+  getTipAllowance(): Promise<TipAllowance>;
 }
+// 🔴 `setFollow` IS DELIBERATELY GONE, NOT MISSING (0.2.10). Following moved to
+// the host-mediated `SET_COLLECTION_FOLLOW` bridge (`FollowButton` /
+// `useCollectionFollow` from @civitai/blocks-react), which needs NO block scope
+// and NO token: the host calls the session-authed procedure and self-binds the
+// viewer server-side. That let the manifest drop `collections:write:self`.
+// Re-adding an HTTP follow here would reintroduce a scope the app no longer
+// declares, so the call would 403 — and it would skip the host's per-action
+// consent confirm, which is the only consent this path has ever had.
 // NOTE: the viewer's Buzz balance and the cross-user "popular" play-counts are
 // NOT part of this HTTP client. They go through the host-mediated postMessage
 // bridges instead: `useBuzzBalance()` (scope-free GET_BUZZ_BALANCE) and
@@ -99,8 +112,14 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 const PATHS = {
   collections: '/api/v1/blocks/collections',
   collection: (id: number) => `/api/v1/blocks/collections/${id}`,
-  follow: (id: number) => `/api/v1/blocks/collections/${id}/follow`,
   tip: '/api/v1/blocks/tip',
+  // Same origin + bearer + scope as `tip`; the path upstream's `useTipAllowance`
+  // uses. Routed through this client rather than that hook on purpose — the hook
+  // raw-`fetch`es, which would bypass the injected fake every test and the dev
+  // harness depend on, and would lose this client's ApiError taxonomy
+  // (`insufficient_balance` / `rate_limited` + Retry-After / `network`) that the
+  // tip UX branches on.
+  tipAllowance: '/api/v1/blocks/tip-allowance',
 } as const;
 
 /**
@@ -205,15 +224,12 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
       });
     },
 
-    async setFollow(id, follow) {
-      return request<{ followed: boolean }>(PATHS.follow(id), {
-        method: 'POST',
-        body: { follow },
-      });
-    },
-
     async tip(input) {
       return request<TipResult>(PATHS.tip, { method: 'POST', body: input });
+    },
+
+    async getTipAllowance() {
+      return request<TipAllowance>(PATHS.tipAllowance, {});
     },
   };
 }
