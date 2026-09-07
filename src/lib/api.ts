@@ -21,6 +21,7 @@ import type {
   CollectionSummary,
   ListCollectionsParams,
   Page,
+  TipAllowance,
   TipInput,
   TipResult,
 } from '../types.js';
@@ -57,11 +58,23 @@ export interface ApiClient {
   listCollections(params: ListCollectionsParams): Promise<Page<CollectionSummary>>;
   /** GET /blocks/collections/[id]?cursor&limit — scope collections:read:self */
   getCollection(id: number, opts?: { cursor?: string; limit?: number }): Promise<CollectionPage>;
-  /** POST /blocks/collections/[id]/follow — scope collections:write:self */
-  setFollow(id: number, follow: boolean): Promise<{ followed: boolean }>;
   /** POST /blocks/tip — scope social:tip:self */
   tip(input: TipInput): Promise<TipResult>;
+  /**
+   * GET /blocks/tip-allowance — scope social:tip:self (already held for `tip`).
+   * The viewer's REAL remaining daily allowance, replacing the app-local
+   * localStorage estimate that was inert in the sandbox. See `TipAllowance`.
+   */
+  getTipAllowance(): Promise<TipAllowance>;
 }
+// 🔴 `setFollow` IS DELIBERATELY GONE, NOT MISSING (0.2.10). Following moved to
+// the host-mediated `SET_COLLECTION_FOLLOW` bridge (`FollowButton` /
+// `useCollectionFollow` from @civitai/blocks-react), which needs NO block scope
+// and NO token: the host calls the session-authed procedure and self-binds the
+// viewer server-side. That let the manifest drop `collections:write:self`.
+// Re-adding an HTTP follow here would reintroduce a scope the app no longer
+// declares, so the call would 403 — and it would skip the host's per-action
+// consent confirm, which is the only consent this path has ever had.
 // NOTE: the viewer's Buzz balance and the cross-user "popular" play-counts are
 // NOT part of this HTTP client. They go through the host-mediated postMessage
 // bridges instead: `useBuzzBalance()` (scope-free GET_BUZZ_BALANCE) and
@@ -99,8 +112,14 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
 const PATHS = {
   collections: '/api/v1/blocks/collections',
   collection: (id: number) => `/api/v1/blocks/collections/${id}`,
-  follow: (id: number) => `/api/v1/blocks/collections/${id}/follow`,
   tip: '/api/v1/blocks/tip',
+  // Same origin + bearer + scope as `tip`; the path upstream's `useTipAllowance`
+  // uses. Routed through this client rather than that hook on purpose — the hook
+  // raw-`fetch`es, which would bypass the injected fake every test and the dev
+  // harness depend on, and would lose this client's ApiError taxonomy
+  // (`insufficient_balance` / `rate_limited` + Retry-After / `network`) that the
+  // tip UX branches on.
+  tipAllowance: '/api/v1/blocks/tip-allowance',
 } as const;
 
 /**
@@ -138,51 +157,103 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
     if (token) headers.Authorization = `Bearer ${token}`;
     if (init.body !== undefined) headers['Content-Type'] = 'application/json';
 
-    // Per-request abort ceiling: a hung fetch is aborted after `timeoutMs` so a
+    // Per-request abort ceiling: a hung request is aborted after `timeoutMs` so a
     // single stalled request can't wedge a loader indefinitely.
+    //
+    // 🔴 THE CEILING SPANS THE WHOLE IN-FLIGHT WINDOW — HEADERS *AND* BODY.
+    // `clearTimeout` used to sit in the `finally` attached to the fetch below,
+    // which disarms it the instant the response headers arrive; the body read
+    // that follows was then completely unbounded, so a server answering 200 and
+    // then stalling the body (half-open connection, stalled proxy) left this
+    // promise pending FOREVER. That is a money defect: every exit from both tip
+    // pickers is gated on an in-flight flag released only when this settles, so
+    // a stalled body leaves the viewer in a modal with no ×, dead Escape on both
+    // handlers, a dead overlay and a disabled Cancel — page reload or nothing.
     const controller = new AbortController();
     const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    let disarmed = false;
+    /**
+   * Disarm the ceiling.
+   *
+   * ⚠️ THE `disarmed` FLAG IS DEFENSIVE, NOT LOAD-BEARING, and saying so is the
+   * point: `clearTimeout` is already idempotent, so removing the flag changes no
+   * observable behaviour and its mutant SURVIVES the suite. It is kept because a
+   * future edit could give this a non-idempotent body, and it is labelled so
+   * nobody cites it as a tested guarantee. An earlier comment here claimed "every
+   * exit clears exactly once" as though something checked that; nothing does.
+   */
+    const disarm = () => {
+      if (timer && !disarmed) {
+        disarmed = true;
+        clearTimeout(timer);
+      }
+    };
 
-    let res: Response;
     try {
-      res = await doFetch(baseUrl ? url.toString() : path + url.search, {
-        method: init.method ?? 'GET',
-        headers,
-        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
-        signal: controller.signal,
-      });
-    } catch (err) {
-      // Our timeout fired → a retryable network error; otherwise the raw failure.
-      if (controller.signal.aborted) {
-        throw new ApiError('network', 0, 'The request timed out.');
-      }
-      throw new ApiError('network', 0, err instanceof Error ? err.message : 'Network error');
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-
-    if (res.ok) {
-      // 204 / empty body tolerance.
-      const text = await res.text();
-      if (!text) return {} as T;
+      let res: Response;
       try {
-        return JSON.parse(text) as T;
-      } catch {
-        // A 2xx whose body isn't JSON — the classic "block fetched its own
-        // subdomain and got the SPA index.html" failure. NON-retryable: retrying
-        // the same URL returns the same HTML, so surface it as an error state
-        // instead of looping.
-        throw new ApiError('parse', res.status, 'The API returned an unexpected (non-JSON) response.');
+        res = await doFetch(baseUrl ? url.toString() : path + url.search, {
+          method: init.method ?? 'GET',
+          headers,
+          body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        // Our timeout fired → a retryable network error; otherwise the raw failure.
+        if (controller.signal.aborted) {
+          throw new ApiError('network', 0, 'The request timed out.');
+        }
+        throw new ApiError('network', 0, err instanceof Error ? err.message : 'Network error');
       }
-    }
 
-    // 401 → try one token re-mint + retry (expired-token path).
-    if (res.status === 401 && !_isRetry && opts.refreshToken) {
-      await opts.refreshToken().catch(() => {});
-      return request<T>(path, init, true);
-    }
+      if (res.ok) {
+        // 204 / empty body tolerance.
+        let text: string;
+        try {
+          text = await readTextBounded(res, controller.signal);
+        } catch (err) {
+          // An abort raised out of the BODY read is the same failure as one raised
+          // out of the connection — one taxonomy, so callers keep one branch.
+          if (controller.signal.aborted) {
+            throw new ApiError('network', 0, 'The request timed out.');
+          }
+          throw new ApiError('network', 0, err instanceof Error ? err.message : 'Network error');
+        }
+        if (!text) return {} as T;
+        try {
+          return JSON.parse(text) as T;
+        } catch {
+          // A 2xx whose body isn't JSON — the classic "block fetched its own
+          // subdomain and got the SPA index.html" failure. NON-retryable: retrying
+          // the same URL returns the same HTML, so surface it as an error state
+          // instead of looping.
+          throw new ApiError('parse', res.status, 'The API returned an unexpected (non-JSON) response.');
+        }
+      }
 
-    throw await toApiError(res);
+      // 401 → try one token re-mint + retry (expired-token path).
+      if (res.status === 401 && !_isRetry && opts.refreshToken) {
+        // Disarm before handing off: the retry arms its OWN ceiling.
+        //
+        // ⚠️ DEFENSIVE, AND ITS MUTANT SURVIVES — do not read this as a tested
+        // guard. Once the 401 response is in hand nothing awaits this
+        // controller, so aborting it here is unobservable. The previous comment
+        // said `refreshToken` is "a wait this one must not straddle", implying a
+        // hazard this line prevents; it does not. `refreshToken` is separately
+        // bounded upstream (`IframeTransport.sendRequest`, 30s), so the worst
+        // case is 15 + 30 + 15s, and that bound comes from the SDK, not here.
+        disarm();
+        await opts.refreshToken().catch(() => {});
+        return await request<T>(path, init, true);
+      }
+
+      // `toApiError` reads the body too, so the same stall would wedge here.
+      // The signal keeps that read bounded; the status is already known, so a
+      // stalled error body still classifies on status rather than hanging.
+      throw await toApiError(res, controller.signal);
+    } finally {
+      disarm();
+    }
   }
 
   return {
@@ -205,28 +276,76 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
       });
     },
 
-    async setFollow(id, follow) {
-      return request<{ followed: boolean }>(PATHS.follow(id), {
-        method: 'POST',
-        body: { follow },
-      });
-    },
-
     async tip(input) {
       return request<TipResult>(PATHS.tip, { method: 'POST', body: input });
     },
+
+    async getTipAllowance() {
+      return request<TipAllowance>(PATHS.tipAllowance, {});
+    },
   };
+}
+
+/**
+ * Read a response body under the request's abort ceiling.
+ *
+ * 🔴 THE RACE IS EXPLICIT, NOT INCIDENTAL. Per the fetch spec a real `Response`
+ * errors its body stream when the request's signal aborts, so a bare
+ * `await res.text()` would *usually* be bounded — but "usually" is doing all the
+ * work in that sentence, and this is the call that decides whether a viewer can
+ * ever close the tip modal. Racing the read against the signal makes the bound a
+ * property of THIS client instead of a property of whatever `fetch`
+ * implementation the host page happens to ship.
+ *
+ * The losing `res.text()` is left dangling deliberately: the connection is being
+ * torn down by the same abort, and there is nothing useful to do with a body
+ * that arrives after we have already reported a timeout. It is HANDLED, not
+ * merely dropped — `.then(resolve, reject)` attaches a rejection handler, so a
+ * later rejection cannot surface as an unhandled rejection.
+ *
+ * ⚠️ The `signal.aborted` early return is DEFENSIVE and its mutant SURVIVES —
+ * but NOT for the reason this comment gave until an audit measured it. It said
+ * "the abort listener below covers the already-aborted case on its own", and
+ * that is FALSE: `addEventListener('abort', …)` on a signal that has ALREADY
+ * aborted never fires, because the event dispatches once, at abort time.
+ * Measured on Node v26, and measured again by deleting the early return — the
+ * promise then RESOLVES WITH THE BODY TEXT instead of rejecting.
+ *
+ * 🔴 So deleting this line is not neutral, and the old comment invited exactly
+ * that: a maintainer trusting it would, in any environment where a mocked or
+ * non-spec `fetchImpl` can resolve after an abort, get a silently successful
+ * JSON parse of a body read AFTER a timeout was already reported.
+ *
+ * The line's real status is STRONGER than "defensive": it is UNREACHABLE in
+ * production. Nothing yields between `res = await doFetch(...)` resolving and
+ * the synchronous call to this function — timers are macrotasks, and only
+ * microtasks run in between — and a real `fetch` rejects on abort rather than
+ * resolving. That is why the mutant survives: the branch cannot be entered, not
+ * because something else catches it.
+ */
+function readTextBounded(res: Response, signal: AbortSignal): Promise<string> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise<string>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    res.text().then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Status + body -> ApiError mapping. Centralized so every endpoint reports the
 // same UI-actionable codes.
 // ---------------------------------------------------------------------------
-async function toApiError(res: Response): Promise<ApiError> {
+async function toApiError(res: Response, signal?: AbortSignal): Promise<ApiError> {
   let bodyText = '';
   let bodyMsg = '';
   try {
-    bodyText = await res.text();
+    // Bounded by the request's ceiling — an error response whose body stalls
+    // must not wedge the caller either. The read failing (including by abort) is
+    // caught below and the error is classified on its status alone, which is
+    // strictly more useful here than reporting a `network` failure for a
+    // response whose status we already have.
+    bodyText = signal ? await readTextBounded(res, signal) : await res.text();
     if (bodyText) {
       const parsed = JSON.parse(bodyText) as { error?: unknown; message?: unknown; code?: unknown };
       // 🔴 The server can return a NON-STRING error (e.g. `{ error: <ZodError

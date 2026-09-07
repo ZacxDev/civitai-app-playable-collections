@@ -54,13 +54,13 @@ import {
 } from '@civitai/blocks-react/ui';
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
-import { createCachedApiClient } from './lib/cache.js';
+import { createCachedApiClient, type CachedApiClient } from './lib/cache.js';
 import { readPopular, recordPlay, resolvePopularEntries, summaryFromPage, totalBuzz, type ResolvedPopular } from './lib/popular.js';
 import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
 import { useDebouncedValue } from './lib/use-debounced-value.js';
-import { useDailyTipAllowance } from './lib/tip-allowance.js';
+import { useServerTipAllowance } from './lib/tip-allowance.js';
 import { buildShareUrl, decodeDeepLink, encodeDeepLink } from './lib/deep-link.js';
 import { shareLink } from './lib/share.js';
 import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
@@ -80,6 +80,7 @@ import { useRecent, type RecentEntry } from './lib/recent.js';
 import { useAnalytics, type AnalyticsSink } from './lib/analytics.js';
 import { CollectionViewer } from './components/CollectionViewer.js';
 import type { TipTarget } from './components/TipModal.js';
+import type { PlannedLeg } from './components/TipSplitModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
 
 const POPULAR_LIMIT = 10;
@@ -175,10 +176,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // viewer settings on a page app (see settings.ts).
   const { settings: playerSettings, setSecondsPerImage, setVideoLoopCount } = usePlayerSettings();
 
-  // Estimated remaining daily tip allowance (app-local; the server is the real
-  // gate). Surfaced in the tip modal and pre-blocks an over-allowance amount.
-  const tipAllowance = useDailyTipAllowance();
-
   // Recently-played collections (Feature #7) — the "Continue watching" rail.
   const { recent, record: recordRecentPlay } = useRecent();
 
@@ -240,7 +237,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // collection is instant and doesn't re-hit the private,no-store origin. The
   // cache is bound to this memo (per host+token), and follow mutations clear it.
   // Media/CDN image URLs still browser-cache normally (untouched).
-  const realApi = useMemo<ApiClient | null>(
+  const realApi = useMemo<CachedApiClient | null>(
     () =>
       host && tokenRaw
         ? createCachedApiClient(
@@ -254,9 +251,40 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     [host, tokenRaw],
   );
   const api = injectedApi ?? realApi;
+  /**
+   * The client to drop cached reads on after a follow write.
+   *
+   * 🔴 KEYED ON CAPABILITY, NOT ON PROVENANCE — and that distinction is the
+   * whole reason this guard is testable. It was `injectedApi ? null : realApi`,
+   * which read reasonably (only the real client is cache-wrapped) and had one
+   * fatal consequence an audit found: EVERY test injects a client, so
+   * `cachedApi` was ALWAYS null under test and `invalidateReads()` never
+   * executed in any suite. The call could be deleted outright and the whole
+   * suite stayed green — on the one obligation this release newly created, and
+   * which `lib/cache.ts` itself warns "is easy to miss".
+   *
+   * Asking whether the client can invalidate lets a test inject one that can.
+   */
+  const cachedApi =
+    api && typeof (api as Partial<CachedApiClient>).invalidateReads === 'function'
+      ? (api as CachedApiClient)
+      : null;
   // Data-fetching is gated on a usable client (injected fake, or the real client
   // once host+token are established).
   const canFetch = api != null;
+
+  // The viewer's REAL remaining daily tip allowance — ONE read for the whole
+  // view, threaded down to all four tip affordances (`tip-creator`,
+  // `tip-curator`, `chrome-tip-curator`, and the split popover) and re-read
+  // after each successful transfer.
+  //
+  // 🔴 THIS REPLACED A localStorage RUNNING TOTAL THAT COULD NEVER WORK (0.2.10).
+  // The old `useDailyTipAllowance` derived "remaining" from a per-device counter
+  // that (a) throws in the opaque-origin sandbox, so the estimate was always the
+  // full cap and tracked nothing, and (b) counted only tips made through THIS app
+  // on THIS device even where it did persist. `getTipAllowance()` is the server's
+  // own figure over the same bearer + scope the app already holds to tip.
+  const tipAllowance = useServerTipAllowance(api);
 
   // ---- browse state ----
   const [tab, setTab] = useState<Tab>('discover');
@@ -290,7 +318,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   const [openMorePending, setOpenMorePending] = useState(false);
   const openMorePendingRef = useRef(false);
   openMorePendingRef.current = openMorePending;
-  const [followPending, setFollowPending] = useState(false);
   const [tipping, setTipping] = useState(false);
   // Synchronous double-tip guard. `setTipping(true)` only disables the button on
   // the NEXT render; a fast double-click can fire two `doTip` calls before that
@@ -298,6 +325,36 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   const tipInFlightRef = useRef(false);
   // A failed collection-open keeps a retry affordance (the grid already has one).
   const [openError, setOpenError] = useState<{ summary: CollectionSummary; message: string } | null>(null);
+
+  /**
+   * Split-tip PLANS, keyed by logical tip (`splitTipKey`).
+   *
+   * 🔴 THEY LIVE HERE BECAUSE EVERY COMPONENT BELOW GETS UNMOUNTED BY ORDINARY
+   * USE. The plan holds the whole double-spend defence — one idempotency key per
+   * leg, minted once, plus the `sent` markers a retry skips on. It used to be
+   * `useState` inside TipSplitModal, which the popover's own **Close** button
+   * destroys; the viewer then reopened, confirmed, and the already-landed leg was
+   * transferred a SECOND time under a fresh key the server had never seen, so it
+   * could not collapse the replay. (Measured: creator paid 50 for a 25 press,
+   * allowance debited 75 for a 50 tip.) Closing the popover, switching view mode,
+   * opening or closing the lightbox and leaving the collection all unmount a
+   * Player — App is the lowest owner that survives all four.
+   *
+   * A completed tip is DELETED (its keys can never be needed again), so this only
+   * ever holds plans that half-failed, which is a handful at most.
+   */
+  const [splitPlans, setSplitPlans] = useState<Record<string, PlannedLeg[]>>({});
+  const onSplitPlanChange = useCallback((key: string, plan: PlannedLeg[] | null) => {
+    setSplitPlans((prev) => {
+      if (plan == null) {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      return { ...prev, [key]: plan };
+    });
+  }, []);
 
   // Deep-link (Feature #6): the open collection + mode + index live in the URL
   // hash so a reload restores playback and Share hands out a link.
@@ -629,35 +686,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
 
   const exitPlayer = useCallback(() => setOpen(null), []);
 
-  // ---- follow toggle (optimistic + rollback) ----
-  const toggleFollow = useCallback(async () => {
-    if (!open || !api) return;
-    if (!viewer) {
-      requestSignIn();
-      return;
-    }
-    const nextFollowed = !open.followed;
-    setOpen((o) => (o ? { ...o, followed: nextFollowed } : o));
-    setFollowPending(true);
-    try {
-      const res = await api.setFollow(open.detail.id, nextFollowed);
-      setOpen((o) => (o ? { ...o, followed: res.followed } : o));
-      analytics.track({ type: 'follow', collectionId: open.detail.id, followed: res.followed });
-      // Keep the grid card badge in sync.
-      applyFollowedToLists(open.detail.id, res.followed);
-      // One consistent verb — "follow" — across the button (Follow/Following) and
-      // both toasts (dogfood: it was previously described three different ways).
-      toasts.push('success', res.followed ? 'Following this collection.' : 'Unfollowed this collection.');
-    } catch (err) {
-      // rollback
-      setOpen((o) => (o ? { ...o, followed: !nextFollowed } : o));
-      toasts.push('error', errMessage(err));
-    } finally {
-      setFollowPending(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, viewer, api, requestSignIn, toasts, analytics]);
-
   const applyFollowedToLists = useCallback((id: number, followed: boolean) => {
     const patch = (s: ListState): ListState => ({
       ...s,
@@ -667,9 +695,65 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     setMine(patch);
   }, []);
 
+  // ---- follow: adopt the host's echo ----
+  //
+  // 🔴 THE OPTIMISTIC-FLIP-AND-ROLLBACK BLOCK THAT LIVED HERE IS GONE, AND ITS
+  // REMOVAL IS THE POINT (0.2.10). Following runs through the host-mediated
+  // `SET_COLLECTION_FOLLOW` bridge now, so the write, the optimism, the rollback
+  // and the sign-in bounce all belong to the control that owns the request
+  // (`FollowButton` upstream, `useFollowToggle` for the player's glyph rail).
+  // App keeps only what is genuinely app state: the flag, the two lists that
+  // render a badge from it, and the analytics event.
+  //
+  // 🔴 The old block treated EVERY rejection as an error toast, which the bridge
+  // makes wrong: dismissing the host's consent dialog rejects with `declined`,
+  // and the viewer who just chose "no" would have been told the app failed.
+  const onFollowChange = useCallback(
+    (collectionId: number, followed: boolean) => {
+      // 🔴 THE ID COMES FROM THE HOST'S ECHO, NOT FROM `openRef`. This used to
+      // read `openRef.current?.detail.id` and bail when it was null, which was
+      // wrong in two ways an audit found. The reply lands after a round trip
+      // PLUS the time the viewer spends in the host consent dialog, and the
+      // viewer can navigate in that window:
+      //   - exit the player first  -> `openRef` is null -> the whole handler
+      //     returned early, so a follow that DID land produced no badge and no
+      //     cache drop, and looked to the viewer like it silently failed;
+      //   - open a DIFFERENT collection first -> `openRef` names the new one, so
+      //     the analytics event and the list patch were applied to a collection
+      //     the viewer never followed.
+      // Keyed on the echo, both cases are attributed correctly and neither
+      // depends on what is open now.
+
+      // 🔴 INVALIDATE FIRST — before any early return. `followed` is embedded in
+      // both the cached list and detail payloads, the cache wrapper used to do
+      // this by intercepting `api.setFollow`, and the bridge never touches the
+      // client. Ordering it after an `open`-dependent guard is what made a
+      // real write serve a stale flag for the 5-minute TTL.
+      cachedApi?.invalidateReads();
+      analytics.track({ type: 'follow', collectionId, followed });
+      // Keep the grid card badge in sync.
+      applyFollowedToLists(collectionId, followed);
+      // Only touch the OPEN collection's own flag, and only if it is still the
+      // one that was written.
+      setOpen((o) => (o && o.detail.id === collectionId ? { ...o, followed } : o));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [analytics, applyFollowedToLists, cachedApi],
+  );
+
+  /**
+   * A follow whose outcome is UNKNOWN (transport timeout). We cannot say whether
+   * it landed, so we drop the cached reads and let the next read tell the truth
+   * — the notice shown to the viewer tells them to look again, and the cache
+   * would otherwise answer that with the pre-follow flag.
+   */
+  const onFollowUncertain = useCallback(() => {
+    cachedApi?.invalidateReads();
+  }, [cachedApi]);
+
   // ---- tip flow ----
   const doTip = useCallback(
-    async (target: TipTarget, amount: number): Promise<boolean> => {
+    async (target: TipTarget, amount: number, idempotencyKey?: string): Promise<boolean> => {
       // Synchronous double-tip gate (M1): reject a second call that arrives in the
       // same tick, before `setTipping(true)`'s re-render can disable the button.
       if (tipInFlightRef.current) return false;
@@ -686,6 +770,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           amount,
           entityType: target.entityType,
           entityId: target.entityId,
+          // Passed through verbatim. The split popover mints one key per leg and
+          // reuses it on retry; the server replays the first terminal result for
+          // a repeated key, which is what makes retrying a half-failed split safe.
+          idempotencyKey,
         });
         // A non-throwing soft-failure (`{ ok: false }`) must NOT count as success —
         // no allowance debit, no success toast, no optimistic "tipped" state.
@@ -696,8 +784,10 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
         // Use the SERVER's committed figure (O2), not the client amount — the two
         // can diverge (host clamping / rounding). Fall back to the requested amount.
         const sent = result.tip?.amount ?? amount;
-        // Record against today's app-local allowance so the next modal reflects it.
-        tipAllowance.record(sent);
+        // Re-read the SERVER's allowance so the next picker opens on the real
+        // remaining figure. (This is where `tipAllowance.record(sent)` used to
+        // add `sent` to a localStorage running total that tracked nothing.)
+        tipAllowance.refetch();
         analytics.track({ type: 'tip', kind: target.kind, amount: sent });
         toasts.push('success', `Sent ${sent.toLocaleString()} Buzz to ${target.username ? '@' + target.username : 'the ' + target.kind}.`);
         refetchBalance();
@@ -707,7 +797,13 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           // AMBIGUOUS (M2): a timed-out / dropped tip POST may have ALREADY
           // committed server-side — a "clean" one-click retry risks a double-spend.
           // Warn the viewer to verify their balance before retrying instead.
-          // (Full fix needs a host idempotency key — owed upstream; see NOTE.)
+          //
+          // 🔴 STILL THE RIGHT WARNING FOR *THIS* PATH, even though the
+          // idempotency key it was waiting on now exists (0.2.10). The key only
+          // helps a retry that REUSES it, and the single-target picker has no
+          // retry affordance — the viewer re-opens the modal, which is a NEW
+          // logical tip and mints nothing to replay. The split popover, which
+          // does own its retry, carries the key and is safe to press again.
           toasts.push('info', 'This tip may have gone through — check your Buzz balance before retrying.');
         } else if (err instanceof ApiError && err.code === 'insufficient_balance') {
           toasts.push('error', "You don't have enough Buzz for that tip.");
@@ -760,12 +856,18 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           viewerUserId={viewer?.id ?? null}
           buzzBalance={balance}
           followed={open.followed}
-          followPending={followPending}
-          onToggleFollow={toggleFollow}
+          onFollowChange={onFollowChange}
+          onNotice={(kind, message) => toasts.push(kind, message)}
+          onFollowUncertain={onFollowUncertain}
           onTip={doTip}
           onRequestSignIn={() => requestSignIn()}
           tipping={tipping}
-          dailyTipRemaining={tipAllowance.remaining}
+          // `null` (unresolved / failed read) becomes `undefined`, which is the
+          // pickers' "no local pre-block" default. A failed allowance read must
+          // never make tipping impossible — the server stays the real gate.
+          dailyTipRemaining={tipAllowance.remaining ?? undefined}
+          splitPlans={splitPlans}
+          onSplitPlanChange={onSplitPlanChange}
           onShare={onShareCollection}
           onCast={(on) => analytics.track({ type: 'cast', on })}
           onViewStateChange={handleViewStateChange}

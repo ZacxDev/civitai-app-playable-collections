@@ -21,6 +21,7 @@ import type {
   ListCollectionsParams,
   MediaItem,
   Page,
+  TipAllowance,
   TipInput,
   TipResult,
 } from './types.js';
@@ -30,6 +31,10 @@ export interface FakeApiOptions {
   viewerUserId?: number;
   /** Starting Buzz balance. Default 5000. */
   balance?: number;
+  /** The viewer's daily tip ceiling, as the server would report it. Default 25000. */
+  tipDailyCap?: number;
+  /** Buzz already tipped today before this fake starts. Default 0. */
+  tipSpentToday?: number;
   /** Seed collections; a curated default set is used when omitted. */
   collections?: SeedCollection[];
   /** Force every mutating call to fail with this code (to test error UI). */
@@ -54,6 +59,8 @@ export interface FakeApi extends ApiClient {
   __balance(): number;
   __isFollowed(collectionId: number): boolean;
   __tips(): TipInput[];
+  /** Buzz this fake has recorded against today's allowance. */
+  __tipSpentToday(): number;
 }
 
 function makeSeed(): SeedCollection[] {
@@ -115,6 +122,10 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
   const byId = new Map<number, SeedCollection>(seeds.map((s) => [s.summary.id, s]));
   const followed = new Map<number, boolean>(seeds.map((s) => [s.summary.id, s.summary.followed]));
   const tips: TipInput[] = [];
+  /** Replay store for idempotent tips: key -> the first terminal result. */
+  const tipsByKey = new Map<string, TipResult>();
+  const tipDailyCap = opts.tipDailyCap ?? 25000;
+  let tipSpentToday = opts.tipSpentToday ?? 0;
   const fail = opts.failMode ?? 'none';
   const privateGranted = opts.collectionsPrivateGranted ?? (() => true);
 
@@ -178,13 +189,6 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
       };
     },
 
-    async setFollow(id: number, follow: boolean): Promise<{ followed: boolean }> {
-      guardFail();
-      if (!byId.has(id)) throw new ApiError('not_found', 404, 'Not found.');
-      followed.set(id, follow);
-      return { followed: follow };
-    },
-
     async tip(input: TipInput): Promise<TipResult> {
       guardFail();
       if (input.toUserId === viewerUserId) {
@@ -193,15 +197,32 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
       if (!Number.isInteger(input.amount) || input.amount <= 0) {
         throw new ApiError('unknown', 400, 'Tip amount must be a positive whole number.');
       }
+      // Idempotency, mirrored from the server: a repeated key REPLAYS the first
+      // terminal result instead of transferring again. Without this the fake is
+      // MORE permissive than production, so a double-send bug would pass here
+      // and double-spend live — the exact drift a fake exists to prevent.
+      if (input.idempotencyKey != null) {
+        const prior = tipsByKey.get(input.idempotencyKey);
+        if (prior) return prior;
+      }
       if (input.amount > balance) {
         throw new ApiError('insufficient_balance', 403, 'Not enough Buzz for that tip.');
       }
       balance -= input.amount;
       tips.push(input);
-      return { ok: true, tip: { amount: input.amount, toUserId: input.toUserId } };
+      tipSpentToday += input.amount;
+      const res: TipResult = { ok: true, tip: { amount: input.amount, toUserId: input.toUserId } };
+      if (input.idempotencyKey != null) tipsByKey.set(input.idempotencyKey, res);
+      return res;
+    },
+
+    async getTipAllowance(): Promise<TipAllowance> {
+      guardFail();
+      return { cap: tipDailyCap, spent: tipSpentToday, remaining: Math.max(0, tipDailyCap - tipSpentToday) };
     },
 
     __balance: () => balance,
+    __tipSpentToday: () => tipSpentToday,
     __isFollowed: (id: number) => followed.get(id) ?? false,
     __tips: () => tips,
   };

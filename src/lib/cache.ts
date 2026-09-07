@@ -12,8 +12,15 @@
 //   re-uses each page on re-open).
 // - In-flight requests are DEDUPED (the Promise is cached); a rejection is never
 //   cached (the entry is dropped) so a transient failure can be retried.
-// - A `setFollow` mutation clears the caches (a collection's `followed` flag lives
-//   in both the list and detail payloads), so post-follow reads are fresh.
+// - 🔴 FOLLOW INVALIDATION IS NOW A CALLER OBLIGATION, NOT A WRAPPED METHOD, and
+//   that change is easy to miss. A collection's `followed` flag is embedded in
+//   BOTH the list and detail payloads, so a follow write must drop these caches
+//   or re-opening the collection serves the pre-follow flag. Until 0.2.10 this
+//   wrapper got that for free by intercepting `setFollow`. Following now goes
+//   through the HOST BRIDGE and never touches this client, so there is nothing
+//   left to intercept — the cache would have gone silently stale, with the
+//   grid badge and the player disagreeing after a re-open. `invalidateReads()`
+//   is the replacement, and App calls it from the follow `onChange`.
 // - Entries expire after `ttlMs` (default 5 min) to bound staleness.
 // - The one remaining write method (`tip`) passes straight through. Buzz balance
 //   and shared play-counts are no longer on this client — they go through the
@@ -41,7 +48,13 @@ interface Entry<T> {
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
-export function createCachedApiClient(inner: ApiClient, opts: CacheOptions = {}): ApiClient {
+/** An `ApiClient` whose cached reads can be dropped explicitly. */
+export interface CachedApiClient extends ApiClient {
+  /** Drop the cached list + detail reads (see the follow note in the header). */
+  invalidateReads(): void;
+}
+
+export function createCachedApiClient(inner: ApiClient, opts: CacheOptions = {}): CachedApiClient {
   const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
   const now = opts.now ?? (() => Date.now());
 
@@ -90,13 +103,16 @@ export function createCachedApiClient(inner: ApiClient, opts: CacheOptions = {})
       return fresh(detailCache, key) ?? remember(detailCache, key, () => inner.getCollection(id, o));
     },
 
-    async setFollow(id, follow) {
-      const res = await inner.setFollow(id, follow);
-      // The followed flag is embedded in cached list + detail payloads → drop them.
-      clearReads();
-      return res;
-    },
-
     tip: (input) => inner.tip(input),
+
+    getTipAllowance: () => inner.getTipAllowance(),
+
+    /**
+     * Drop the cached list + detail reads. Call after ANY mutation that changes
+     * a field embedded in them — today that is exactly one thing: a follow
+     * write, which now happens over the host bridge rather than through this
+     * client.
+     */
+    invalidateReads: clearReads,
   };
 }

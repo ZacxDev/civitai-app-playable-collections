@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Button, Card, Slider } from '@civitai/blocks-react/ui';
+import { Button, Card, FollowButton, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
@@ -36,7 +36,8 @@ import {
 import { Player } from './Player.js';
 import { ContinuousView } from './ContinuousView.js';
 import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
-import { TipModal, type TipTarget } from './TipModal.js';
+import { TipModal, type TipSender } from './TipModal.js';
+import type { PlannedLeg } from './TipSplitModal.js';
 import { FocusTrap } from './FocusTrap.js';
 import { useOnboarding } from '../lib/onboarding.js';
 
@@ -49,14 +50,36 @@ export interface CollectionViewerProps {
   viewerUserId: number | null;
   buzzBalance: number | null;
   followed: boolean;
-  followPending: boolean;
-  onToggleFollow: () => void;
-  onTip: (target: TipTarget, amount: number) => Promise<boolean>;
+  /** Adopt the host's echo after a confirmed follow write (host bridge). */
+  onFollowChange: (collectionId: number, followed: boolean) => void;
+  /** Surface a renderable message from the follow bridge (Player's rail). */
+  onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
+  /**
+   * A follow whose outcome is UNKNOWN (transport timeout, or a code-less server
+   * error raised after the row may already have committed) — drop cached reads.
+   *
+   * 🔴 REQUIRED. While optional, an audit deleted this prop AND both forwards to
+   * Player below and the entire suite stayed green — see PlayerProps.
+   */
+  onFollowUncertain: () => void;
+  onTip: TipSender;
   /** Prompt a logged-out viewer to sign in (tipping requires an account). */
   onRequestSignIn?: () => void;
   tipping: boolean;
-  /** Estimated remaining daily tip allowance (app-local) for the tip modals. */
+  /**
+   * The viewer's REAL remaining daily tip allowance, read once per view from the
+   * server (0.2.10). Omitted while that read is unresolved or after it failed —
+   * the pickers then fall back to the full cap and let the server decide, so a
+   * failed read never makes tipping impossible.
+   */
   dailyTipRemaining?: number;
+  /**
+   * Split-tip plans, owned by App. Forwarded VERBATIM to both Players (the mode
+   * surface and the lightbox) so a half-failed split survives a mode switch, the
+   * lightbox opening/closing, and this component unmounting.
+   */
+  splitPlans: Readonly<Record<string, PlannedLeg[]>>;
+  onSplitPlanChange: (key: string, plan: PlannedLeg[] | null) => void;
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
@@ -94,12 +117,15 @@ export function CollectionViewer(props: CollectionViewerProps) {
     viewerUserId,
     buzzBalance,
     followed,
-    followPending,
-    onToggleFollow,
+    onFollowChange,
+    onNotice,
+    onFollowUncertain,
     onTip,
     onRequestSignIn,
     tipping,
     dailyTipRemaining,
+    splitPlans,
+    onSplitPlanChange,
     isMobile,
     c,
     onExit,
@@ -339,16 +365,34 @@ export function CollectionViewer(props: CollectionViewerProps) {
           >
             {paused ? '▶ Resume' : '⏸ Pause'}
           </Button>
-          <Button
+          {/* 🔴 UPSTREAM CONTROL, NOT A HAND-ROLLED ONE (0.2.10). This row's
+              button was already a `Button` with the same size + variant shape,
+              so adopting `FollowButton` costs almost no visual change here (the
+              `☆`/`★` glyphs DO go — the labels become plain "Follow" /
+              "Following") and buys the
+              three outcomes a hand-rolled follow reliably gets wrong: `declined`
+              renders NOTHING (the viewer dismissed the host's confirm — the old
+              code toasted an error at them), `sign-in-required` routes to
+              sign-in rather than an error line, and the optimistic flip is
+              replaced by the HOST'S ECHO instead of the guess.
+
+              `variant` names the NOT-following state; the following state is
+              always `light` upstream so the two are distinguishable without
+              reading the label. That inverts this app's old filled/outline
+              pairing, which is the one deliberate visual delta. */}
+          <FollowButton
             size="sm"
-            variant={followed ? 'filled' : 'outline'}
-            onClick={onToggleFollow}
-            disabled={followPending}
-            aria-pressed={followed}
+            variant="outline"
+            collectionId={detail.id}
+            collectionName={detail.name}
+            followed={followed}
+            // Upstream's `onChange` reports only the flag, so supply the id this
+            // control is BOUND to. That is safe where deriving it from "what is
+            // open" is not: the binding cannot drift mid-flight, because a
+            // different collection remounts this subtree (`key={detail.id}`).
+            onChange={(f) => onFollowChange(detail.id, f)}
             data-testid="chrome-follow"
-          >
-            {followed ? '★ Following' : '☆ Follow'}
-          </Button>
+          />
           <Button
             size="sm"
             variant="light"
@@ -485,12 +529,15 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onPositionChange={onClassicPosition}
             showSettingsControl={false}
             followed={followed}
-            followPending={followPending}
-            onToggleFollow={onToggleFollow}
+            onFollowChange={onFollowChange}
+            onNotice={onNotice}
+            onFollowUncertain={onFollowUncertain}
             onTip={onTip}
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}
             dailyTipRemaining={dailyTipRemaining}
+            splitPlans={splitPlans}
+            onSplitPlanChange={onSplitPlanChange}
             cast={cast}
             reducedMotion={reducedMotion}
             isMobile={isMobile}
@@ -542,12 +589,15 @@ export function CollectionViewer(props: CollectionViewerProps) {
             muted={prefs.muted}
             initialItemIndex={lightboxIndex}
             followed={followed}
-            followPending={followPending}
-            onToggleFollow={onToggleFollow}
+            onFollowChange={onFollowChange}
+            onNotice={onNotice}
+            onFollowUncertain={onFollowUncertain}
             onTip={onTip}
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}
             dailyTipRemaining={dailyTipRemaining}
+            splitPlans={splitPlans}
+            onSplitPlanChange={onSplitPlanChange}
             isMobile={isMobile}
             c={c}
             onExit={() => setLightboxIndex(null)}

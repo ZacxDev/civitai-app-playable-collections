@@ -57,10 +57,13 @@ function renderViewer(over: Partial<React.ComponentProps<typeof CollectionViewer
     viewerUserId: 99,
     buzzBalance: 1000,
     followed: false,
-    followPending: false,
-    onToggleFollow: () => {},
+    onFollowChange: () => {},
+    onNotice: () => {},
+    onFollowUncertain: () => {},
     onTip: async () => true,
     tipping: false,
+    splitPlans: {},
+    onSplitPlanChange: () => {},
     isMobile: false,
     c,
     onExit: () => {},
@@ -217,8 +220,11 @@ describe('CollectionViewer — content maturity (session-level 18+ gate, ship-bl
           viewerUserId={99}
           buzzBalance={1000}
           followed={false}
-          followPending={false}
-          onToggleFollow={() => {}}
+          
+          onFollowChange={() => {}} onNotice={() => {}}
+          onFollowUncertain={() => {}}
+          splitPlans={{}}
+          onSplitPlanChange={() => {}}
           onTip={async () => true}
           tipping={false}
           isMobile={false}
@@ -416,8 +422,11 @@ describe('CollectionViewer — media-type filter + re-page-to-fill (Feature 5)',
         viewerUserId={99}
         buzzBalance={0}
         followed={false}
-        followPending={false}
-        onToggleFollow={() => {}}
+        
+        onFollowChange={() => {}} onNotice={() => {}}
+        onFollowUncertain={() => {}}
+        splitPlans={{}}
+        onSplitPlanChange={() => {}}
         onTip={async () => true}
         tipping={false}
         isMobile={false}

@@ -6,16 +6,22 @@ import pkg from '../package.json';
 import { manifest, validateManifest } from './manifest.js';
 
 describe('block.manifest.json', () => {
-  it('declares the 7 required scopes (no block:settings:*)', () => {
+  it('declares the 6 required scopes (no block:settings:*, no collections:write:self)', () => {
     expect(manifest.scopes).toEqual([
       'collections:read:self',
       'collections:read:private',
-      'collections:write:self',
       'social:tip:self',
       'buzz:read:self',
       'apps:storage:shared:read',
       'apps:storage:shared:write',
     ]);
+    // 🔴 `collections:write:self` was DROPPED in 0.2.10 and must not come back.
+    // Following moved to the host-mediated bridge, which needs no scope: the
+    // host calls the session-authed procedure and self-binds the viewer. Re-adding
+    // the scope would re-declare a capability the app no longer uses, and the
+    // manifest `scopes` list is exactly what a moderator reads before install and
+    // what the viewer inspects afterwards.
+    expect(manifest.scopes).not.toContain('collections:write:self');
     // block:settings:* was removed — a page app has no installer, so the mint C8
     // gate 403s when they're declared.
     expect(manifest.scopes).not.toContain('block:settings:read');
