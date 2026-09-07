@@ -1,6 +1,9 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+
+import { Harness } from '@civitai/blocks-react/testing';
+import { BrowsingLevel, SFW_LEVELS } from '@civitai/app-sdk/blocks';
 
 import { ContinuousView } from './ContinuousView.js';
 import { palette } from '../theme.js';
@@ -93,19 +96,77 @@ describe('ContinuousView — capped video autoplay (🔴 perf guard)', () => {
   });
 });
 
-describe('ContinuousView — content maturity (badge + blur, ship-blocker #3)', () => {
-  it('badges and blurs a mature tile; leaves PG tiles untouched', () => {
-    const matureImg: MediaItem = { ...img(1), nsfwLevel: 8 }; // X
-    renderView({ items: [matureImg, img(2)], reducedMotion: true });
-    // The mature tile carries a rating badge and its media is blurred.
+describe('ContinuousView — content maturity is the HOST ceiling, not a local blur', () => {
+  // 🔴 THIS REPLACES A "badges and blurs a mature tile" TEST. That behaviour is
+  // gone: an above-ceiling tile is not blurred, it is not in the wall at all, so
+  // there is no tile to tap and nothing to reveal. `renderView` mounts the
+  // component with NO <Harness>, so the ceiling reads `undefined` → SFW-only,
+  // which is the fail-closed arm.
+
+  const at = (nsfwLevel: number, id = 1): MediaItem => ({ ...img(id), nsfwLevel });
+
+  it('🔴 an above-ceiling tile is ABSENT — no tile, no badge, no blur', () => {
+    renderView({ items: [at(BrowsingLevel.X, 1), img(2)], reducedMotion: true });
+    const tiles = screen.getAllByTestId('continuous-tile');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0]).toHaveAttribute('data-media-id', '2');
+    expect(screen.queryAllByTestId('maturity-badge')).toHaveLength(0);
+    expect(document.querySelector('[style*="blur("]')).toBeNull();
+  });
+
+  it('a within-ceiling PG-13 tile renders WITH its badge (a badge labels, it does not gate)', () => {
+    renderView({ items: [at(BrowsingLevel.PG13, 1), img(2)], reducedMotion: true });
+    expect(screen.getAllByTestId('continuous-tile')).toHaveLength(2);
     const badges = screen.getAllByTestId('maturity-badge');
     expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('X');
-    const images = screen.getAllByTestId('continuous-image');
-    // Uses the shared MATURITY_BLUR_PX (36px) — same strength as every other
-    // maturity surface (audit S2; was a hardcoded 20px here).
-    expect(images[0]).toHaveStyle({ filter: 'blur(36px)' });
-    expect(images[1]).not.toHaveStyle({ filter: 'blur(36px)' });
+    expect(badges[0]).toHaveTextContent('PG-13');
+    expect(screen.getAllByTestId('continuous-image')[0]).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('🔴 FAIL CLOSED — an unrated (0) tile is absent even though 0 is "not mature"', () => {
+    renderView({ items: [at(0, 1), img(2)], reducedMotion: true });
+    const tiles = screen.getAllByTestId('continuous-tile');
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0]).toHaveAttribute('data-media-id', '2');
+  });
+
+  // ---- the ceiling and the item disagree, in both directions ---------------
+  function renderAtCeiling(ceiling: number, items: MediaItem[]) {
+    return render(
+      <Harness showLog={false} maxBrowsingLevel={ceiling}>
+        <ContinuousView
+          orientation="horizontal"
+          items={items}
+          muted
+          scrollSpeed={40}
+          reducedMotion
+          paused={false}
+          autoplayCap={5}
+          c={c}
+          onTapItem={() => {}}
+          onTogglePause={() => {}}
+        />
+      </Harness>,
+    );
+  }
+
+  it('🔴 SAME X tile, an ALL-LEVELS ceiling → it RENDERS, badged X', async () => {
+    // Without this the suite would be pinning "X is hidden" rather than "X is
+    // hidden BY THIS CEILING" — the mutant that ignores the ceiling passes the
+    // three tests above and fails only here.
+    renderAtCeiling(
+      SFW_LEVELS | BrowsingLevel.R | BrowsingLevel.X | BrowsingLevel.XXX,
+      [at(BrowsingLevel.X, 1), img(2)],
+    );
+    await waitFor(() => expect(screen.getAllByTestId('continuous-tile')).toHaveLength(2));
+    expect(screen.getAllByTestId('maturity-badge')[0]).toHaveTextContent('X');
+  });
+
+  it('🔴 SAME up-to-R ceiling, two different items → R is in, X is out', async () => {
+    renderAtCeiling(SFW_LEVELS | BrowsingLevel.R, [at(BrowsingLevel.R, 1), at(BrowsingLevel.X, 2)]);
+    await waitFor(() => expect(screen.getAllByTestId('continuous-tile')).toHaveLength(1));
+    expect(screen.getAllByTestId('continuous-tile')[0]).toHaveAttribute('data-media-id', '1');
+    expect(screen.getAllByTestId('maturity-badge')[0]).toHaveTextContent('R');
   });
 });
 

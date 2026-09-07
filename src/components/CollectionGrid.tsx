@@ -19,15 +19,15 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { useDomainMaturity } from '@civitai/blocks-react';
 import { Alert, Badge, Button, Card, Loader } from '@civitai/blocks-react/ui';
 
 import type { CollectionSummary } from '../types.js';
 import type { Palette } from '../theme.js';
 import type { RecentEntry } from '../lib/recent.js';
-import { shouldBlur } from '../lib/maturity.js';
+import { hasMaturityBadge, withinCeiling } from '../lib/maturity.js';
+import { useViewerCeiling } from '../lib/viewer-maturity.js';
 import { popularRailEntries } from '../lib/popular.js';
-import { MaturityBadge, MATURITY_BLUR_PX } from './Maturity.js';
+import { MaturityBadge } from './Maturity.js';
 
 /** ~150px prefetch margin so a cover loads just before it enters the viewport. */
 const COVER_PREFETCH_MARGIN = '150px';
@@ -85,81 +85,45 @@ function useCoverObserver(): RegisterCover {
 
 /**
  * Cover thumbnail with a graceful placeholder. Renders the ▶ placeholder tile
- * when there is no `src` AND when the image fails to load (broken/expired URL),
- * so a card is never blank or shows a broken-image icon. When a `src` is present
- * it is loaded LAZILY: the element carries `data-src` until the grid observer
- * swaps it in near the viewport.
+ * when there is no `src`, when the image fails to load (broken/expired URL), AND
+ * when the cover's rating is not permitted by the viewer's maturity ceiling — so
+ * a card is never blank, never shows a broken-image icon, and never paints an
+ * image the platform says this viewer may not see. When a `src` is present and
+ * permitted it is loaded LAZILY: the element carries `data-src` until the grid
+ * observer swaps it in near the viewport.
  */
 export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palette; nsfwLevel?: number }) {
   const register = useContext(CoverObserverContext);
-  // Read the domain ceiling HERE rather than threading an `isSfw` prop from the
-  // three call sites (grid card, popular rail, recent rail). Two reasons: a call
-  // site cannot forget it — which is the exact defect class the absent-vs-zero
-  // fix below was written for — and `useDomainMaturity` reads the SAME singleton
-  // transport snapshot `useBlockContext` does, so a per-card call is a
-  // `useSyncExternalStore` subscription to an already-existing store, not new
-  // per-card state. (Contrast `CoverObserverContext` above, which IS shared via
-  // context because N IntersectionObservers would be N real objects.)
+  // Read the ceiling HERE rather than threading it from the three call sites
+  // (grid card, popular rail, recent rail): a call site cannot forget it, and
+  // `useViewerCeiling` reads the SAME singleton transport snapshot
+  // `useBlockContext` does, so a per-card call is a `useSyncExternalStore`
+  // subscription to an already-existing store, not new per-card state. (Contrast
+  // `CoverObserverContext` above, which IS shared via context because N
+  // IntersectionObservers would be N real objects.)
   //
   // 🔴 Must stay ABOVE the `!src` early return — hooks cannot be conditional.
-  const { isSfw } = useDomainMaturity();
+  const ceiling = useViewerCeiling();
   const [failed, setFailed] = useState(false);
-  const [revealed, setRevealed] = useState(false);
 
-  if (!src || failed) {
+  // 🔴 AN OVER-CEILING COVER IS NOT PAINTED AND HAS NO REVEAL. It falls into the
+  // same placeholder tile a missing cover uses — the card, its title, its curator
+  // and its play affordance all survive, because the COLLECTION is not what the
+  // ceiling excluded; one image is.
+  //
+  // ABSENT `coverNsfwLevel` lands here too, and that is deliberate. The server
+  // publishes the level of the image it actually served (`toCoverFields`), and
+  // OMITS the field exactly when `coverImageUrl` is null — so against a host with
+  // civitai #4663 an absent level always arrives with no `src` and the `!src`
+  // branch has already fired. Against an older host it degrades a cover to the
+  // placeholder rather than painting an image whose rating nobody stated.
+  if (!src || failed || !withinCeiling(nsfwLevel, ceiling)) {
     return (
       <div style={coverPlaceholder(c)} aria-hidden="true" data-testid="cover-placeholder">
         ▶
       </div>
     );
   }
-
-  // Gate a mature cover (badge + blur-until-tap). Three cases, not two — ABSENT,
-  // ZERO and "a real rating" are all different facts:
-  //
-  //   nsfwLevel supplied (0 too) → a real rating → shouldBlur(), both ceilings
-  //   absent + SFW domain ceiling    → render open
-  //   absent + MATURE domain ceiling → gate (we know nothing; assume the worst)
-  //
-  // 🔴 WHY ABSENT IS NOT SIMPLY "GATE". Measured live 2026-09-05 against
-  // production, `GET /api/v1/blocks/collections` does not return `coverNsfwLevel`
-  // at all — the item keys are exactly [coverImageUrl, curator, description,
-  // followed, id, isPublic, itemCount, name]. So absent is not a rare edge, it is
-  // EVERY row: an earlier `nsfwLevel ?? 0` collapsed absent into 0, `shouldBlur(0)`
-  // returned true, and 100% of cards rendered blurred and badged "Unrated".
-  //
-  // 🔴 WHY IT IS NOT SIMPLY "OPEN" EITHER, AND WHY THE CEILING IS IN THE TEST.
-  // The justification for opening is a SERVER-SIDE CLAMP: the collections service
-  // clamps the cover URL by the token's `browsingLevel` before returning it —
-  // `primaryCoverUsable` rejects a primary cover above the ceiling and
-  // `getFallbackCoverImages` substitutes one within it (<civitai>
-  // src/server/services/blocks/block-collections.service.ts).
-  //
-  // That evidence is CEILING-SCOPED and must not be quoted wider than it was
-  // taken: all of it was measured at `maxBrowsingLevel: 3` (PG|PG13) — all 24 rows
-  // of live page 1 had a cover, and 0 of the top 500 collections play a mature item
-  // ON A SFW CEILING. #17 shipped the guard UNCONDITIONALLY and so generalised a
-  // SFW-only measurement to every domain. On a red-capable host the two come apart:
-  // `domainBrowsingCeiling` returns `allBrowsingLevelsFlag`, and the contentRating
-  // refusal only blocks MATURE-RATED apps off red, so this `pg13` app gets the full
-  // ceiling — `getFallbackCoverImages` may then legitimately return an R/X/XXX
-  // cover with `coverNsfwLevel` still absent, which #17 rendered unblurred and
-  // unbadged. That contradicted this app's own store description ("Anything rated
-  // above PG-13 stays blurred until you confirm once that you're 18+").
-  //
-  // So the guard now tests the condition its evidence was gathered under. `isSfw`
-  // is derived from the ceiling BITMASK (never the domain string) and FAIL-CLOSES
-  // TO TRUE before `BLOCK_INIT` lands and against any host predating civitai
-  // #2670 — so an absent level renders OPEN in those states. That is deliberate
-  // and consistent: an unknown ceiling is treated as the strictest domain, which
-  // is exactly the domain the clamp evidence covers.
-  //
-  // 🔴 STILL CONFINED TO COVERS. `MediaItem.nsfwLevel` in the player is required
-  // and always present, so a 0 there is a real "unrated" and stays fail-closed on
-  // EVERY ceiling — ../lib/maturity.ts is deliberately untouched, and
-  // CollectionViewer.test.tsx pins that seam under both ceilings.
-  const mature = nsfwLevel !== undefined ? shouldBlur(nsfwLevel) : !isSfw;
-  const blurred = mature && !revealed;
 
   const img = (
     // `data-src` (not `src`) is set until the grid observer swaps it in near the
@@ -170,42 +134,22 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
       ref={register ?? undefined}
       data-src={src}
       alt=""
-      style={blurred ? { ...coverImg, filter: `blur(${MATURITY_BLUR_PX}px)` } : coverImg}
+      style={coverImg}
       loading="lazy"
       onError={() => setFailed(true)}
     />
   );
 
-  if (!mature) return img;
+  // The cover is within the ceiling. Label it if it is above PG — a badge on
+  // permitted content is information, not a gate, and it hides nothing.
+  if (!hasMaturityBadge(nsfwLevel)) return img;
 
   return (
-    <div style={coverGateWrap} data-testid="cover-gate" data-revealed={revealed ? 'true' : 'false'}>
+    <div style={coverBadgeWrap} data-testid="cover-badged">
       {img}
       <span style={coverBadgeSlot}>
-        {/* 🔴 The `?? 0` is now a LIVE path, not the dead compiler-appeasing
-            fallback the previous comment here described: `mature` is true for an
-            ABSENT level on a mature ceiling, and 0 → maturityBucket 'unknown' →
-            the neutral "Unrated" label. That is the honest badge for a cover
-            whose rating the server never sent — we gate it, but we do not claim
-            a tier we cannot substantiate. */}
-        <MaturityBadge nsfwLevel={nsfwLevel ?? 0} />
+        <MaturityBadge nsfwLevel={nsfwLevel} />
       </span>
-      {!revealed && (
-        // Tap reveals the cover WITHOUT opening the card (stopPropagation); a
-        // second tap opens. Non-focusable so keyboard-activating the card opens
-        // straight into the item-level gate.
-        <div
-          onClick={(e) => {
-            e.stopPropagation();
-            setRevealed(true);
-          }}
-          style={coverRevealOverlay}
-          data-testid="cover-reveal"
-          aria-hidden="true"
-        >
-          Tap to reveal
-        </div>
-      )}
     </div>
   );
 }
@@ -526,22 +470,8 @@ const coverWrap: CSSProperties = {
 };
 
 const coverImg: CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block' };
-const coverGateWrap: CSSProperties = { position: 'relative', width: '100%', height: '100%' };
+const coverBadgeWrap: CSSProperties = { position: 'relative', width: '100%', height: '100%' };
 const coverBadgeSlot: CSSProperties = { position: 'absolute', top: 6, left: 6, zIndex: 2, pointerEvents: 'none' };
-const coverRevealOverlay: CSSProperties = {
-  position: 'absolute',
-  inset: 0,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 1,
-  color: '#fff',
-  fontSize: 12,
-  fontWeight: 700,
-  textShadow: '0 1px 2px rgba(0,0,0,0.8)',
-  background: 'rgba(0,0,0,0.25)',
-  cursor: 'pointer',
-};
 
 function coverPlaceholder(c: Palette): CSSProperties {
   return {

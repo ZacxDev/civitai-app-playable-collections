@@ -104,94 +104,41 @@ describe('CollectionGrid states (deterministic)', () => {
     expect(screen.getByTestId('collection-grid')).toHaveAttribute('data-layout', 'desktop');
   });
 
-  it('GATES a mature cover (badge + blur-until-tap) and reveals without opening (audit #1)', async () => {
-    const onOpen = vi.fn();
+  // 🔴 FOUR COVER-GATE TESTS WERE DELETED FROM HERE IN 0.2.11, NOT REPOINTED.
+  // They asserted `cover-gate` / `cover-reveal` — a per-cover tap-to-reveal that
+  // blurred a thumbnail and let anyone click it away with no age assertion of any
+  // kind. That mechanism is gone: a cover is painted iff the viewer's maturity
+  // ceiling permits its rating, and an excluded one falls into the ordinary ▶
+  // placeholder tile. The replacement suite lives with the component it belongs
+  // to (`components/CollectionGrid.test.tsx`), which can project a ceiling; these
+  // bare renders never could, so a test here could only ever have seen the
+  // fail-closed arm. What remains here is the one claim this file is the right
+  // place for: the grid the APP renders carries no reveal affordance.
+  it('🔴 no cover on the grid offers a reveal — the deleted gate has no residue in the app shell', () => {
     render(
       <CollectionGrid
-        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 8 })]}
+        collections={[
+          sampleCollection({ id: 1, coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 8 }),
+          sampleCollection({ id: 2, coverImageUrl: 'https://x/2.jpg', coverNsfwLevel: 1 }),
+          sampleCollection({ id: 3, coverImageUrl: 'https://x/3.jpg', coverNsfwLevel: undefined }),
+        ]}
         loading={false}
         error={null}
         emptyLabel=""
-        onOpen={onOpen}
+        onOpen={() => {}}
         c={c}
         isMobile={false}
       />,
     );
-    expect(screen.getByTestId('cover-gate')).toHaveAttribute('data-revealed', 'false');
-    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('X');
-    // Tapping the reveal overlay reveals the cover WITHOUT opening the card.
-    await userEvent.click(screen.getByTestId('cover-reveal'));
-    expect(onOpen).not.toHaveBeenCalled();
-    expect(screen.getByTestId('cover-gate')).toHaveAttribute('data-revealed', 'true');
+    // No ceiling is projected here, so it fail-closes to SFW: only the PG cover
+    // paints, and the other two are placeholders. That is the positive control —
+    // an assertion of "no reveal" over an empty grid would prove nothing.
+    expect(document.querySelectorAll('img')).toHaveLength(1);
+    expect(screen.getAllByTestId('cover-placeholder')).toHaveLength(2);
+    expect(screen.queryByTestId('cover-gate')).toBeNull();
     expect(screen.queryByTestId('cover-reveal')).toBeNull();
-    // Now the card opens normally.
-    await userEvent.click(screen.getByTestId('collection-card'));
-    expect(onOpen).toHaveBeenCalled();
-  });
-
-  it('does NOT gate a PG cover', () => {
-    render(
-      <CollectionGrid
-        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 1 })]}
-        loading={false}
-        error={null}
-        emptyLabel=""
-        onOpen={() => {}}
-        c={c}
-        isMobile={false}
-      />,
-    );
-    expect(screen.queryByTestId('cover-gate')).toBeNull();
-    expect(screen.queryByTestId('maturity-badge')).toBeNull();
-  });
-
-  it('gates a cover with an UNKNOWN level (fail closed) when a 0 level is supplied', () => {
-    render(
-      <CollectionGrid
-        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: 0 })]}
-        loading={false}
-        error={null}
-        emptyLabel=""
-        onOpen={() => {}}
-        c={c}
-        isMobile={false}
-      />,
-    );
-    expect(screen.getByTestId('cover-gate')).toBeInTheDocument();
-    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
-  });
-
-  it('does NOT gate an ABSENT cover level — the server never sends coverNsfwLevel (supersedes audit S1)', () => {
-    // 🔴 REVERSED DELIBERATELY, and this comment is the record of why. This test
-    // previously asserted the opposite ("FAILS CLOSED on an ABSENT cover level"),
-    // written when an earlier `nsfwLevel != null && …` short-circuit failed OPEN.
-    //
-    // Measured live 2026-09-05: `GET /api/v1/blocks/collections` does not return
-    // `coverNsfwLevel` AT ALL, so the absent branch was not a rare edge — it was
-    // every card, every time, and the fail-closed reading blurred 100% of the grid.
-    // Failing open is safe for COVERS specifically because the server clamps the
-    // cover URL by the token's `browsingLevel` before returning it (see
-    // `primaryCoverUsable` + `getFallbackCoverImages` in <civitai>'s
-    // src/server/services/blocks/block-collections.service.ts) — a cover that comes
-    // back is already within the viewer's ceiling.
-    //
-    // The ITEM path is unchanged and still fails closed; see the sibling tests
-    // below (an explicit 0 is still gated) and CollectionViewer.test.tsx.
-    render(
-      <CollectionGrid
-        collections={[sampleCollection({ coverImageUrl: 'https://x/1.jpg', coverNsfwLevel: undefined })]}
-        loading={false}
-        error={null}
-        emptyLabel=""
-        onOpen={() => {}}
-        c={c}
-        isMobile={false}
-      />,
-    );
-    expect(screen.queryByTestId('cover-gate')).toBeNull();
-    expect(screen.queryByTestId('maturity-badge')).toBeNull();
-    // The cover <img> renders at full strength (no MATURITY_BLUR_PX filter).
-    expect(document.querySelector('img')).not.toHaveStyle({ filter: 'blur(36px)' });
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+    expect(document.querySelector('[style*="blur("]')).toBeNull();
   });
 
   it('shows private + followed badges', () => {
