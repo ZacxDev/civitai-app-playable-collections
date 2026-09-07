@@ -219,6 +219,39 @@ describe('401 re-mint + retry', () => {
   });
 });
 
+describe('a body read that fails for a NON-abort reason', () => {
+  // 🔴 THE ONE ORDINARY-PATH BEHAVIOUR CHANGE IN THE TIMEOUT WORK, AND IT HAD NO
+  // TEST. Bounding the body read moved this outcome from a raw `Error` (no code,
+  // no status) to `ApiError('network', 0, …)`. A differential sweep over 66
+  // outcome keys found this is the ONLY divergence old-vs-new — every other path
+  // is byte-identical — so it is pinned here rather than left implicit.
+  //
+  // The consequence is deliberate and in the safe direction: `retry.ts` retries
+  // `network`, so the two list loaders go from 1 attempt to up to 3. Both are
+  // idempotent GETs, and `tip` is never auto-retried (`withBoundedRetry` wraps
+  // only the list loaders), so there is no double-spend amplification.
+  it('reports a 2xx whose body read rejects as a `network` ApiError, message preserved', async () => {
+    const res = new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    Object.defineProperty(res, 'text', {
+      value: () => Promise.reject(new Error('network error reading body')),
+    });
+    const { api } = makeClient([res]);
+    const err = await api.listCollections({ mode: 'public' }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('network');
+    expect((err as ApiError).status).toBe(0);
+    // The underlying cause is preserved, not swallowed into a generic string.
+    expect((err as ApiError).message).toContain('network error reading body');
+  });
+
+  it('POSITIVE CONTROL — a readable body on the same path still resolves', async () => {
+    // Without this, the test above passes for a client that failed every request.
+    const { api } = makeClient([jsonResponse(200, { items: [{ id: 1, name: 'A' }] })]);
+    const page = await api.listCollections({ mode: 'public' });
+    expect(page.items).toHaveLength(1);
+  });
+});
+
 describe('network + parse helpers', () => {
   it('maps a thrown fetch to a network ApiError', async () => {
     const fetchImpl = vi.fn(async () => {

@@ -537,9 +537,26 @@ describe('🔴 the plan OUTLIVES this component (the close → reopen double-pay
     // Retry stays the primary action; the discard is the secondary escape …
     expect(screen.getByTestId('split-retry')).toBeInTheDocument();
     // … and it is HONEST about the trade rather than silent about it.
-    const note = screen.getByTestId('split-discard-note').textContent?.replace(/\s+/g, ' ') ?? '';
-    expect(note).toMatch(/retry/i);
-    expect(note).toMatch(/second transfer/i);
+    //
+    // 🔴 PINNED VERBATIM, NOT BY KEYWORD, AND THE REASON IS A REAL DEFECT THIS
+    // GUARD WALKED PAST. It used to assert only /retry/i and /second transfer/i.
+    // The note's FIRST clause read "Nothing went through" — a claim the code
+    // cannot make (a leg whose POST landed and whose reply was lost is marked
+    // FAILED, so `nothingLanded` is true while the Buzz is already gone), and it
+    // contradicted the note's own third sentence. Both keywords still matched, so
+    // the guard was green throughout. This is the arc's standing rule for prose
+    // under test: pin the WHOLE normalised string. A cosmetic reword then fails
+    // here — pay that, for a claim about money that cannot silently drift.
+    const note = screen.getByTestId('split-discard-note').textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    expect(note).toBe(
+      'Nothing came back confirmed, so you can start over at a different amount — but Retry is the safer ' +
+        'button. Retrying re-sends these same transfers under their original keys, so anything the server ' +
+        'already took cannot be taken twice. Starting over throws those keys away: if one of these ' +
+        'transfers did reach the server and only its reply was lost, your new tip would become a second ' +
+        'transfer.',
+    );
+    // 🔴 And the specific falsehood must not come back in any casing.
+    expect(note).not.toMatch(/nothing went through/i);
 
     await userEvent.click(screen.getByTestId('split-discard'));
 
@@ -549,6 +566,13 @@ describe('🔴 the plan OUTLIVES this component (the close → reopen double-pay
     const fresh = screen.getByTestId('split-amount-input');
     expect(fresh).not.toBeDisabled();
     expect(screen.getByTestId('split-preset-100')).not.toBeDisabled();
+
+    // 🔴 FOCUS MUST LAND BACK INSIDE THE MODAL. Discard unmounts its own subtree,
+    // so without an explicit move focus falls to `document.body` — and FocusTrap's
+    // Tab handler is a React `onKeyDown` on the wrapper, which a keypress from
+    // `body` never reaches, so Tab would walk the page BEHIND the overlay.
+    await waitFor(() => expect(document.activeElement).toBe(fresh));
+    expect(document.activeElement).not.toBe(document.body);
 
     // …usable at a DIFFERENT amount, under keys the server has never seen.
     await userEvent.clear(fresh);

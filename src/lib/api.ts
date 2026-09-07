@@ -172,7 +172,16 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
     const controller = new AbortController();
     const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
     let disarmed = false;
-    /** Disarm the ceiling. Idempotent, so every exit clears exactly once. */
+    /**
+   * Disarm the ceiling.
+   *
+   * ⚠️ THE `disarmed` FLAG IS DEFENSIVE, NOT LOAD-BEARING, and saying so is the
+   * point: `clearTimeout` is already idempotent, so removing the flag changes no
+   * observable behaviour and its mutant SURVIVES the suite. It is kept because a
+   * future edit could give this a non-idempotent body, and it is labelled so
+   * nobody cites it as a tested guarantee. An earlier comment here claimed "every
+   * exit clears exactly once" as though something checked that; nothing does.
+   */
     const disarm = () => {
       if (timer && !disarmed) {
         disarmed = true;
@@ -224,9 +233,15 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
 
       // 401 → try one token re-mint + retry (expired-token path).
       if (res.status === 401 && !_isRetry && opts.refreshToken) {
-        // Disarm before handing off: the retry arms its OWN ceiling, and
-        // `refreshToken` is a separate (host-mediated) wait this one must not
-        // straddle.
+        // Disarm before handing off: the retry arms its OWN ceiling.
+        //
+        // ⚠️ DEFENSIVE, AND ITS MUTANT SURVIVES — do not read this as a tested
+        // guard. Once the 401 response is in hand nothing awaits this
+        // controller, so aborting it here is unobservable. The previous comment
+        // said `refreshToken` is "a wait this one must not straddle", implying a
+        // hazard this line prevents; it does not. `refreshToken` is separately
+        // bounded upstream (`IframeTransport.sendRequest`, 30s), so the worst
+        // case is 15 + 30 + 15s, and that bound comes from the SDK, not here.
         disarm();
         await opts.refreshToken().catch(() => {});
         return await request<T>(path, init, true);
@@ -284,7 +299,13 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
  *
  * The losing `res.text()` is left dangling deliberately: the connection is being
  * torn down by the same abort, and there is nothing useful to do with a body
- * that arrives after we have already reported a timeout.
+ * that arrives after we have already reported a timeout. It is HANDLED, not
+ * merely dropped — `.then(resolve, reject)` attaches a rejection handler, so a
+ * later rejection cannot surface as an unhandled rejection.
+ *
+ * ⚠️ The `signal.aborted` early return is DEFENSIVE and its mutant SURVIVES: the
+ * abort listener below covers the already-aborted case on its own. Kept as a
+ * cheap short-circuit, labelled so it is not mistaken for a tested branch.
  */
 function readTextBounded(res: Response, signal: AbortSignal): Promise<string> {
   if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));

@@ -252,6 +252,17 @@ export function TipSplitModal({
   const discard = () => {
     if (sendingRef.current) return;
     onPlanChange(null);
+    // 🔴 MOVE FOCUS, OR THE FOCUS TRAP IS DEFEATED. This button unmounts its own
+    // subtree, so focus falls to `document.body` — and `FocusTrap`'s Tab handler
+    // is a React `onKeyDown` on the wrapper div, which a keypress originating at
+    // `body` never reaches. Tab would then walk the page BEHIND the overlay.
+    // (The pre-existing confirm→retry swap does not have this problem: React
+    // reuses that node, so focus stays inside.) The amount field is also exactly
+    // where the note sends the viewer — "start over at a different amount" — so
+    // this is the correct destination, not just a trap repair.
+    requestAnimationFrame(() => {
+      document.getElementById('tip-split-amount')?.focus();
+    });
   };
 
   const failed = plan?.some((l) => l.status === 'failed') ?? false;
@@ -435,11 +446,26 @@ export function TipSplitModal({
                         mints new ones — which is safe only if none of these
                         transfers actually reached the server, and that is the one
                         thing this app cannot see from inside the iframe. Say so,
-                        rather than presenting a free-looking reset. */}
-                    Nothing went through, so you can start over at a different amount — but Retry is the safer button.
-                    Retrying re-sends these same transfers under their original keys, so anything the server already
-                    took cannot be taken twice. Starting over throws those keys away: if one of these transfers did
-                    reach the server and only its reply was lost, your new tip would become a second transfer.
+                        rather than presenting a free-looking reset.
+
+                        🔴 THE FIRST CLAUSE SAID "Nothing went through" UNTIL AN
+                        AUDIT CAUGHT IT, and it was the one sentence here that was
+                        false. `nothingLanded` means no leg reached `sent` — i.e.
+                        nothing came back CONFIRMED. A leg whose POST landed and
+                        whose response was merely lost surfaces as an
+                        `ApiError('network')` and is marked FAILED, so it is
+                        counted by `nothingLanded` while the Buzz is already gone.
+                        The paragraph then contradicted itself three sentences
+                        later, and the false half was the half a viewer reads
+                        first. The wording now claims only what the app can
+                        observe. 🔴 It is pinned VERBATIM by a test, not by
+                        keywords: a keyword guard is exactly what a reword like
+                        this one walks past. */}
+                    Nothing came back confirmed, so you can start over at a different amount — but Retry is the safer
+                    button. Retrying re-sends these same transfers under their original keys, so anything the server
+                    already took cannot be taken twice. Starting over throws those keys away: if one of these
+                    transfers did reach the server and only its reply was lost, your new tip would become a second
+                    transfer.
                   </span>
                   <Button
                     variant="subtle"

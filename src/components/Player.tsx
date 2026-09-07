@@ -321,6 +321,18 @@ export function Player(props: PlayerProps) {
       // account, and the partial-failure UI (with its retry) never appears.
       // `tipping` covers the single-target picker's in-flight window; the split
       // reports its own, because it stays open across two sequential legs.
+      //
+      // ⚠️ BOTH CLAUSES ARE KEPT, BUT ONLY ONE IS WITNESSED AT PRODUCTION
+      // FIDELITY — recorded rather than glossed. In production `onSendLeg` routes
+      // to `App.doTip`, which raises the SAME shared `tipping` flag for every leg,
+      // so `splitSending` implies `tipping` and `!tipping` alone would already
+      // refuse. The test that kills the `!splitSending` mutant does so from a
+      // fixture (`trackTipping` off ⇒ `tipping:false, splitSending:true`) that
+      // App cannot actually produce; a production-fidelity probe of the inter-leg
+      // window did NOT kill it. That is one negative probe, not proof the clause
+      // is redundant, so it stays — the cost is a boolean and the failure it
+      // would allow is a mid-send dismissal that spends Buzz with no retry UI.
+      // Do not cite it as tested.
       if (tipTarget || splitOpenFor) {
         if (e.key === 'Escape' && !splitSending && !tipping) {
           setTipTarget(null);
