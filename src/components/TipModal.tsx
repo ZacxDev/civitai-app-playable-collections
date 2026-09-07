@@ -85,11 +85,18 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
   };
 
   return (
+    // 🔴 NOT DISMISSIBLE WHILE THE TRANSFER IS ON THE WIRE. Escape, an overlay
+    // click and the × all close this shell, and none of them cancel the POST —
+    // dismissing mid-send spends the Buzz with no confirmation and no error
+    // surface. Same gate as the split popover's.
     <Modal
       opened
       onClose={onClose}
       title={`Tip ${target.username ? `@${target.username}` : `the ${label}`}`}
       size="sm"
+      closeOnEscape={!submitting}
+      closeOnOverlayClick={!submitting}
+      withCloseButton={!submitting}
     >
       <FocusTrap>
       <div data-testid="tip-modal" aria-label={`Tip ${label}`} style={bodyStyle}>
@@ -149,7 +156,7 @@ export function TipModal({ target, balance, submitting, onConfirm, onClose, dail
         />
 
         <div style={actionRow}>
-          <Button variant="subtle" onClick={onClose} data-testid="tip-cancel">
+          <Button variant="subtle" onClick={onClose} disabled={submitting} data-testid="tip-cancel">
             Cancel
           </Button>
           <Button

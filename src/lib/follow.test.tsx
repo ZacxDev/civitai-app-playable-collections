@@ -58,18 +58,77 @@ describe('useFollowToggle', () => {
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(42, false));
   });
 
-  it("🔴 reports the ECHO's collection id, not the one the closure captured", async () => {
-    // The fixtures disagree ON PURPOSE: the hook was constructed for 42 and the
-    // host answers about 77. A implementation that reports its captured id
-    // passes every same-id fixture anyone would think to write, and mis-files
-    // the write when the viewer navigates during the consent dialog.
+  it('🔴 IGNORES a settle whose echoed collection id is not the one we asked about', async () => {
+    // 🔴 RE-POINTED, NOT DELETED — and the old expectation was the defect. This
+    // fixture (constructed for 42, host answers about 77) used to assert that the
+    // echo's id was ADOPTED and reported through `onChange`, i.e. that a reply
+    // about some other collection is allowed to move app state. Upstream's own
+    // `FollowButton` correlates instead (`if (!stillOurs(result.collectionId))
+    // return;`), and the hand-rolled path has no business being weaker: adopting
+    // it records a follow the viewer never made, on an account-write control.
+    //
+    // The real host cannot produce this fixture (it echoes the const it was
+    // handed, and the transport validates it), which is exactly why the guard
+    // needs a test — nothing else would ever exercise it.
     setFollow.mockResolvedValue({ collectionId: 77, followed: true });
+    const { result, onChange, onNotice } = harness(false);
+
+    await act(async () => result.current.toggle());
+
+    await waitFor(() => expect(result.current.pending).toBe(false));
+    expect(onChange).not.toHaveBeenCalled();
+    // And it is not reported as a success either — nothing about this reply is
+    // ours to render.
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('🔴 IGNORES a settle for the collection it has since moved OFF, even though the echo matches', async () => {
+    // The other half of upstream's `stillOurs`, and the half the echo comparison
+    // alone cannot see: this hook's `collectionId` PROP moves while a write is
+    // settling (a rail bound to "the selected collection", a recycled row). The
+    // reply is a perfectly valid echo FOR THE OLD ID — adopting it reports a
+    // follow against whatever is bound now.
+    let release: (v: unknown) => void = () => {};
+    setFollow.mockReturnValue(new Promise((r) => { release = r; }));
+    const onChange = vi.fn();
+    const onNotice = vi.fn();
+    const { result, rerender } = renderHook(
+      ({ id }: { id: number }) =>
+        useFollowToggle({
+          collectionId: id,
+          followed: false,
+          onChange,
+          onSignInRequired: vi.fn(),
+          onNotice,
+          onUncertain: vi.fn(),
+        }),
+      { initialProps: { id: 42 } },
+    );
+
+    await act(async () => result.current.toggle());
+    expect(setFollow).toHaveBeenCalledWith({ collectionId: 42, follow: true });
+    // The binding moves while the host's consent dialog is still open.
+    rerender({ id: 77 });
+    await act(async () => {
+      release({ collectionId: 42, followed: true });
+    });
+
+    await waitFor(() => expect(result.current.pending).toBe(false));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('adopts the MATCHING echo’s followed value, disagreeing with the request when it must', async () => {
+    // The other half of the pair above: correlation gates on the ID, and must not
+    // become an excuse to fall back on the value we SENT. Asked to follow, host
+    // says false for id 42 → report false, for 42.
+    setFollow.mockResolvedValue({ collectionId: 42, followed: false });
     const { result, onChange } = harness(false);
 
     await act(async () => result.current.toggle());
 
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith(77, true));
-    expect(onChange).not.toHaveBeenCalledWith(42, true);
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(42, false));
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 
   it('🔴 renders a SENTENCE for a host refusal code, never the raw code', async () => {
@@ -186,19 +245,33 @@ describe('useFollowToggle', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('a real SERVER message IS rendered as an error', async () => {
+  it('a real SERVER message IS rendered — and flagged as POST-WRITE-AMBIGUOUS', async () => {
     // The one branch whose .message is meant to be shown. Distinct from the
     // timeout above ONLY by `.timedOut`, which is why they are tested as a pair.
+    //
+    // 🔴 RE-POINTED: this used to assert the message was rendered BARE, i.e. that
+    // a code-less error means "nothing was written". The host cannot promise
+    // that — it marks consent, awaits the mutation inside a `try`, and replies
+    // `{ error }` from the `catch`, so this one reply covers a refusal AND a
+    // failure raised after the row committed. The server's own words are still
+    // shown verbatim; what changed is that the app no longer adds a certainty the
+    // host never gave it.
     setFollow.mockRejectedValue(
       new CollectionFollowError('You do not have permission to follow that collection.'),
     );
-    const { result, onNotice } = harness(false);
+    const { result, onNotice, onUncertain } = harness(false);
 
     await act(async () => result.current.toggle());
 
-    await waitFor(() =>
-      expect(onNotice).toHaveBeenCalledWith('error', 'You do not have permission to follow that collection.'),
-    );
+    await waitFor(() => expect(onNotice).toHaveBeenCalledTimes(1));
+    const [kind, message] = onNotice.mock.calls[0];
+    expect(kind).toBe('error');
+    expect(message).toContain('You do not have permission to follow that collection.');
+    expect(message).toMatch(/may still have gone through/i);
+    // 🔴 And the cache is dropped, for the same reason the timeout branch drops
+    // it: the app has just told the viewer to check again, and the 5-minute read
+    // cache would answer that with the pre-follow flag.
+    expect(onUncertain).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a second toggle while one is in flight (no double write)', async () => {

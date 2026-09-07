@@ -3,11 +3,12 @@
 // Amounts asserted here are LITERALS. Recomputing a split inside an assertion
 // with the same formula the component uses would pass for any formula.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { TipSplitModal } from './TipSplitModal.js';
+import { TipSplitModal, splitTipKey, type PlannedLeg } from './TipSplitModal.js';
 import type { TipTarget } from './TipModal.js';
 
 const CREATOR: TipTarget = {
@@ -25,7 +26,15 @@ const CURATOR: TipTarget = {
   entityId: 101,
 };
 
-/** Render the popover with a deterministic key minter + a scripted leg sender. */
+/**
+ * Render the popover with a deterministic key minter + a scripted leg sender.
+ *
+ * 🔴 THE PLAN IS OWNED BY THE HARNESS, NOT BY THE COMPONENT — that is the shape
+ * production uses (App holds it, keyed by `splitTipKey`), and it is what lets
+ * `mounted` be flipped to model the viewer pressing Close and reopening. A
+ * harness that kept the plan inside the component could not express the
+ * double-pay this file now guards.
+ */
 function setup(opts: {
   creator?: TipTarget | null;
   curator?: TipTarget | null;
@@ -41,20 +50,55 @@ function setup(opts: {
   const onDone = vi.fn();
   const onClose = vi.fn();
   let n = 0;
-  render(
-    <TipSplitModal
-      creator={opts.creator === undefined ? CREATOR : opts.creator}
-      curator={opts.curator === undefined ? CURATOR : opts.curator}
-      balance={opts.balance === undefined ? 100000 : opts.balance}
-      submitting={false}
-      dailyRemaining={opts.dailyRemaining}
-      onSendLeg={send}
-      onDone={onDone}
-      onClose={onClose}
-      newKey={() => `key-${++n}`}
-    />,
-  );
-  return { send, calls, onDone, onClose };
+  const newKey = vi.fn(() => `key-${++n}`);
+  const creator = opts.creator === undefined ? CREATOR : opts.creator;
+  const curator = opts.curator === undefined ? CURATOR : opts.curator;
+  /** Flipped by `close()` / `reopen()` to unmount + remount the popover. */
+  let setMounted: (v: boolean) => void = () => {};
+
+  function Host() {
+    const [plans, setPlans] = useState<Record<string, PlannedLeg[]>>({});
+    const [mounted, setMountedState] = useState(true);
+    setMounted = setMountedState;
+    const key = splitTipKey(creator, curator);
+    if (!mounted) return null;
+    return (
+      <TipSplitModal
+        creator={creator}
+        curator={curator}
+        balance={opts.balance === undefined ? 100000 : opts.balance}
+        submitting={false}
+        dailyRemaining={opts.dailyRemaining}
+        onSendLeg={send}
+        onDone={onDone}
+        onClose={onClose}
+        plan={plans[key] ?? null}
+        onPlanChange={(plan) =>
+          setPlans((prev) => {
+            if (plan == null) {
+              const next = { ...prev };
+              delete next[key];
+              return next;
+            }
+            return { ...prev, [key]: plan };
+          })
+        }
+        newKey={newKey}
+      />
+    );
+  }
+
+  render(<Host />);
+  return {
+    send,
+    calls,
+    onDone,
+    onClose,
+    newKey,
+    /** The viewer presses Close: the component unmounts, the owner keeps the plan. */
+    close: () => act(() => setMounted(false)),
+    reopen: () => act(() => setMounted(true)),
+  };
 }
 
 describe('the split preview — what each side gets, before confirming', () => {
@@ -257,6 +301,32 @@ describe('partial failure + retry (hazard 1)', () => {
     expect(screen.getByTestId('split-preset-100')).toBeDisabled();
   });
 
+  it('sends an UNEVEN split with the exact per-recipient amounts (75/25)', async () => {
+    // 🔴 EVERY OTHER SEND ASSERTION IN THIS ARC USES AN EVEN SPLIT (25/25,
+    // 2500/2500), so a mutant that swaps the two legs' amounts — or divides the
+    // total evenly regardless of the slider — is INVISIBLE to all of them. This
+    // is the fixture that can see it: 75 and 25 are distinct from each other and
+    // from the total.
+    const { calls, onDone } = setup();
+    const input = screen.getByTestId('split-amount-input');
+    await userEvent.clear(input);
+    await userEvent.type(input, '100');
+    await userEvent.click(screen.getByTestId('split-percent-75'));
+    expect(screen.getByTestId('split-preview-creator')).toHaveTextContent('@bob (creator): 75 Buzz');
+    expect(screen.getByTestId('split-preview-curator')).toHaveTextContent('@alice (curator): 25 Buzz');
+
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(calls).toEqual([
+      { toUserId: 22, amount: 75, key: 'key-1' },
+      { toUserId: 11, amount: 25, key: 'key-2' },
+    ]);
+    expect(onDone).toHaveBeenCalledWith([
+      { kind: 'creator', amount: 75 },
+      { kind: 'curator', amount: 25 },
+    ]);
+  });
+
   it('keeps failing legs retryable — a second failure re-shows the panel', async () => {
     const { calls, onDone } = setup({ send: async (target) => target.kind !== 'curator' });
     await userEvent.click(screen.getByTestId('split-confirm'));
@@ -267,5 +337,164 @@ describe('partial failure + retry (hazard 1)', () => {
     expect(onDone).not.toHaveBeenCalled();
     // Still only ONE creator transfer after two retries' worth of pressing.
     expect(calls.filter((c) => c.toUserId === 22)).toHaveLength(1);
+  });
+});
+
+describe('🔴 the synchronous re-entrance guard (sendingRef) — no witness before this', () => {
+  /** A sender that parks, so the in-flight window can be inspected and re-entered. */
+  function parkedSender() {
+    const released: Array<(ok: boolean) => void> = [];
+    const send = (_t: TipTarget, _a: number, _k: string) =>
+      new Promise<boolean>((resolve) => released.push(resolve));
+    return { send, releaseAll: (ok = true) => released.splice(0).forEach((r) => r(ok)) };
+  }
+
+  it('a DOUBLE CONFIRM in one tick mints ONE set of keys, not two', async () => {
+    // `setSending(true)` only disables the button on the NEXT render, so both
+    // clicks of a fast double-click reach `confirm()`. Without the guard the
+    // second one mints a fresh pair of keys and hands them to the owner OVER the
+    // plan that is already being sent — after which a retry would be sending
+    // legs the server has never seen under keys nothing can replay.
+    const parked = parkedSender();
+    const { calls, newKey } = setup({ send: parked.send });
+    const btn = screen.getByTestId('split-confirm');
+    act(() => {
+      fireEvent.click(btn);
+      fireEvent.click(btn);
+    });
+    expect(newKey).toHaveBeenCalledTimes(2); // one per LEG, of ONE plan
+    expect(calls.map((c) => c.key)).toEqual(['key-1']); // leg 2 waits on leg 1
+    await act(async () => parked.releaseAll(true));
+    expect(calls.map((c) => c.key)).toEqual(['key-1', 'key-2']);
+  });
+
+  it('a DOUBLE RETRY in one tick runs the plan once, not twice', async () => {
+    const { calls } = setup({ send: async (target) => target.kind !== 'curator' });
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(calls).toHaveLength(2);
+
+    const retry = screen.getByTestId('split-retry');
+    act(() => {
+      fireEvent.click(retry);
+      fireEvent.click(retry);
+    });
+    await waitFor(() => expect(calls).toHaveLength(3));
+    // Exactly ONE extra attempt. Two concurrent loops over the same plan would
+    // put the outstanding leg on the wire twice.
+    expect(calls).toHaveLength(3);
+    expect(calls.filter((c) => c.toUserId === 22)).toHaveLength(1);
+  });
+
+  it('🔴 cannot be DISMISSED while a leg is on the wire', async () => {
+    // Escape, an overlay click and the × all close the shell, and none of them
+    // cancel the POST already in flight — so a dismissal mid-send spends the Buzz
+    // and takes the partial-failure UI (and the retry, and the plan) away.
+    const parked = parkedSender();
+    // ONE leg, so a single release ends the in-flight window cleanly (with two
+    // legs, releasing the first immediately parks the second).
+    const { onClose } = setup({ creator: null, send: parked.send });
+    // Positive control: BEFORE the send, all three dismiss affordances are live —
+    // otherwise their absence below would prove nothing.
+    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument(); // the ×
+    expect(screen.getByTestId('split-cancel')).not.toBeDisabled();
+
+    await userEvent.click(screen.getByTestId('split-confirm'));
+
+    expect(screen.getByTestId('split-cancel')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull(); // the × is gone
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // …and it becomes dismissible again the moment the wire is clear.
+    await act(async () => parked.releaseAll(false));
+    expect(screen.getByTestId('split-cancel')).not.toBeDisabled();
+  });
+});
+
+describe('splitTipKey — the identity a resumed plan is stored under', () => {
+  it('distinguishes the ENTITIES, not just the people', () => {
+    // A plan is resumed by key, and a resumed plan replays keys the server has
+    // already terminal-ised. Two DIFFERENT images by the same creator in the same
+    // collection are two different tips: sharing a key would make the second
+    // press replay the first press's transfer and silently send nothing.
+    const base = splitTipKey(CREATOR, CURATOR);
+    expect(splitTipKey({ ...CREATOR, entityId: 1002 }, CURATOR)).not.toBe(base);
+    expect(splitTipKey(CREATOR, { ...CURATOR, entityId: 102 })).not.toBe(base);
+    expect(splitTipKey({ ...CREATOR, toUserId: 999 }, CURATOR)).not.toBe(base);
+    expect(splitTipKey(null, CURATOR)).not.toBe(base);
+    expect(splitTipKey(CREATOR, null)).not.toBe(base);
+    // …and is stable for the same logical tip, or nothing would ever resume.
+    expect(splitTipKey({ ...CREATOR }, { ...CURATOR })).toBe(base);
+  });
+});
+
+describe('🔴 the plan OUTLIVES this component (the close → reopen double-pay)', () => {
+  it('resumes the same plan, with the landed leg still marked sent and its key intact', async () => {
+    let curatorAttempts = 0;
+    const { calls, close, reopen, onDone } = setup({
+      send: async (target) => {
+        if (target.kind === 'curator') return ++curatorAttempts > 1;
+        return true;
+      },
+    });
+    // 🔴 DELIBERATELY NOT THE DEFAULTS. A resumed plan of 50 split 25/25 is
+    // indistinguishable from a BLANK form (default total 50, default split 50%),
+    // so every assertion below would pass on a popover that resumed nothing. 100
+    // at 75/25 makes the total, both leg amounts and the split all differ from
+    // the constants the component falls back to.
+    const input = screen.getByTestId('split-amount-input');
+    await userEvent.clear(input);
+    await userEvent.type(input, '100');
+    await userEvent.click(screen.getByTestId('split-percent-75'));
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+
+    // The viewer presses **Close** — the label this component itself shows in the
+    // failed state, right beside the promise below.
+    close();
+    expect(screen.queryByTestId('tip-split-modal')).toBeNull();
+    reopen();
+
+    // Not a blank form: the same two legs, the same statuses, a Retry.
+    expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+    expect(screen.getByTestId('split-leg-curator')).toHaveAttribute('data-status', 'failed');
+    expect(screen.queryByTestId('split-confirm')).toBeNull();
+    // The locked amount and the split survive too — showing the defaults here
+    // would put numbers on screen that are not the ones the keys were minted for.
+    expect(screen.getByTestId('split-amount-input')).toHaveValue('100');
+    expect(screen.getByTestId('split-preview-creator')).toHaveTextContent('@bob (creator): 75 Buzz');
+    expect(screen.getByTestId('split-preview-curator')).toHaveTextContent('@alice (curator): 25 Buzz');
+
+    await userEvent.click(screen.getByTestId('split-retry'));
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    // 🔴 THREE sends across the whole sequence, never four: the creator leg is
+    // not re-sent, and the curator's retry carries key-2 with its ORIGINAL amount.
+    expect(calls).toEqual([
+      { toUserId: 22, amount: 75, key: 'key-1' },
+      { toUserId: 11, amount: 25, key: 'key-2' },
+      { toUserId: 11, amount: 25, key: 'key-2' },
+    ]);
+  });
+
+  it('pins the partial-failure promise VERBATIM against the behaviour it describes', async () => {
+    // 🔴 THE WHOLE NORMALISED STRING, NOT A KEYWORD. A guard on words is walkable
+    // by rewording, and this sentence is the one the arc keeps getting wrong: it
+    // promised that already-sent parts could not be sent twice while the button
+    // beside it destroyed the plan that made that true. Changing the copy must
+    // cost a deliberate edit here, next to the test that proves the claim.
+    const { close, reopen } = setup({ send: async (target) => target.kind !== 'curator' });
+    await userEvent.click(screen.getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    const promise = screen.getByTestId('split-partial-promise').textContent?.replace(/\s+/g, ' ').trim();
+    expect(promise).toBe(
+      'Retrying sends only what is still outstanding — the part already sent cannot be sent twice. ' +
+        'Closing is safe too: reopening this split picks the same tip back up, for as long as this page stays open.',
+    );
+    // The second sentence, executed: close, reopen, and the tip is still there.
+    close();
+    reopen();
+    expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
   });
 });

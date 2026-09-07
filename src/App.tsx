@@ -80,6 +80,7 @@ import { useRecent, type RecentEntry } from './lib/recent.js';
 import { useAnalytics, type AnalyticsSink } from './lib/analytics.js';
 import { CollectionViewer } from './components/CollectionViewer.js';
 import type { TipTarget } from './components/TipModal.js';
+import type { PlannedLeg } from './components/TipSplitModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
 
 const POPULAR_LIMIT = 10;
@@ -324,6 +325,36 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   const tipInFlightRef = useRef(false);
   // A failed collection-open keeps a retry affordance (the grid already has one).
   const [openError, setOpenError] = useState<{ summary: CollectionSummary; message: string } | null>(null);
+
+  /**
+   * Split-tip PLANS, keyed by logical tip (`splitTipKey`).
+   *
+   * 🔴 THEY LIVE HERE BECAUSE EVERY COMPONENT BELOW GETS UNMOUNTED BY ORDINARY
+   * USE. The plan holds the whole double-spend defence — one idempotency key per
+   * leg, minted once, plus the `sent` markers a retry skips on. It used to be
+   * `useState` inside TipSplitModal, which the popover's own **Close** button
+   * destroys; the viewer then reopened, confirmed, and the already-landed leg was
+   * transferred a SECOND time under a fresh key the server had never seen, so it
+   * could not collapse the replay. (Measured: creator paid 50 for a 25 press,
+   * allowance debited 75 for a 50 tip.) Closing the popover, switching view mode,
+   * opening or closing the lightbox and leaving the collection all unmount a
+   * Player — App is the lowest owner that survives all four.
+   *
+   * A completed tip is DELETED (its keys can never be needed again), so this only
+   * ever holds plans that half-failed, which is a handful at most.
+   */
+  const [splitPlans, setSplitPlans] = useState<Record<string, PlannedLeg[]>>({});
+  const onSplitPlanChange = useCallback((key: string, plan: PlannedLeg[] | null) => {
+    setSplitPlans((prev) => {
+      if (plan == null) {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      return { ...prev, [key]: plan };
+    });
+  }, []);
 
   // Deep-link (Feature #6): the open collection + mode + index live in the URL
   // hash so a reload restores playback and Share hands out a link.
@@ -835,6 +866,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           // pickers' "no local pre-block" default. A failed allowance read must
           // never make tipping impossible — the server stays the real gate.
           dailyTipRemaining={tipAllowance.remaining ?? undefined}
+          splitPlans={splitPlans}
+          onSplitPlanChange={onSplitPlanChange}
           onShare={onShareCollection}
           onCast={(on) => analytics.track({ type: 'cast', on })}
           onViewStateChange={handleViewStateChange}

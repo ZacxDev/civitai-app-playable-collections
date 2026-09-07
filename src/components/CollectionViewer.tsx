@@ -37,6 +37,7 @@ import { Player } from './Player.js';
 import { ContinuousView } from './ContinuousView.js';
 import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
 import { TipModal, type TipSender } from './TipModal.js';
+import type { PlannedLeg } from './TipSplitModal.js';
 import { FocusTrap } from './FocusTrap.js';
 import { useOnboarding } from '../lib/onboarding.js';
 
@@ -53,8 +54,14 @@ export interface CollectionViewerProps {
   onFollowChange: (collectionId: number, followed: boolean) => void;
   /** Surface a renderable message from the follow bridge (Player's rail). */
   onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
-  /** A follow timed out — outcome unknown; drop cached reads. */
-  onFollowUncertain?: () => void;
+  /**
+   * A follow whose outcome is UNKNOWN (transport timeout, or a code-less server
+   * error raised after the row may already have committed) — drop cached reads.
+   *
+   * 🔴 REQUIRED. While optional, an audit deleted this prop AND both forwards to
+   * Player below and the entire suite stayed green — see PlayerProps.
+   */
+  onFollowUncertain: () => void;
   onTip: TipSender;
   /** Prompt a logged-out viewer to sign in (tipping requires an account). */
   onRequestSignIn?: () => void;
@@ -66,6 +73,13 @@ export interface CollectionViewerProps {
    * failed read never makes tipping impossible.
    */
   dailyTipRemaining?: number;
+  /**
+   * Split-tip plans, owned by App. Forwarded VERBATIM to both Players (the mode
+   * surface and the lightbox) so a half-failed split survives a mode switch, the
+   * lightbox opening/closing, and this component unmounting.
+   */
+  splitPlans: Readonly<Record<string, PlannedLeg[]>>;
+  onSplitPlanChange: (key: string, plan: PlannedLeg[] | null) => void;
   isMobile: boolean;
   c: Palette;
   onExit: () => void;
@@ -110,6 +124,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
     onRequestSignIn,
     tipping,
     dailyTipRemaining,
+    splitPlans,
+    onSplitPlanChange,
     isMobile,
     c,
     onExit,
@@ -520,6 +536,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}
             dailyTipRemaining={dailyTipRemaining}
+            splitPlans={splitPlans}
+            onSplitPlanChange={onSplitPlanChange}
             cast={cast}
             reducedMotion={reducedMotion}
             isMobile={isMobile}
@@ -578,6 +596,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onRequestSignIn={onRequestSignIn}
             tipping={tipping}
             dailyTipRemaining={dailyTipRemaining}
+            splitPlans={splitPlans}
+            onSplitPlanChange={onSplitPlanChange}
             isMobile={isMobile}
             c={c}
             onExit={() => setLightboxIndex(null)}

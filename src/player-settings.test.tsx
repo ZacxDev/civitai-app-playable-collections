@@ -41,8 +41,11 @@ function Wrapper({ items }: { items: MediaItem[] }) {
       followed={false}
       
       onFollowChange={() => {}} onNotice={() => {}}
+      onFollowUncertain={() => {}}
       onTip={async () => true}
       tipping={false}
+      splitPlans={{}}
+      onSplitPlanChange={() => {}}
       isMobile={false}
       c={c}
       onExit={() => {}}

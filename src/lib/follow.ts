@@ -38,8 +38,17 @@
 // The two can disagree — an unfollow of something already unfollowed echoes
 // `false` for a request that changed nothing — and the echo is the only value
 // that describes what the server actually holds.
+//
+// 🔴 AND THE ECHO IS CORRELATED BEFORE IT IS ADOPTED, exactly as upstream's own
+// `FollowButton` does (`if (!stillOurs(result.collectionId)) return;`). It is not
+// reachable through THIS app today — the host echoes the const it was handed and
+// the transport validates it — but a hand-rolled copy of a shared control has no
+// business being weaker than the control it mirrors, and the failure it closes is
+// silent: a reply for a collection this hook has moved off would be reported
+// through `onChange` as the CURRENT one, recording a follow the viewer never made
+// on an account-write path.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   CollectionFollowError,
@@ -56,8 +65,14 @@ import {
  * (`COLLECTION_FOLLOW_ERROR_CODES`); `declined` and `sign-in-required` are
  * handled before this map is reached and deliberately have no entry, because
  * neither is a failure to render.
+ *
+ * 🔴 `Record<Exclude<…>>`, NOT `Partial<Record<…>>`, AND THAT IS THE DRIFT GUARD.
+ * Under `Partial` a code added upstream is simply absent here and silently takes
+ * `FALLBACK_REFUSAL` — a real refusal reason replaced by a generic sentence, with
+ * nothing anywhere to notice. Spelling the excluded two out means a new code
+ * fails `tsc` at THIS declaration, which is where the decision belongs.
  */
-const REFUSAL_MESSAGES: Partial<Record<BlockCollectionFollowErrorCode, string>> = {
+const REFUSAL_MESSAGES: Record<Exclude<BlockCollectionFollowErrorCode, 'declined' | 'sign-in-required'>, string> = {
   // The host bounds a block instance to 20 DISTINCT collection ids and refuses
   // past that with the SAME code a collection the viewer cannot see gets — so
   // this sentence must cover both without implying which, or it becomes the
@@ -68,6 +83,12 @@ const REFUSAL_MESSAGES: Partial<Record<BlockCollectionFollowErrorCode, string>> 
   'not-ready': 'Still loading — try that again in a moment.',
 };
 const FALLBACK_REFUSAL = "That collection can't be followed right now.";
+/**
+ * Appended to a code-less server message. Shared with the timeout notice's
+ * phrasing on purpose: both branches mean "we cannot tell whether this landed",
+ * and both drop the read cache so "check in a moment" gets a truthful answer.
+ */
+const AMBIGUOUS_SUFFIX = 'This may still have gone through — check the collection in a moment.';
 
 export interface UseFollowToggleArgs {
   /** The collection being followed. */
@@ -77,12 +98,16 @@ export interface UseFollowToggleArgs {
   /**
    * Adopt the host's echo. Called ONLY after a write the host confirmed.
    *
-   * 🔴 IT CARRIES THE COLLECTION ID FROM THE ECHO, and the caller must use THAT
-   * rather than whatever it currently considers "open". The reply arrives after
-   * a network round trip PLUS however long the viewer spent in the host's
+   * 🔴 IT CARRIES THE COLLECTION ID THE WRITE WAS FOR, and the caller must use
+   * THAT rather than whatever it currently considers "open". The reply arrives
+   * after a network round trip PLUS however long the viewer spent in the host's
    * consent dialog, and the viewer can navigate in that window: a caller
    * resolving the id from its own current state attributes the write to a
    * collection the viewer never followed.
+   *
+   * The value is the host's echo, and it is only passed on once the echo has
+   * been confirmed to name this press's own collection — so it is the echo AND
+   * the target, never one standing in for the other.
    */
   onChange: (collectionId: number, followed: boolean) => void;
   /** Route a missing session here instead of showing an error. */
@@ -90,9 +115,17 @@ export interface UseFollowToggleArgs {
   /** Surface a real, renderable message to the viewer. */
   onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
   /**
-   * The write's outcome is UNKNOWN (a transport timeout) — it may well have
-   * landed. Drop any cached read of this collection, so the viewer we are about
-   * to tell to "check again" is not served the pre-follow flag.
+   * The write's outcome is UNKNOWN — it may well have landed. Drop any cached
+   * read of this collection, so the viewer we are about to tell to "check again"
+   * is not served the pre-follow flag.
+   *
+   * 🔴 TWO BRANCHES REACH THIS, NOT ONE. The obvious one is a transport timeout.
+   * The second is a CODE-LESS server error, and it is ambiguous for a reason
+   * visible in the host: it marks consent and then awaits the mutation inside a
+   * `try`, replying `{ error }` from the `catch` — so that reply covers a genuine
+   * refusal AND a failure raised after the row committed. The two are
+   * indistinguishable from in here, so the copy says so and the cache is dropped
+   * either way.
    */
   onUncertain?: () => void;
 }
@@ -116,17 +149,33 @@ export function useFollowToggle({
   // Own `pending` rather than the hook's: the hook is instanced per caller, and
   // this keeps the disabled window tied to the press that opened the dialog.
   const [pending, setPending] = useState(false);
+  /**
+   * The collection id the in-flight write is FOR — the second half of the
+   * correlation guard, mirroring upstream's `inFlightForRef`. Comparing the echo
+   * alone misses the case where `collectionId` moved away and back again while a
+   * write was settling; clearing this whenever the prop changes closes it.
+   */
+  const inFlightForRef = useRef<number | null>(null);
+  useEffect(() => {
+    inFlightForRef.current = null;
+  }, [collectionId]);
 
   const toggle = useCallback(() => {
     if (pending) return;
     const next = !followed;
+    const target = collectionId;
+    inFlightForRef.current = target;
     setPending(true);
     void (async () => {
       try {
-        const res = await setFollow({ collectionId, follow: next });
-        // Adopt the ECHO, not `next` — and report the id the ECHO names, not the
-        // one this closure captured, so a caller cannot mis-attribute the write.
-        onChange(res.collectionId ?? collectionId, res.followed);
+        const res = await setFollow({ collectionId: target, follow: next });
+        // 🔴 CORRELATE FIRST. A settle that does not name the collection this
+        // press was for changes nothing and is NOT reported — adopting it would
+        // record a follow the viewer never made against whatever is on screen now.
+        if (res.collectionId !== target || inFlightForRef.current !== target) return;
+        // Adopt the ECHO, not `next`: the two can legitimately disagree, and only
+        // the echo describes what the server actually holds.
+        onChange(res.collectionId, res.followed);
         onNotice('success', res.followed ? 'Following this collection.' : 'Unfollowed this collection.');
       } catch (err) {
         if (err instanceof CollectionFollowError) {
@@ -159,10 +208,23 @@ export function useFollowToggle({
           // past that with this same code, and this app is a full-page
           // collection BROWSER driving many ids in one long-lived instance.
           if (err.code !== undefined) {
-            onNotice('error', REFUSAL_MESSAGES[err.code] ?? FALLBACK_REFUSAL);
+            // The index widens to the full union here (`declined` and
+            // `sign-in-required` are already returned above and cannot reach
+            // this line), so the lookup is written loosely on purpose — the
+            // exhaustiveness that matters is on the DECLARATION, where a new
+            // upstream code fails the build.
+            const known = REFUSAL_MESSAGES as Partial<Record<BlockCollectionFollowErrorCode, string>>;
+            onNotice('error', known[err.code] ?? FALLBACK_REFUSAL);
             return;
           }
-          onNotice('error', err.message);
+          // 🔴 A CODE-LESS SERVER ERROR IS POST-WRITE-AMBIGUOUS TOO. The host
+          // marks consent and then awaits the mutation inside a `try`, replying
+          // `{ error }` from the `catch` — so this one reply covers a refusal
+          // that changed nothing AND a failure raised after the row committed.
+          // Treating it as a flat "it did not happen" is a claim we cannot make,
+          // and it leaves the 5-minute read cache serving the pre-follow flag.
+          onUncertain?.();
+          onNotice('error', `${err.message} ${AMBIGUOUS_SUFFIX}`);
           return;
         }
         onNotice('error', err instanceof Error ? err.message : 'Could not update this collection.');

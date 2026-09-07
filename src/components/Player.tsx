@@ -21,7 +21,7 @@ import { useMatureGate } from '../lib/mature-session.js';
 import { iconBtn } from './styles.js';
 import { MaturityBadge, MaturityRevealOverlay, MATURITY_BLUR_PX } from './Maturity.js';
 import { TipModal, type TipSender, type TipTarget } from './TipModal.js';
-import { TipSplitModal, type SplitRecipient } from './TipSplitModal.js';
+import { TipSplitModal, splitTipKey, type PlannedLeg, type SplitRecipient } from './TipSplitModal.js';
 import type { TipLegKind } from '../lib/tip-split.js';
 
 const SWIPE_THRESHOLD = 48;
@@ -61,8 +61,19 @@ export interface PlayerProps {
   onFollowChange: (collectionId: number, followed: boolean) => void;
   /** Surface a renderable message (a real server error, or a timeout notice). */
   onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
-  /** A follow timed out — outcome unknown; drop cached reads. */
-  onFollowUncertain?: () => void;
+  /**
+   * A follow whose outcome is UNKNOWN (a transport timeout, or a code-less
+   * server error raised after the row may already have committed) — drop cached
+   * reads.
+   *
+   * 🔴 REQUIRED, NOT OPTIONAL, AND DELIBERATELY SO. While it was optional an
+   * audit deleted the prop pass in App and BOTH forwards in CollectionViewer and
+   * the whole suite stayed green — the app's own advice ("check the collection in
+   * a moment") would then have been answered by the 5-minute read cache with the
+   * PRE-follow flag, and nothing would have said so. Required makes that deletion
+   * a compile error; `e2e-follow-uncertain.test.tsx` covers the behaviour.
+   */
+  onFollowUncertain: () => void;
   /** Perform one transfer. Resolves true on success (Player then marks it tipped). */
   onTip: TipSender;
   /**
@@ -78,6 +89,17 @@ export interface PlayerProps {
    * to the full cap rather than pre-blocking a tip the server would accept.
    */
   dailyTipRemaining?: number;
+  /**
+   * Split-tip plans in flight or half-failed, keyed by `splitTipKey`. Owned by
+   * App so a plan OUTLIVES this component: closing the popover, switching view
+   * mode, opening the lightbox and leaving the collection all unmount a Player,
+   * and a plan that dies there takes its idempotency keys with it — after which
+   * a re-confirm pays a landed leg a second time under a key the server has
+   * never seen. See TipSplitModal's header.
+   */
+  splitPlans: Readonly<Record<string, PlannedLeg[]>>;
+  /** Store (or, with `null`, retire) the plan for one logical tip. */
+  onSplitPlanChange: (key: string, plan: PlannedLeg[] | null) => void;
   /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
   cast?: boolean;
   /** OS reduced-motion preference — pauses cast auto-advance when set. */
@@ -114,6 +136,8 @@ export function Player(props: PlayerProps) {
     onRequestSignIn,
     tipping,
     dailyTipRemaining,
+    splitPlans,
+    onSplitPlanChange,
     cast = false,
     reducedMotion = false,
     isMobile,
@@ -169,8 +193,22 @@ export function Player(props: PlayerProps) {
   const [tipTarget, setTipTarget] = useState<TipTarget | null>(null);
   // The %-split popover (operator feedback round 3). Separate from `tipTarget`:
   // that one is a single recipient, this one is a press that can produce TWO
-  // transfers, so it owns its own plan + retry (see TipSplitModal).
-  const [splitOpen, setSplitOpen] = useState(false);
+  // transfers, so it has a plan + retry (see TipSplitModal).
+  //
+  // 🔴 IT HOLDS A SNAPSHOT OF BOTH RECIPIENTS, NOT A BOOLEAN — this is the whole
+  // fix for the recipient drift. It used to be `splitOpen: boolean` with the
+  // recipients derived LIVE from `current`, so the popover's targets changed
+  // under the viewer whenever the media did: hold the popover open for one image
+  // interval and the confirm paid the NEXT item's creator, against the NEXT
+  // item's id, while the viewer had read a preview naming someone else. (If that
+  // next creator happened to be the viewer, the creator leg went null and the
+  // split silently collapsed into a curator-only tip carrying the whole total.)
+  // `openTip` already snapshots into `tipTarget`, which is why the single-target
+  // picker was never exposed; this matches that pattern rather than inventing a
+  // second one.
+  const [splitOpenFor, setSplitOpenFor] = useState<{ creator: SplitRecipient; curator: SplitRecipient } | null>(null);
+  // Reported up by TipSplitModal: a leg is on the wire, so nothing may dismiss it.
+  const [splitSending, setSplitSending] = useState(false);
   const [tippedKeys, setTippedKeys] = useState<Set<string>>(new Set());
   // Maturity gate: mature items render blurred until the viewer accepts a SINGLE
   // session-level "I'm 18+" confirmation, which then unblurs the whole
@@ -230,7 +268,34 @@ export function Player(props: PlayerProps) {
       };
   // Both sides collapsed = the viewer owns the media AND the collection; there is
   // nobody to pay, so the control is disabled rather than opening an empty picker.
+  //
+  // 🔴 These two are the LIVE derivation, and from here on they are used ONLY to
+  // decide whether the control is offered and what to freeze when it is pressed.
+  // Nothing downstream of the press may read them again — that is the defect.
   const splitPossible = splitCreator != null || splitCurator != null;
+
+  // The logical tip the open popover is for, and the plan App is holding for it.
+  const openSplitKey = splitOpenFor ? splitTipKey(splitOpenFor.creator, splitOpenFor.curator) : null;
+  const openSplitPlan = openSplitKey != null ? (splitPlans[openSplitKey] ?? null) : null;
+
+  // ---- pause playback while ANY picker is open (defence in depth) ----
+  // The snapshot above is what makes the money correct; this keeps the STAGE from
+  // moving under a viewer who is reading a preview, which is the behaviour they
+  // would expect anyway. Playback resumes only if it was running when the picker
+  // opened, so this never starts a paused player.
+  const pickerOpen = tipTarget != null || splitOpenFor != null;
+  const resumeAfterPickerRef = useRef(false);
+  const playerRef = useRef(player);
+  playerRef.current = player;
+  useEffect(() => {
+    if (pickerOpen) {
+      resumeAfterPickerRef.current = playerRef.current.playing;
+      playerRef.current.pause();
+    } else if (resumeAfterPickerRef.current) {
+      resumeAfterPickerRef.current = false;
+      playerRef.current.play();
+    }
+  }, [pickerOpen]);
 
   // ---- keyboard (all viewports; the platform routes real key events to the
   // focused iframe, and arrow keys are the desktop-primary control) ----
@@ -249,10 +314,17 @@ export function Player(props: PlayerProps) {
       if (cast) return;
       // A picker is open: Escape closes IT, and no shortcut reaches the player
       // underneath (Escape would otherwise exit the collection behind the modal).
-      if (tipTarget || splitOpen) {
-        if (e.key === 'Escape') {
+      //
+      // 🔴 EXCEPT WHILE A TRANSFER IS ON THE WIRE. This is a SECOND Escape
+      // handler on top of `Modal`'s own, so gating the modal alone would leave
+      // this one dismissing the popover mid-send — the Buzz still leaves the
+      // account, and the partial-failure UI (with its retry) never appears.
+      // `tipping` covers the single-target picker's in-flight window; the split
+      // reports its own, because it stays open across two sequential legs.
+      if (tipTarget || splitOpenFor) {
+        if (e.key === 'Escape' && !splitSending && !tipping) {
           setTipTarget(null);
-          setSplitOpen(false);
+          setSplitOpenFor(null);
         }
         return;
       }
@@ -283,7 +355,7 @@ export function Player(props: PlayerProps) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player.next, player.prev, player.toggle, tipTarget, splitOpen, onExit, cast]);
+  }, [player.next, player.prev, player.toggle, tipTarget, splitOpenFor, splitSending, tipping, onExit, cast]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -357,20 +429,36 @@ export function Player(props: PlayerProps) {
       return;
     }
     if (!splitPossible) return;
-    setSplitOpen(true);
+    // 🔴 FREEZE BOTH SIDES HERE. Everything the popover sends, previews and
+    // reports back is resolved from this snapshot, so the media underneath may
+    // move (a timer, a filter, a reload) without redirecting a single Buzz.
+    setSplitOpenFor({ creator: splitCreator, curator: splitCurator });
   };
 
-  /** Every leg of a split landed — mark each recipient tipped and close. */
+  const closeSplit = () => setSplitOpenFor(null);
+
+  /**
+   * Every leg of a split landed — mark each recipient tipped, retire the plan
+   * and close.
+   *
+   * 🔴 THE ✓ IS RESOLVED FROM THE SNAPSHOT, NOT FROM `current`. This read the
+   * live `splitCreator`/`splitCurator` too, so a drifted popover marked "Tipped
+   * creator" against whatever media was on screen at the moment the last leg
+   * settled — the wrong media even when the transfer itself was right.
+   */
   const onSplitDone = (legs: ReadonlyArray<{ kind: TipLegKind; amount: number }>) => {
+    const frozen = splitOpenFor;
     setTippedKeys((prev) => {
       const next = new Set(prev);
       for (const leg of legs) {
-        const target = leg.kind === 'creator' ? splitCreator : splitCurator;
+        const target = leg.kind === 'creator' ? frozen?.creator : frozen?.curator;
         if (target) next.add(`${target.entityType}:${target.entityId}`);
       }
       return next;
     });
-    setSplitOpen(false);
+    // The logical tip is complete: its keys can never be needed again.
+    if (openSplitKey != null) onSplitPlanChange(openSplitKey, null);
+    setSplitOpenFor(null);
   };
 
   const confirmTip = async (amount: number) => {
@@ -648,17 +736,23 @@ export function Player(props: PlayerProps) {
         />
       )}
 
-      {splitOpen && (
+      {splitOpenFor && (
         <TipSplitModal
-          creator={splitCreator}
-          curator={splitCurator}
+          // The FROZEN pair — never `splitCreator`/`splitCurator` again.
+          creator={splitOpenFor.creator}
+          curator={splitOpenFor.curator}
           balance={buzzBalance}
           submitting={tipping}
           dailyRemaining={dailyTipRemaining}
           // Each leg is one `ApiClient.tip` POST carrying the plan's key.
           onSendLeg={(target, amount, idempotencyKey) => onTip(target, amount, idempotencyKey)}
           onDone={onSplitDone}
-          onClose={() => setSplitOpen(false)}
+          onClose={closeSplit}
+          plan={openSplitPlan}
+          onPlanChange={(plan) => {
+            if (openSplitKey != null) onSplitPlanChange(openSplitKey, plan);
+          }}
+          onSendingChange={setSplitSending}
         />
       )}
     </div>

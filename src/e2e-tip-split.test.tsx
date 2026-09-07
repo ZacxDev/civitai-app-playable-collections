@@ -169,6 +169,83 @@ describe('🔴 partial failure: a LOST response must not become a double-spend',
   });
 });
 
+describe('🔴 DISMISSING the popover must not destroy the plan (the re-confirm double-pay)', () => {
+  /**
+   * The reachable sequence, and the one the partial-failure panel invites: the
+   * creator leg lands, the curator leg is refused, and the viewer presses
+   * **Close** — the button the component itself relabels for that state, sitting
+   * beside a promise that "the parts already sent cannot be sent twice" — rather
+   * than Retry. App's own network-error copy tells them to check their balance
+   * before retrying, i.e. to leave the modal.
+   *
+   * If the plan dies with the component, reopening mints FRESH keys, so the
+   * server cannot collapse the replay and the creator is paid twice.
+   */
+  function curatorRefusedOnceApi(base: FakeApi): ApiClient {
+    let curatorAttempts = 0;
+    return {
+      ...base,
+      async tip(input: TipInput) {
+        if (input.toUserId === CURATOR_ID && ++curatorAttempts === 1) {
+          throw new ApiError('forbidden', 403, 'You do not have permission to do that.');
+        }
+        return base.tip(input);
+      },
+    };
+  }
+
+  it('REOPENS onto the same plan — the landed leg is still marked sent', async () => {
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 }) as FakeApi;
+    await openFirst(curatorRefusedOnceApi(base));
+    const modal = await openSplit();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(base.__tips()).toHaveLength(1);
+
+    await userEvent.click(screen.getByTestId('split-cancel')); // labelled "Close"
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    const reopened = await openSplit();
+    // The logical tip survived the unmount: the same two legs, the creator's
+    // still marked sent, and a Retry rather than a blank Send.
+    expect(await within(reopened).findByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+    expect(within(reopened).getByTestId('split-leg-curator')).toHaveAttribute('data-status', 'failed');
+    expect(within(reopened).getByTestId('split-retry')).toBeInTheDocument();
+  });
+
+  it('🔴 never re-sends a LANDED leg under a fresh key, across close → reopen → confirm', async () => {
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 }) as FakeApi;
+    await openFirst(curatorRefusedOnceApi(base));
+    const modal = await openSplit();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(base.__tips()).toHaveLength(1);
+    expect(base.__balance()).toBe(4975);
+    const creatorKey = base.__tips()[0].idempotencyKey;
+
+    await userEvent.click(screen.getByTestId('split-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    const reopened = await openSplit();
+    // Press whatever the reopened popover offers as its primary action. A
+    // resumed plan offers Retry; a plan that died offers a fresh Send — and it
+    // is precisely that fresh Send which double-pays.
+    const action =
+      within(reopened).queryByTestId('split-retry') ?? within(reopened).getByTestId('split-confirm');
+    await userEvent.click(action);
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    // 🔴 THE INVARIANT. Two transfers for one logical tip, 50 Buzz total, and
+    // the creator's key unchanged. Pre-fix: three transfers, 4925, and a second
+    // creator row under a key the server has never seen.
+    expect(base.__tips()).toHaveLength(2);
+    expect(base.__tips().filter((t) => t.toUserId === CREATOR_ID)).toHaveLength(1);
+    expect(base.__tips()[0].idempotencyKey).toBe(creatorKey);
+    expect(base.__balance()).toBe(4950);
+    expect(base.__tipSpentToday()).toBe(50);
+  });
+});
+
 describe('self-tip collapse through the real app (hazard 3)', () => {
   it('the CURATOR viewing their own collection sends the whole total to the creator', async () => {
     // alice (11) curates "Neon Cities"; bob (22) made the first item.

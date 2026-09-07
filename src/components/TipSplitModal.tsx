@@ -12,15 +12,26 @@
 // that the amount and the split are "picked and confirmed by you first", which is
 // the whole point of this surface.
 //
-// 🔴 THE RETRY IS THE REASON THIS COMPONENT OWNS A STATE MACHINE. Two transfers
-// leave one press, so "it failed" has a THIRD outcome besides ok/failed: one leg
-// landed and the other did not. Re-running the whole press would re-send the leg
-// that already succeeded. So a confirm builds a PLAN — one leg per recipient,
-// each with its own idempotency key minted ONCE — and the retry re-runs only the
-// legs not yet marked `sent`, WITH THEIR ORIGINAL KEYS. The status guard covers
-// the leg we know landed; the key covers the leg whose response was lost (from
+// 🔴 THE RETRY IS THE REASON A PLAN EXISTS AT ALL. Two transfers leave one
+// press, so "it failed" has a THIRD outcome besides ok/failed: one leg landed
+// and the other did not. Re-running the whole press would re-send the leg that
+// already succeeded. So a confirm builds a PLAN — one leg per recipient, each
+// with its own idempotency key minted ONCE — and the retry re-runs only the legs
+// not yet marked `sent`, WITH THEIR ORIGINAL KEYS. The status guard covers the
+// leg we know landed; the key covers the leg whose response was lost (from
 // inside the iframe those two are indistinguishable, which is exactly why both
 // are needed).
+//
+// 🔴 AND THE PLAN IS NOT THIS COMPONENT'S STATE — IT IS A PROP, BECAUSE THIS
+// COMPONENT IS UNMOUNTED BY THE BUTTON NEXT TO THE PROMISE. `plan` lived in a
+// local `useState` until an audit walked the reachable sequence: leg 1 lands,
+// leg 2 is refused, the viewer presses **Close** (this component relabels Cancel
+// to exactly that in the failed state, right beside the words "the parts already
+// sent cannot be sent twice"), reopens, confirms — and every key is freshly
+// minted, so the server has nothing to replay and the landed leg is paid twice.
+// The owner (App, via Player) keeps the plan keyed to the LOGICAL tip
+// (`splitTipKey`), so a reopen RESUMES it rather than starting a new one. Every
+// mutation of the plan goes out through `onPlanChange`.
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -48,13 +59,29 @@ export const SPLIT_PERCENT_PRESETS = [100, 75, 50, 25, 0] as const;
 export type SplitRecipient = TipTarget | null;
 
 /** A leg of the plan, plus everything needed to send and re-send it. */
-interface PlannedLeg {
+export interface PlannedLeg {
   kind: TipLegKind;
   amount: number;
   target: TipTarget;
   /** Minted ONCE when the plan is built; reused on every retry. */
   idempotencyKey: string;
   status: 'pending' | 'sent' | 'failed';
+}
+
+/**
+ * The identity of ONE LOGICAL TIP: this pair of recipients, for these exact
+ * entities. It is what the plan is stored under, so closing and reopening the
+ * popover on the same media RESUMES the plan (original keys, `sent` markers
+ * intact) instead of minting a second one.
+ *
+ * 🔴 IT MUST NAME THE ENTITIES, NOT JUST THE PEOPLE. Two different images by the
+ * same creator in the same collection are two different tips and must never
+ * share a plan — sharing one would make the second press replay the first
+ * press's transfer and silently send nothing.
+ */
+export function splitTipKey(creator: SplitRecipient, curator: SplitRecipient): string {
+  const part = (r: SplitRecipient) => (r ? `${r.entityType}:${r.entityId}:${r.toUserId}` : '-');
+  return `${part(creator)}|${part(curator)}`;
 }
 
 export interface TipSplitModalProps {
@@ -75,6 +102,18 @@ export interface TipSplitModalProps {
   /** Every leg landed. The caller closes the popover and marks the tip done. */
   onDone: (legs: ReadonlyArray<{ kind: TipLegKind; amount: number }>) => void;
   onClose: () => void;
+  /**
+   * The plan for THIS logical tip, owned by the caller so it survives this
+   * component being unmounted (see the header). `null` = no press yet.
+   */
+  plan: PlannedLeg[] | null;
+  /** Hand every plan mutation back to the owner. `null` retires the plan. */
+  onPlanChange: (plan: PlannedLeg[] | null) => void;
+  /**
+   * Report the in-flight window up, so the surface AROUND this popover can stop
+   * dismissing it mid-transfer (the app's own Escape handler, chiefly).
+   */
+  onSendingChange?: (sending: boolean) => void;
   /** Key minter (test seam) — default `newIdempotencyKey`. */
   newKey?: () => string;
 }
@@ -88,12 +127,23 @@ export function TipSplitModal({
   onSendLeg,
   onDone,
   onClose,
+  plan,
+  onPlanChange,
+  onSendingChange,
   newKey = newIdempotencyKey,
 }: TipSplitModalProps) {
-  const [amount, setAmount] = useState<string>(String(SPLIT_PRESETS[1]));
-  const [creatorPercent, setCreatorPercent] = useState<number>(DEFAULT_CREATOR_PERCENT);
+  // A RESUMED plan (reopened after a partial failure) decides the amount and the
+  // split — the inputs are locked in that state, so showing the defaults instead
+  // would put a number on screen that is not the one being sent.
+  const resumedTotal = plan ? plan.reduce((sum, l) => sum + l.amount, 0) : 0;
+  const [amount, setAmount] = useState<string>(() =>
+    plan ? String(resumedTotal) : String(SPLIT_PRESETS[1]),
+  );
+  const [creatorPercent, setCreatorPercent] = useState<number>(() => {
+    if (!plan || resumedTotal <= 0) return DEFAULT_CREATOR_PERCENT;
+    return Math.round(((plan.find((l) => l.kind === 'creator')?.amount ?? 0) / resumedTotal) * 100);
+  });
   const [touched, setTouched] = useState(false);
-  const [plan, setPlan] = useState<PlannedLeg[] | null>(null);
   const [sending, setSending] = useState(false);
   // Guards a second confirm/retry entering the send loop in the same tick, before
   // `setSending(true)` re-renders the disabled button (the split's equivalent of
@@ -109,17 +159,35 @@ export function TipSplitModal({
 
   const error = touched ? validateTipSplit(amount, balance, creatorPercent, eligibility, dailyRemaining) : null;
   // The preview the viewer reads BEFORE confirming — the actual per-recipient
-  // amounts, clamps applied, not the raw percentage.
-  const preview = splitTipTotal(Number(amount), creatorPercent, eligibility);
+  // amounts, clamps applied, not the raw percentage. Once a plan exists the
+  // preview is READ FROM THE PLAN: those are the amounts the keys were minted
+  // for, and they are what a retry will send.
+  //
+  // ⚠️ The `plan ??` arm is BELT-AND-BRACES, not observable behaviour, and no
+  // test can kill it: `amount` and `creatorPercent` above are derived from the
+  // same plan, and `splitTipTotal` round-trips those back to the identical legs
+  // for every reachable plan (brute-forced over all 504,901 (total, percent)
+  // pairs in [1,5000]×[0,100] — zero divergences). It is kept because the plan
+  // is the thing the SERVER has seen, and that should not depend on a rounding
+  // round-trip staying lossless. Do not read it as covered by a guard.
+  const preview = plan ?? splitTipTotal(Number(amount), creatorPercent, eligibility);
   const previewFor = (kind: TipLegKind) => preview.find((l) => l.kind === kind)?.amount ?? 0;
 
   const ceiling = effectiveTipCap(dailyRemaining ?? TIP_TOTAL_MAX);
+
+  const setSendingBoth = useCallback(
+    (v: boolean) => {
+      setSending(v);
+      onSendingChange?.(v);
+    },
+    [onSendingChange],
+  );
 
   const runPlan = useCallback(
     async (legs: PlannedLeg[]) => {
       if (sendingRef.current) return;
       sendingRef.current = true;
-      setSending(true);
+      setSendingBoth(true);
       // Work on a copy so a failure part-way still reports the legs that landed.
       const next = legs.map((l) => ({ ...l }));
       try {
@@ -131,21 +199,27 @@ export function TipSplitModal({
           if (leg.status === 'sent') continue;
           const ok = await onSendLeg(leg.target, leg.amount, leg.idempotencyKey);
           leg.status = ok ? 'sent' : 'failed';
-          setPlan(next.map((l) => ({ ...l })));
+          onPlanChange(next.map((l) => ({ ...l })));
         }
       } finally {
         sendingRef.current = false;
-        setSending(false);
+        setSendingBoth(false);
       }
-      setPlan(next);
+      onPlanChange(next);
       if (next.every((l) => l.status === 'sent')) {
         onDone(next.map((l) => ({ kind: l.kind, amount: l.amount })));
       }
     },
-    [onSendLeg, onDone],
+    [onSendLeg, onDone, onPlanChange, setSendingBoth],
   );
 
   const confirm = () => {
+    // 🔴 SYNCHRONOUS RE-ENTRANCE GATE, BEFORE ANY KEY IS MINTED. `setSending`
+    // only disables the button on the NEXT render, so two clicks in one tick both
+    // reach here — and the second would mint a SECOND set of keys over the plan
+    // already being sent, replacing what the owner is holding for the retry.
+    // `runPlan`'s own guard is too late for that: the keys are minted first.
+    if (sendingRef.current || plan != null) return;
     setTouched(true);
     if (validateTipSplit(amount, balance, creatorPercent, eligibility, dailyRemaining)) return;
     const legs = splitTipTotal(Number(amount), creatorPercent, eligibility);
@@ -156,7 +230,7 @@ export function TipSplitModal({
       // non-null assertion is the type system catching up, not a claim.
       return { kind: leg.kind, amount: leg.amount, target: target as TipTarget, idempotencyKey: newKey(), status: 'pending' };
     });
-    setPlan(planned);
+    onPlanChange(planned);
     void runPlan(planned);
   };
 
@@ -175,7 +249,21 @@ export function TipSplitModal({
       : `Tip ${curator?.username ? `@${curator.username}` : 'the curator'}`;
 
   return (
-    <Modal opened onClose={onClose} title={title} size="sm">
+    // 🔴 NOT DISMISSIBLE WHILE A LEG IS IN FLIGHT. `Modal` closes on Escape, on
+    // an overlay click and on its ×, and none of those cancel the POST that is
+    // already on the wire: dismissing mid-transfer spends the Buzz and takes the
+    // partial-failure UI (and with it the retry, and the plan) away. All three
+    // affordances and Cancel are gated on the same `sending` flag, which is also
+    // reported up so Player's own Escape handler agrees.
+    <Modal
+      opened
+      onClose={onClose}
+      title={title}
+      size="sm"
+      closeOnEscape={!sending}
+      closeOnOverlayClick={!sending}
+      withCloseButton={!sending}
+    >
       <FocusTrap>
         <div data-testid="tip-split-modal" aria-label="Split a tip" style={bodyStyle}>
           {/* ---- what the viewer is buying ---- */}
@@ -297,17 +385,26 @@ export function TipSplitModal({
                   {leg.status === 'sent' ? 'sent' : 'not sent'}
                 </span>
               ))}
-              <span style={{ fontSize: 12 }}>
-                {/* Written from what `runPlan` does: sent legs are skipped, and an
-                    unsent leg is re-sent under the key it was minted with. */}
+              <span style={{ fontSize: 12 }} data-testid="split-partial-promise">
+                {/* 🔴 WRITTEN FROM WHAT THE CODE DOES, AND THE SECOND SENTENCE IS
+                    THE ONE THAT USED TO BE A LIE. `runPlan` skips sent legs and
+                    re-sends an unsent one under its original key — true then and
+                    now. But the plan lived in this component's own state, so the
+                    Close button beside this text destroyed it and a re-confirm
+                    minted fresh keys: the promise held only for the Retry button
+                    and was void for its neighbour. The plan is now owned above
+                    this component and keyed to the logical tip, which is exactly
+                    as far as the second sentence claims — for as long as the page
+                    stays open. Pinned verbatim by TipSplitModal.test.tsx. */}
                 Retrying sends only what is still outstanding — the {sentLegs.length === 1 ? 'part' : 'parts'} already sent
-                cannot be sent twice.
+                cannot be sent twice. Closing is safe too: reopening this split picks the same tip back up, for as long as
+                this page stays open.
               </span>
             </div>
           )}
 
           <div style={actionRow}>
-            <Button variant="subtle" onClick={onClose} data-testid="split-cancel">
+            <Button variant="subtle" onClick={onClose} disabled={sending} data-testid="split-cancel">
               {failed ? 'Close' : 'Cancel'}
             </Button>
             {failed ? (
