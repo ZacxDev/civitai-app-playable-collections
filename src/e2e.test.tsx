@@ -42,7 +42,11 @@ describe('open a collection → player', () => {
   it('exits back to the grid', async () => {
     const api = createFakeApi();
     await openNeon(api);
-    await userEvent.click(screen.getByTestId('player-exit'));
+    // 0.2.14: the Player no longer owns an exit. In classic mode the themed
+    // toolbar's `viewer-exit` is the only back affordance — the duplicate
+    // white-on-media overlay was removed. The BEHAVIOUR asserted here (exit
+    // returns to the grid) is unchanged; only the control moved.
+    await userEvent.click(screen.getByTestId('viewer-exit'));
     expect(await screen.findByTestId('collection-grid')).toBeInTheDocument();
   });
 });
@@ -340,7 +344,11 @@ describe('popular rail (shared play-counts)', () => {
   it('records a play in the SHARED store, but ONE play does not earn the popular rail', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     await openNeon(api);
-    await userEvent.click(screen.getByTestId('player-exit'));
+    // 0.2.14: the Player no longer owns an exit. In classic mode the themed
+    // toolbar's `viewer-exit` is the only back affordance — the duplicate
+    // white-on-media overlay was removed. The BEHAVIOUR asserted here (exit
+    // returns to the grid) is unchanged; only the control moved.
+    await userEvent.click(screen.getByTestId('viewer-exit'));
     // The play WAS recorded — the collection is reachable on discover as ever …
     await waitFor(() => expect(screen.getByTestId('collection-grid')).toBeInTheDocument());
     expect(screen.getByTestId('collection-grid')).toHaveTextContent('Neon Cities');

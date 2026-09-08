@@ -594,19 +594,25 @@ export function Player(props: PlayerProps) {
           media on the default `classic` playback surface. 🔴 `buzzBalance` remains
           a required prop: it is still passed to the creator/curator TipModal below
           for tip pre-validation. */}
-      {chromeShown && (
-        <div style={topBar(c)}>
-          <button type="button" onClick={onExit} style={iconBtn(c)} aria-label="Back to collections" data-testid="player-exit">
-            ←
-          </button>
-          <div style={titleWrap}>
-            <span style={titleText}>{detail.name}</span>
-            <span style={subText}>
-              {detail.curator.username ? `curated by ${detail.curator.username}` : 'curated collection'}
-            </span>
-          </div>
-        </div>
-      )}
+      {/* 🔴 THE TOP OVERLAY IS GONE (0.2.14) AND MUST NOT COME BACK HERE.
+          It carried a back button plus the collection name and curator, in
+          hardcoded white-on-media text — DUPLICATING the themed toolbar that
+          CollectionViewer already renders directly above this component in
+          `classic` mode. Operator feedback: "the title, curator and back button
+          appear twice … remove the overlay."
+
+          🔴 It was NOT simply deleted, because this component is ALSO the
+          lightbox, where it is mounted inside an `aria-modal` dialog that COVERS
+          that toolbar — there the overlay was the only back affordance and the
+          only title. Deleting it outright would have stranded the modal. The
+          replacement is a THEMED header rendered by the lightbox itself
+          (`CollectionViewer.tsx`, search `lightbox-header`), which reuses the
+          toolbar's own `toolbarStyle`/`titleStyle`/`subStyle` so the two cannot
+          drift apart.
+
+          So: Player no longer renders ANY title, curator or exit chrome. Whoever
+          mounts it owns that. If you are adding a Player surface, give it a
+          header — do not restore this block. */}
 
       {/* ---- right overlay chrome: tip/follow ---- */}
       {chromeShown && (
@@ -908,31 +914,6 @@ function clickZone(which: 'left' | 'center' | 'right'): CSSProperties {
   return { ...base, left: '30%', width: '40%' };
 }
 
-function topBar(c: Palette): CSSProperties {
-  return {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    padding: 12,
-    background: `linear-gradient(${c.overlay}, transparent)`,
-    zIndex: 5,
-  };
-}
-const titleWrap: CSSProperties = { display: 'grid', flex: 1, minWidth: 0 };
-const titleText: CSSProperties = {
-  color: '#fff',
-  fontWeight: 700,
-  fontSize: 15,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  textShadow: '0 1px 3px rgba(0,0,0,0.8)',
-};
-const subText: CSSProperties = { color: 'rgba(255,255,255,0.8)', fontSize: 12, textShadow: '0 1px 3px rgba(0,0,0,0.8)' };
 
 const rightRail: CSSProperties = {
   position: 'absolute',

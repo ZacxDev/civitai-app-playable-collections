@@ -595,8 +595,51 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
       {/* ---- lightbox: the classic single-item view over a continuous surface ---- */}
       {lightboxIndex != null && (
-        <div style={lightboxOverlay} data-testid="lightbox" role="dialog" aria-modal="true" aria-label="Media viewer">
+        <div
+          style={lightboxOverlay}
+          data-testid="lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pc-lightbox-title"
+        >
           <FocusTrap autoFocus restoreFocus>
+          {/* 🔴 THE MODAL OWNS ITS OWN CHROME, AND THAT IS THE WHOLE POINT.
+              Player used to draw a white-on-media overlay carrying the back
+              button, name and curator. In `classic` mode that DUPLICATED the
+              themed toolbar above it, so it was removed (0.2.14) — but this
+              dialog is `aria-modal` and COVERS that toolbar, so removing it
+              here as well would leave the modal with no exit, no title and no
+              accessible name.
+
+              It deliberately reuses `toolbarStyle`/`titleStyle`/`subStyle` — the
+              SAME objects the real toolbar uses — so the two surfaces cannot
+              drift apart, and so this header is themed by construction rather
+              than by a second set of colours somebody has to keep in sync. */}
+          <div style={toolbarStyle()} data-testid="lightbox-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <Button
+                size="sm"
+                variant="subtle"
+                onClick={() => setLightboxIndex(null)}
+                data-testid="lightbox-exit"
+                aria-label="Close the media viewer"
+              >
+                ←
+              </Button>
+              <div style={{ display: 'grid', minWidth: 0 }}>
+                {/* Names the COLLECTION, matching the toolbar this stands in for
+                    — not the individual item, which changes as the player
+                    advances and would make the dialog's accessible name move
+                    under the viewer. */}
+                <span id="pc-lightbox-title" style={titleStyle} title={detail.name}>
+                  {detail.name}
+                </span>
+                <span style={subStyle}>
+                  {detail.curator.username ? `curated by ${detail.curator.username}` : 'curated collection'}
+                </span>
+              </div>
+            </div>
+          </div>
           <Player
             detail={detail}
             items={displayItems}
