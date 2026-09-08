@@ -4,3 +4,5 @@ dist/
 .DS_Store
 .vite/
 coverage/
+# nix-direnv's cache for the `use flake` in .envrc — machine-local and large.
+.direnv/
