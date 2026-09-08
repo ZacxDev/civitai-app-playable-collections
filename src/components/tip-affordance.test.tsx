@@ -431,6 +431,52 @@ describe('🔴 a half-failed plan survives the four things that unmount a surfac
     expect(onTip.mock.calls[0][2]).toBe(creatorKey);
   });
 
+  it('🔴 the plan KEY is frozen too — replacing the media under a half-failed plan cannot orphan it', async () => {
+    // 🔴 THE SNAPSHOT HAS TWO CONSUMERS AND THIS IS THE SECOND ONE. The recipients
+    // handed to the picker are frozen (covered above); so is the key the plan is
+    // stored and resumed under, and that half had no witness until this case —
+    // a mutant reading `splitTipKey(liveCreator, liveCurator)` instead of the
+    // frozen pair passed the whole suite.
+    //
+    // What that mutant does to a viewer: the creator leg has landed, the curator
+    // leg has not, and the media underneath is replaced (a filter, a shuffle, a
+    // page append — none of which the picker's pause can stop). The key moves, so
+    // `splitPlans[key]` misses, so `plan` goes null: the partial-failure panel and
+    // its Retry vanish and are replaced by a fresh Send. Pressing it mints NEW
+    // idempotency keys the server has never seen, and pays the creator a SECOND
+    // time for one press. That is the 0.2.10 defect exactly, re-entering through
+    // the key rather than through the recipients.
+    const onTip = curatorRefusedOnce();
+    const { rerender } = render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const modal = await openPicker();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+    const creatorKey = onTip.mock.calls[0][2];
+
+    // The media moves under the OPEN picker, plan and all.
+    rerender(<Host items={[byCarol, byBob]} onTip={onTip} />);
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', byCarol.url);
+
+    // The plan is still THIS tip's plan: the panel, the landed leg and the Retry
+    // are all still there — not a blank picker offering a fresh Send.
+    expect(screen.getByTestId('split-partial')).toBeInTheDocument();
+    expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+    const retry = screen.getByTestId('split-retry');
+
+    await userEvent.click(retry);
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    // 🔴 THREE calls for one press — creator, curator-refused, curator-retried —
+    // and the creator's original key. A drifted key lands here as FOUR, with a
+    // second creator transfer under a key the server cannot collapse.
+    expect(onTip).toHaveBeenCalledTimes(3);
+    expect(onTip.mock.calls.filter((call) => call[0].kind === 'creator')).toHaveLength(1);
+    expect(onTip.mock.calls[0][2]).toBe(creatorKey);
+    // …and it is still bob who was paid, not the creator who drifted into view.
+    expect(onTip.mock.calls[0][0]).toMatchObject({ toUserId: BOB, entityId: 1001 });
+  });
+
   it('does not carry a half-failed plan across to a different image BY THE SAME CREATOR', async () => {
     // 🔴 BOTH ITEMS ARE BY BOB, AND THAT IS THE POINT. The pair the title names
     // is the pair a key of `${toUserId}` alone cannot separate; a bob-then-carol
