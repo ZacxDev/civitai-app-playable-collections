@@ -91,36 +91,49 @@ function settingsIn(block: string[]): Array<[string, string]> {
 }
 
 /**
- * The package manager CI installs with, READ OUT OF the workflow.
+ * The package manager CI actually INVOKES, read out of the workflow's commands.
  *
- * `pnpm/action-setup` is what puts a pnpm on the runner's PATH at all; without
- * it the only package manager a job has is the npm that ships with node via
- * `actions/setup-node`. So that step's presence IS the statement of which
- * package manager CI uses, and deriving from it is what makes the assertion
- * below a claim about CI rather than about a literal typed into this file.
+ * Not the presence of a `pnpm/action-setup` step: that says only what is
+ * INSTALLED on the runner, and a workflow can install pnpm and then run npm.
+ * Measured in the sibling gen-matrix repo: with the setup step left in place
+ * and the `run:` lines switched to npm, the step-presence version of this
+ * check reported "pnpm" and the whole suite stayed green — from a CI job that
+ * never touches pnpm.
  *
- * Deliberately not `stepBlock`: that helper throws when the step is absent,
- * and absent is a legitimate answer here (npm), not a malformed workflow.
+ * Commands are matched anywhere in the workflow rather than as a `- run:` list
+ * item on purpose: the same step is written at least three ways across these
+ * repos (`- run: pnpm install`, a bare `run:` under a `name:`d step, and lines
+ * inside a `run: |` block), and a guard that goes red on a reformat is a guard
+ * people learn to merge through. Comments are stripped first so a line of
+ * prose mentioning `npm ci` is not mistaken for a step.
+ *
+ * A workflow that invokes no package manager at all has none to compare
+ * against, and answering "npm" for it would be an invention rather than a
+ * reading. Two or more distinct managers is not a package manager the builder
+ * can match either. Both throw — same rule as every other extractor here.
  */
 function ciPackageManager(workflow: string): string {
-  const hasPnpmSetup = /^\s*-\s+uses:\s*pnpm\/action-setup@/m.test(workflow);
+  const active = workflow.replace(/(^|\s)#.*$/gm, '$1');
 
-  // A workflow that invokes no package manager at all has none to compare
-  // against, and answering "npm" for it would be an invention rather than a
-  // reading. Throw instead — same rule as every other extractor in this file.
-  //
-  // Matched anywhere in the workflow rather than as a `- run:` list item on
-  // purpose: the same step is written at least three ways across these repos
-  // (`- run: pnpm install`, a bare `run:` under a `name:`d step, and lines
-  // inside a `run: |` block), and a guard that goes red on a reformat is a
-  // guard people learn to merge through.
-  if (!/\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci|run|test|build|exec)\b/.test(workflow)) {
+  const invoked = new Set(
+    [...active.matchAll(/\b(npm|pnpm|yarn|bun)\s+(?:install|ci|run|test|build|exec)\b/g)].map(
+      (m) => m[1],
+    ),
+  );
+
+  if (invoked.size === 0) {
     throw new Error(
       'ci.yml invokes no npm/pnpm/yarn/bun command — there is no CI package manager to compare against',
     );
   }
+  if (invoked.size > 1) {
+    throw new Error(
+      `ci.yml invokes more than one package manager (${[...invoked].sort().join(', ')}) — ` +
+        'the platform builder runs exactly one, so it cannot match all of them',
+    );
+  }
 
-  return hasPnpmSetup ? 'pnpm' : 'npm';
+  return [...invoked][0];
 }
 
 describe('toolchain lockstep', () => {
@@ -196,6 +209,12 @@ describe('toolchain lockstep', () => {
     // through a CI switch to npm, which is the precise drift it claims to
     // catch. A guard that reads as coverage while providing none is worse than
     // no guard at all.
+    //
+    // The draft after that derived CI's side from the presence of a
+    // `pnpm/action-setup` step, which is the same failure one layer in: that
+    // step states what is INSTALLED on the runner, not what the job RUNS. See
+    // `ciPackageManager` — a workflow that installs pnpm and then invokes npm
+    // was reported here as agreement.
     const manifest = JSON.parse(repoFile('../block.manifest.json')) as {
       buildCommand?: unknown;
     };
