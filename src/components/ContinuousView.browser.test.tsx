@@ -19,23 +19,39 @@
 // arrives. A tile that is correctly sized with no media is a tile that cannot
 // shift when media appears.
 
-import { describe, expect, it, afterEach, beforeEach, vi } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 
-import { Harness } from '@civitai/blocks-react/testing';
+import { SFW_LEVELS } from '@civitai/app-sdk/blocks';
 
-import { resetHarnessTransport } from '../dev-transport.js';
 import { ContinuousView } from './ContinuousView.js';
 import { palette } from '../theme.js';
 import type { MediaItem } from '../types.js';
 
-// 🔴 The SDK transport must allow this window's origin before any hook touches
-// it, or every render throws `IframeTransport: allowedParentOrigins must contain
-// at least one entry` — the real allowlist is baked in at BUILD time and is empty
-// under test. The jsdom tier gets this from `src/test-setup.ts`; the browser tier
-// does it here instead, because that setup file registers global hooks that
-// vitest browser mode rejects at import time ("failed to find the current suite").
-beforeEach(resetHarnessTransport);
+// 🔴 THE CEILING HOOK IS STUBBED, AND THE TRANSPORT IS DELIBERATELY ABSENT.
+//
+// `ContinuousView` calls `useViewerCeiling()`, which reaches the SDK's singleton
+// IframeTransport. Rendering bare throws `allowedParentOrigins must contain at
+// least one entry` (the real allowlist is baked in at BUILD time and empty under
+// test), so this file first used `<Harness>` + a per-test transport reset, the
+// way the jsdom tier does.
+//
+// 🔴 THAT DOES NOT WORK IN BROWSER MODE, AND CI IS WHERE IT SHOWED. vitest browser
+// mode runs each spec INSIDE AN IFRAME, so the transport waits for BLOCK_INIT from
+// `window.parent` — the vitest runner — and the mock host's handshake never
+// reaches it. Under jsdom `window.parent === window`, which is exactly why the
+// same pattern is fine there. The wait then rejected 10s later with nothing
+// listening: the job failed with `619 passed` and `1 error` on screen, and it
+// passed locally only because the run finished inside 10s. Reproduced locally by
+// holding the run open past the timeout, then fixed.
+//
+// The subject here is LAYOUT. The ceiling is scaffolding, so it is stubbed
+// outright — no transport, no host, nothing to time out. This is not the vacuous
+// kind of mock: nothing below asserts anything about maturity filtering, and
+// `filterToCeiling` keeps every fixture at this ceiling, so the surface under
+// measurement is the full item list.
+vi.mock('../lib/viewer-maturity.js', () => ({ useViewerCeiling: () => SFW_LEVELS }));
+
 afterEach(cleanup);
 
 const c = palette();
@@ -54,13 +70,7 @@ function item(mediaId: number, width = 1600, height = 900): MediaItem {
 }
 
 function renderSurface(orientation: 'horizontal' | 'vertical', items: MediaItem[]) {
-  // 🔴 The surface calls `useViewerCeiling()`, which reads the SDK transport —
-  // rendering it bare throws `IframeTransport: allowedParentOrigins must contain
-  // at least one entry`. `<Harness>` is the mock host the jsdom component tests
-  // already use; the browser tier needs it for the same reason, and does NOT
-  // inherit the `dom` project's setupFiles.
   return render(
-    <Harness showLog={false}>
     <ContinuousView
       orientation={orientation}
       items={items}
@@ -72,8 +82,7 @@ function renderSurface(orientation: 'horizontal' | 'vertical', items: MediaItem[
       c={c}
       onTapItem={vi.fn()}
       onTogglePause={vi.fn()}
-    />
-    </Harness>,
+    />,
   );
 }
 
