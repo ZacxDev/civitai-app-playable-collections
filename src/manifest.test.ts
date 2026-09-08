@@ -66,4 +66,15 @@ describe('block.manifest.json', () => {
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(manifest.version).toBe(pkg.version);
   });
+
+  // The description's MATURITY claim is asserted in src/deleted-mature-gate.test.ts,
+  // beside the deletion it describes. What belongs here is that the field is still
+  // a real listing: a moderator reads it, so it must not silently become empty or a
+  // stub while a sentence is being removed from it.
+  it('still carries a substantive store description across the 0.2.11 edit', () => {
+    expect(typeof manifest.description).toBe('string');
+    expect((manifest.description as string).length).toBeGreaterThan(600);
+    expect(manifest.description as string).toContain('Slideshow');
+    expect(manifest.description as string).toContain('Ambient mode');
+  });
 });

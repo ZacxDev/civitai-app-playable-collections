@@ -25,6 +25,8 @@ import type { Palette } from '../theme.js';
 import { useReducedMotion } from '../useMediaQuery.js';
 import { DEFAULT_AUTOPLAY_CAP } from '../modes/autoplay.js';
 import { maybeShuffle } from '../lib/shuffle.js';
+import { filterToCeiling } from '../lib/maturity.js';
+import { useViewerCeiling } from '../lib/viewer-maturity.js';
 import { filterByType, needsMoreToFill, type MediaFilter } from '../lib/media-filter.js';
 import {
   loadCollectionState,
@@ -179,10 +181,27 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
   const curatorIsSelf = viewerUserId != null && detail.curator.userId === viewerUserId;
 
-  // ---- the display list: (seeded shuffle) then (media-type filter). Pure. ----
+  // ---- the display list: (maturity ceiling) → (seeded shuffle) → (media-type
+  // filter). Pure, and this is the ONE list every index in this component means.
+  //
+  // 🔴 THE CEILING FILTER RUNS FIRST, AND IT HAS TO RUN HERE. `openLightbox`
+  // resolves a tapped tile to an INDEX into `displayItems` and hands it to Player
+  // as `initialItemIndex`; if this list still held items the surfaces had dropped,
+  // every index past a dropped item would be off by one and the lightbox would
+  // open on the wrong media. Both surfaces re-apply the same filter defensively —
+  // it is idempotent, so their lists and this one are the same list.
+  //
+  // It is a filter in exactly the sense the media-type filter already is, so the
+  // things that depend on list length (the scrubber max, `progressLabel`, the
+  // "no playable media" note, `needsMoreToFill`) all keep agreeing with what is on
+  // screen. `CollectionSummary.itemCount` on a discover card is a SERVER count and
+  // is untouched by this — it was already a count of items before any client-side
+  // lens, and the server clamps the detail read anyway, so in practice this filter
+  // removes nothing and is a net rather than a lens.
+  const ceiling = useViewerCeiling();
   const displayItems = useMemo(
-    () => filterByType(maybeShuffle(items, shuffleOn, seed), filter),
-    [items, shuffleOn, seed, filter],
+    () => filterByType(maybeShuffle(filterToCeiling(items, ceiling), shuffleOn, seed), filter),
+    [items, ceiling, shuffleOn, seed, filter],
   );
 
   // Restore position only for the initial mode, and only until the user switches.

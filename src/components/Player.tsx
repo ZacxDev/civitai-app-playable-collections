@@ -6,7 +6,7 @@
 // top overlay until 2026-09-05; `buzzBalance` is still a prop, but it is now
 // spent only on TipModal's pre-validation, never rendered as chrome.)
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
 import { Button, Loader, Slider } from '@civitai/blocks-react/ui';
@@ -16,10 +16,10 @@ import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../set
 import type { Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
 import { useFollowToggle } from '../lib/follow.js';
-import { shouldBlur } from '../lib/maturity.js';
-import { useMatureGate } from '../lib/mature-session.js';
+import { filterToCeiling } from '../lib/maturity.js';
+import { useViewerCeiling } from '../lib/viewer-maturity.js';
 import { iconBtn } from './styles.js';
-import { MaturityBadge, MaturityRevealOverlay, MATURITY_BLUR_PX } from './Maturity.js';
+import { MaturityBadge } from './Maturity.js';
 import { TipModal, type TipSender, type TipTarget } from './TipModal.js';
 import { TipSplitModal, splitTipKey, type PlannedLeg, type SplitRecipient } from './TipSplitModal.js';
 import type { TipLegKind } from '../lib/tip-split.js';
@@ -161,8 +161,19 @@ export function Player(props: PlayerProps) {
     onUncertain: onFollowUncertain,
   });
 
+  // 🔴 THE CEILING IS APPLIED HERE, NOT ONLY IN THE CALLER. `CollectionViewer`
+  // already filters the list it passes down (it has to — the lightbox resolves an
+  // index into it), so this is normally a no-op; it exists so a Player mounted by
+  // any future call site cannot render over-ceiling media because that caller
+  // forgot. Filtering is idempotent, so applying it twice costs one pass and
+  // changes nothing. Everything below — position, `progressLabel`, the scrubber
+  // max, `initialItemIndex`, the load-ahead — indexes THIS list, so the counts the
+  // viewer sees and the counts the player seeks over cannot disagree.
+  const ceiling = useViewerCeiling();
+  const visibleItems = useMemo(() => filterToCeiling(items, ceiling), [items, ceiling]);
+
   const player = usePlayer({
-    items,
+    items: visibleItems,
     secondsPerImage: settings.secondsPerImage,
     videoLoopCount: settings.videoLoopCount,
     initialPosition: initialItemIndex,
@@ -210,17 +221,6 @@ export function Player(props: PlayerProps) {
   // Reported up by TipSplitModal: a leg is on the wire, so nothing may dismiss it.
   const [splitSending, setSplitSending] = useState(false);
   const [tippedKeys, setTippedKeys] = useState<Set<string>>(new Set());
-  // Maturity gate: mature items render blurred until the viewer accepts a SINGLE
-  // session-level "I'm 18+" confirmation, which then unblurs the whole
-  // playthrough (and every other Player instance) — no per-item re-gating, so the
-  // "sit back and play" loop isn't broken, incl. in ambient/cast mode. Fail-
-  // closed: an ungated mature/unrated item starts blurred until the gate is
-  // accepted. See ../lib/mature-session.ts.
-  const matureGate = useMatureGate();
-  const blurCurrent = current != null && shouldBlur(current.nsfwLevel) && !matureGate.accepted;
-  const revealCurrent = useCallback(() => {
-    matureGate.accept();
-  }, [matureGate]);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -486,7 +486,7 @@ export function Player(props: PlayerProps) {
     }
   };
 
-  if (items.length === 0) {
+  if (visibleItems.length === 0) {
     return (
       <div style={emptyStage(c)} data-testid="player-empty">
         <p>This collection has no playable media.</p>
@@ -518,7 +518,7 @@ export function Player(props: PlayerProps) {
             ref={videoRef}
             key={current.mediaId}
             src={current.url}
-            style={blurCurrent ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl}
+            style={mediaEl}
             autoPlay={player.playing}
             muted={muted}
             playsInline
@@ -541,20 +541,18 @@ export function Player(props: PlayerProps) {
           <img
             src={current.url}
             alt=""
-            style={blurCurrent ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl}
+            style={mediaEl}
             data-testid="media-image"
           />
         ) : null}
 
-        {/* maturity badge (top-left of the stage, above media) */}
+        {/* Rating badge (top-centre of the stage). Everything on screen is within
+            the viewer's ceiling — the badge labels it, it does not hide it. */}
         {current && (
           <span style={maturityBadgeSlot}>
             <MaturityBadge nsfwLevel={current.nsfwLevel} />
           </span>
         )}
-
-        {/* blur-until-tap reveal gate for mature media */}
-        {blurCurrent && current && <MaturityRevealOverlay nsfwLevel={current.nsfwLevel} onReveal={revealCurrent} />}
 
         {/* preload next */}
         {player.upcoming?.type === 'image' && (

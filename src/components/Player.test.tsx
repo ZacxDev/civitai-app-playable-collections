@@ -13,6 +13,9 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { Harness } from '@civitai/blocks-react/testing';
+import { BrowsingLevel, SFW_LEVELS } from '@civitai/app-sdk/blocks';
+
 import { Player, type PlayerProps } from './Player.js';
 import { palette } from '../theme.js';
 import type { TipTarget } from './TipModal.js';
@@ -330,5 +333,58 @@ describe("🔴 Player's OWN Escape handler must not dismiss a picker mid-transfe
     await act(async () => release(false));
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByTestId('tip-modal')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Player enforces the maturity ceiling ITSELF
+// ---------------------------------------------------------------------------
+// 🔴 WHY THIS IS TESTED AT THE PLAYER AND NOT ONLY THROUGH CollectionViewer.
+// The viewer already filters the list it passes down (it has to — the lightbox
+// resolves an index into it), so a Player that ignored the ceiling entirely would
+// still LOOK correct in every CollectionViewer test. That is exactly the
+// "verified in isolation, broken at the seam" shape, inverted: the seam hides the
+// component's own defect. These render Player DIRECTLY, with unfiltered items.
+
+describe('Player — over-ceiling items never reach the stage, whatever the caller passes', () => {
+  const at = (mediaId: number, nsfwLevel: number): MediaItem => ({ ...img(mediaId, BOB, 'bob'), nsfwLevel });
+
+  it('🔴 an above-ceiling item handed straight to Player is dropped, not blurred', () => {
+    // No <Harness> → the ceiling reads `undefined` → SFW-only (fail closed).
+    render(<Host items={[at(1, BrowsingLevel.X), at(2, BrowsingLevel.PG)]} onTip={makeTip()} />);
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1');
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', at(2, 1).url);
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+    expect(document.querySelector('[style*="blur("]')).toBeNull();
+  });
+
+  it('🔴 SAME X item, an ALL-LEVELS ceiling → it plays, badged X', async () => {
+    // The discriminator: without it the test above pins "X is dropped" rather than
+    // "X is dropped BY THIS CEILING", and a hardcoded PG-13 line would pass.
+    render(
+      <Harness showLog={false} maxBrowsingLevel={SFW_LEVELS | BrowsingLevel.R | BrowsingLevel.X | BrowsingLevel.XXX}>
+        <Host items={[at(1, BrowsingLevel.X), at(2, BrowsingLevel.PG)]} onTip={makeTip()} />
+      </Harness>,
+    );
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2'));
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('X');
+  });
+
+  it('every item above the ceiling → the empty stage, not a blurred one', () => {
+    render(<Host items={[at(1, BrowsingLevel.R), at(2, BrowsingLevel.XXX)]} onTip={makeTip()} />);
+    expect(screen.getByTestId('player-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('media-image')).toBeNull();
+  });
+
+  it('🔴 an UNRATED (0) item PLAYS on the strictest ceiling, badged "Unrated"', () => {
+    // The server permits unrated at every ceiling
+    // (<civitai>@origin/release block-collections.service.ts:193, :359), so the
+    // app must too — being stricter is the app overriding a platform decision, and
+    // hiding is worse than the blur it replaced. No <Harness>, i.e. the
+    // fail-closed SFW ceiling, which is where a wrongly-strict rule shows first.
+    render(<Host items={[at(1, 0), at(2, BrowsingLevel.PG)]} onTip={makeTip()} />);
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2');
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', at(1, 0).url);
+    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 });

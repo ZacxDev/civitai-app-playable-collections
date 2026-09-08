@@ -1,17 +1,14 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { Harness } from '@civitai/blocks-react/testing';
 
-import { CollectionViewer } from './CollectionViewer.js';
-import { resetMatureGate } from '../lib/mature-session.js';
-import { palette } from '../theme.js';
+import { BrowsingLevel, SFW_LEVELS } from '@civitai/app-sdk/blocks';
 
-// The session-level maturity gate lives in module scope (opaque-origin sandbox
-// has no usable Web Storage), so reset it between tests for isolation.
-beforeEach(() => resetMatureGate());
+import { CollectionViewer } from './CollectionViewer.js';
+import { palette } from '../theme.js';
 import { loadCollectionState } from '../view-modes.js';
 import type { CollectionDetail, MediaItem } from '../types.js';
 
@@ -172,129 +169,236 @@ describe('Player — global shortcuts ignored while a control is focused (ship-b
   });
 });
 
-describe('CollectionViewer — content maturity (session-level 18+ gate, ship-blocker #3)', () => {
-  it('blurs a mature current item and unblurs it after the session gate is accepted (classic Player)', async () => {
-    renderViewer({ items: [mature(1, 4), img(2)] });
-    // PG-13 app default: an R item is badged + blurred until the gate is accepted.
-    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R');
-    const image = screen.getByTestId('media-image');
-    expect(image).toHaveStyle({ filter: 'blur(36px)' });
-    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+// ---------------------------------------------------------------------------
+// Content maturity — rendered from the PLATFORM's ceiling, with no app-local gate
+// ---------------------------------------------------------------------------
+// 🔴 WHAT THIS SUITE REPLACED, AND WHY THOSE TESTS ARE GONE RATHER THAN FIXED.
+// It used to pin a session-level "I'm 18+" acknowledgement: an R item rendered
+// blurred behind a `maturity-reveal` overlay, one click unblurred the whole
+// playthrough, and the tests asserted the blur, the overlay, the once-per-session
+// semantics and the cast-mode suppression. Every one of those was a test OF THE
+// APP'S OWN CONSENT MECHANISM, which no longer exists — maturity is the viewer's
+// NSFW browsing level, set in the civitai site header and enforced by the host,
+// and the app must not re-ask it. Content above the ceiling is NOT RENDERED, so
+// there is nothing to blur and nothing to reveal.
+//
+// What survives in spirit is the fail-closed posture, which is now asserted
+// against a wider set of unknowns than before (pre-`BLOCK_INIT`, a host that
+// omits the field, an unrated level, an anonymous viewer).
 
-    await userEvent.click(screen.getByTestId('maturity-reveal'));
-    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
-    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
-  });
+/** The three ceilings the fixtures below use, spelled from the SDK's own bits. */
+const CEILING_UP_TO_R = SFW_LEVELS | BrowsingLevel.R;
+const CEILING_ALL = SFW_LEVELS | BrowsingLevel.R | BrowsingLevel.X | BrowsingLevel.XXX;
 
-  it('does NOT blur or badge a PG item', () => {
-    renderViewer({ items: [img(1)] });
-    expect(screen.queryByTestId('maturity-badge')).toBeNull();
-    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
-    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
-  });
+/**
+ * Render the viewer inside a host projecting an explicit ceiling BITMASK.
+ * `ceiling: undefined` installs a host that emits NO `maxBrowsingLevel` at all —
+ * the civitai-#2670-predating case, which must behave as SFW-only.
+ */
+function renderAtCeiling(
+  ceiling: number | undefined,
+  over: Partial<React.ComponentProps<typeof CollectionViewer>> = {},
+  harnessOver: { viewer?: { id: number; username: string } | null } = {},
+) {
+  const props: React.ComponentProps<typeof CollectionViewer> = {
+    detail: detail(),
+    items: [img(1)],
+    settings: { secondsPerImage: 5, videoLoopCount: 1 },
+    onSecondsPerImageChange: () => {},
+    onVideoLoopCountChange: () => {},
+    viewerUserId: 99,
+    buzzBalance: 1000,
+    followed: false,
+    onFollowChange: () => {},
+    onNotice: () => {},
+    onFollowUncertain: () => {},
+    onTip: async () => true,
+    tipping: false,
+    splitPlans: {},
+    onSplitPlanChange: () => {},
+    isMobile: false,
+    c,
+    onExit: () => {},
+    storage: memStorage(),
+    reducedMotion: true,
+    ...over,
+  };
+  return render(
+    <Harness showLog={false} {...(ceiling === undefined ? {} : { maxBrowsingLevel: ceiling })} {...harnessOver}>
+      <CollectionViewer {...props} />
+    </Harness>,
+  );
+}
 
-  it('a neutral "Unrated" (not "NSFW") badge for an unknown/unrated level (fail-closed but not alarming)', () => {
-    renderViewer({ items: [mature(1, 0), img(2)] });
-    expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
-    // Still fail-closed: an unrated item starts blurred until the gate is accepted.
-    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
-  });
+/** Wait for the projected ceiling to land (BLOCK_INIT is asynchronous). */
+async function settled() {
+  await waitFor(() => expect(screen.getByTestId('collection-viewer')).toBeInTheDocument());
+}
 
-  it('🔴 SEAM GUARD (both ceilings): a real nsfwLevel 0 gates on a MATURE domain too', async () => {
-    // The cover fail-open is now DOMAIN-SCOPED (absent level + SFW ceiling only).
-    // A permissive domain ceiling must not become a licence to unblur the ITEM
-    // path: `MediaItem.nsfwLevel` is required and always present, so a 0 there is
-    // a real "unrated" and stays fail-closed no matter what the domain allows.
-    //
-    // This is the direction a future "the domain allows R, so stop blurring"
-    // change would break, and neither the SFW-ceiling test below nor the cover
-    // suite would notice — the cover tests never render a MediaItem.
-    render(
-      <Harness maturity="mature" showLog={false}>
-        <CollectionViewer
-          detail={detail()}
-          items={[mature(1, 0), img(2)]}
-          settings={{ secondsPerImage: 5, videoLoopCount: 1 }}
-          onSecondsPerImageChange={() => {}}
-          onVideoLoopCountChange={() => {}}
-          viewerUserId={99}
-          buzzBalance={1000}
-          followed={false}
-          
-          onFollowChange={() => {}} onNotice={() => {}}
-          onFollowUncertain={() => {}}
-          splitPlans={{}}
-          onSplitPlanChange={() => {}}
-          onTip={async () => true}
-          tipping={false}
-          isMobile={false}
-          c={c}
-          onExit={() => {}}
-          storage={memStorage()}
-          reducedMotion
-        />
-      </Harness>,
-    );
+describe('CollectionViewer — the classic Player renders from the host ceiling', () => {
+  it('a PG item within the ceiling renders, unblurred and unbadged', async () => {
+    renderAtCeiling(SFW_LEVELS, { items: [img(1)] });
+    await settled();
     await waitFor(() => expect(screen.getByTestId('media-image')).toBeInTheDocument());
-    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
-    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('a PG-13 item within the ceiling renders WITH its badge — a badge is a label, not a gate', async () => {
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, BrowsingLevel.PG13)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('maturity-badge')).toHaveTextContent('PG-13'));
+    expect(screen.getByTestId('media-image')).toBeInTheDocument();
+    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
+  });
+
+  it('🔴 an ABOVE-ceiling item is NOT RENDERED AT ALL — not blurred, not badged, not counted', async () => {
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, BrowsingLevel.R), img(2)] });
+    await settled();
+    // The R item is absent from the list, so the player is a ONE-item player and
+    // its progress readout says so. That is the load-bearing half: a blurred item
+    // would still be "1 / 2".
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1'));
+    expect(screen.queryByTestId('maturity-badge')).toBeNull();
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', img(2).url);
+  });
+
+  it('🔴 every item above the ceiling → the player reports no playable media (no empty blurred stage)', async () => {
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, BrowsingLevel.X), mature(2, BrowsingLevel.XXX)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('player-empty')).toBeInTheDocument());
+    expect(screen.queryByTestId('media-image')).toBeNull();
+  });
+
+  // ---- the ceiling and the item DISAGREE, in BOTH directions ----------------
+  // 🔴 WITHOUT THESE THE SUITE CANNOT TELL WHAT THE GUARD IS KEYED ON. Every
+  // assertion above uses a ceiling and an item that agree about the verdict, so a
+  // mutant that ignored the ceiling and hardcoded "R and up is hidden" (the OLD
+  // `shouldBlur` rule) would satisfy all of them. The next two hold one side
+  // constant and move the other.
+
+  it('🔴 SAME R item, WIDER ceiling → it RENDERS (the guard reads the ceiling, not a hardcoded PG-13 line)', async () => {
+    renderAtCeiling(CEILING_ALL, { items: [mature(1, BrowsingLevel.R), img(2)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R'));
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2');
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', mature(1, BrowsingLevel.R).url);
+  });
+
+  it('🔴 SAME up-to-R ceiling, HIGHER item → R renders and X does not (the guard reads the item, not just the ceiling)', async () => {
+    renderAtCeiling(CEILING_UP_TO_R, { items: [mature(1, BrowsingLevel.R), mature(2, BrowsingLevel.X)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('maturity-badge')).toHaveTextContent('R'));
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1');
+  });
+
+  // ---- fail-closed: four kinds of "we do not know" -------------------------
+
+  it('🔴 FAIL CLOSED — before BLOCK_INIT (no host at all): an R item is not rendered', () => {
+    // Rendered with NO <Harness>, so no BLOCK_INIT is ever delivered and the
+    // ceiling reads `undefined`. Asserted synchronously, which is the point: the
+    // very first paint must already be SFW-only.
+    renderViewer({ items: [mature(1, BrowsingLevel.R), img(2)] });
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1');
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', img(2).url);
+  });
+
+  it('🔴 FAIL CLOSED — a host that OMITS maxBrowsingLevel (predates civitai #2670): SFW only', async () => {
+    renderAtCeiling(undefined, { items: [mature(1, BrowsingLevel.R), img(2)] });
+    await settled();
+    // Positive control that the host really did mount and init: the PG item is
+    // there. If nothing rendered, "the R item is absent" would be vacuous.
+    await waitFor(() => expect(screen.getByTestId('media-image')).toHaveAttribute('src', img(2).url));
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1');
+  });
+
+  it('🔴 an UNRATED (0) item RENDERS, on a SFW ceiling, badged "Unrated"', async () => {
+    // 🔴 REVERSED FROM ITS FIRST VERSION, WHICH ASSERTED THE OPPOSITE. That test
+    // pinned "an unrated item is refused even on an all-levels ceiling" and called
+    // it the safe direction. It was not safe, it was the app OVERRIDING the
+    // server, which permits unrated at every ceiling
+    // (<civitai>@origin/release block-collections.service.ts:193, :359) — and it
+    // was worse than the blur it replaced, because a blurred item was at least
+    // reachable. A 0 is a rating the server assigned; refusing it is not caution.
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, 0), img(2)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2'));
+    expect(screen.getByTestId('media-image')).toHaveAttribute('src', mature(1, 0).url);
     expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 
-  it('🔴 SEAM GUARD: the COVER fail-open does NOT leak into the ITEM path — nsfwLevel 0 still gates', () => {
-    // The cover fix (CollectionGrid.CoverImage, 2026-09-05) deliberately renders an
-    // ABSENT `coverNsfwLevel` unblurred, because the collections endpoint never
-    // sends that field and the server has already clamped the cover URL by the
-    // token's browsingLevel. `MediaItem.nsfwLevel` is a DIFFERENT quantity: it is
-    // required, always present, and a 0 there genuinely means "unrated" — so this
-    // path must stay fail-closed.
-    //
-    // This test exists so that a later "let's make maturity consistent everywhere"
-    // tidy-up cannot quietly widen the cover exception into the player. It pins
-    // BOTH the blur and the 18+ gate, not just the badge.
-    renderViewer({ items: [mature(1, 0), img(2)] });
-    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
-    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
+  it('🔴 an unrated (0) item renders on an ALL-LEVELS ceiling too — the level, not the ceiling, decides it', async () => {
+    renderAtCeiling(CEILING_ALL, { items: [mature(1, 0), img(2)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2'));
     expect(screen.getByTestId('maturity-badge')).toHaveTextContent('Unrated');
   });
 
-  it('🔴 the gate is SESSION-LEVEL: accepting once keeps the next mature item unblurred (no per-item re-gate)', async () => {
-    renderViewer({ items: [mature(1, 4), mature(2, 4)] });
-    // Accept the single session gate on item 1.
-    await userEvent.click(screen.getByTestId('maturity-reveal'));
-    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
-    // Advance to item 2 — it stays unblurred; the "sit back" loop is NOT broken.
-    await userEvent.keyboard('{ArrowRight}');
-    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
-    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+  it('🔴 FAIL CLOSED — an ANONYMOUS viewer on a host that projects no ceiling: SFW only', async () => {
+    renderAtCeiling(
+      undefined,
+      { items: [mature(1, BrowsingLevel.X), img(2)], viewerUserId: null },
+      { viewer: null },
+    );
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('media-image')).toHaveAttribute('src', img(2).url));
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 1');
   });
+});
 
-  it('🔴 fail-closed default: an ungated mature item starts blurred until the session gate is accepted', () => {
-    renderViewer({ items: [mature(1, 8), img(2)] });
-    expect(screen.getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
-    expect(screen.getByTestId('maturity-reveal')).toBeInTheDocument();
-  });
-
-  it('🔴 ambient/cast mode: the per-item reveal is suppressed once the session gate is granted', async () => {
-    renderViewer({ items: [mature(1, 4), mature(2, 4)] });
-    // Grant the gate in the normal (chrome-visible) view first.
-    await userEvent.click(screen.getByTestId('maturity-reveal'));
-    // Enter ambient mode — the media stays unblurred and NO reveal overlay fires
-    // (the old behaviour re-gated every item even in passive cast mode).
-    await userEvent.click(screen.getByTestId('cast-toggle'));
-    expect(screen.getByTestId('player')).toHaveAttribute('data-cast', 'on');
-    expect(screen.getByTestId('media-image')).not.toHaveStyle({ filter: 'blur(36px)' });
-    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
-  });
-
-  it('the LIGHTBOX blurs a mature item until the session gate is accepted (continuous mode → tap tile)', async () => {
-    renderViewer({ items: [mature(1, 8), img(2)] });
+describe('CollectionViewer — the continuous surfaces and the lightbox agree with the player', () => {
+  it('🔴 an above-ceiling tile is ABSENT from the wall, so there is no tile to tap', async () => {
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, BrowsingLevel.X), img(2), img(3)] });
+    await settled();
     await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
-    const tiles = screen.getAllByTestId('continuous-tile');
-    await userEvent.click(tiles[0]); // the mature tile → opens the classic lightbox
+    await waitFor(() => expect(screen.getAllByTestId('continuous-tile')).toHaveLength(2));
+    const ids = screen.getAllByTestId('continuous-tile').map((t) => t.getAttribute('data-media-id'));
+    expect(ids).toEqual(['2', '3']);
+  });
+
+  it('🔴 the LIGHTBOX opens on the tile that was tapped — the filter cannot shift the index', async () => {
+    // The knock-on this filter could have broken. `openLightbox` resolves the
+    // tapped item to an INDEX into `displayItems`, and Player then seeks to it.
+    //
+    // 🔴 THE FIXTURE IS BUILT SO THE OFF-BY-ONE IS OBSERVABLE. The excluded item
+    // is FIRST and the tapped tile is the FIRST VISIBLE one, so the two candidate
+    // index spaces disagree by exactly one: correct → index 0 (item 2, "1 / 3"),
+    // a `displayItems` that still held the excluded item → index 1 (item 3,
+    // "2 / 3"). Tapping the LAST tile would not discriminate — an out-of-range
+    // index clamps to the end and lands on the right media by accident.
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, BrowsingLevel.X), img(2), img(3), img(4)] });
+    await settled();
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    await waitFor(() => expect(screen.getAllByTestId('continuous-tile')).toHaveLength(3));
+    await userEvent.click(screen.getAllByTestId('continuous-tile')[0]); // item 2
     const lightbox = await screen.findByTestId('lightbox');
-    expect(within(lightbox).getByTestId('maturity-reveal')).toBeInTheDocument();
-    expect(within(lightbox).getByTestId('media-image')).toHaveStyle({ filter: 'blur(36px)' });
+    expect(within(lightbox).getByTestId('media-image')).toHaveAttribute('src', img(2).url);
+    expect(within(lightbox).getByTestId('progress-label')).toHaveTextContent('1 / 3');
+  });
+
+  it('every item above the ceiling → the viewer says there is nothing to play', async () => {
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, BrowsingLevel.R)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('viewer-empty')).toBeInTheDocument());
+  });
+});
+
+describe('CollectionViewer — there is NO reveal affordance on any surface', () => {
+  // 🔴 THE BEHAVIOURAL HALF OF THE DELETION GUARD. `deleted-mature-gate.test.ts`
+  // proves the source no longer CONTAINS the mechanism; this proves that driving
+  // the app at content the ceiling excludes produces no way to see it anyway —
+  // no overlay, no blur filter, and no control offering to unlock anything.
+  it('an above-ceiling item yields no reveal overlay, no blur, and no 18+ control', async () => {
+    renderAtCeiling(SFW_LEVELS, { items: [mature(1, BrowsingLevel.XXX), img(2)] });
+    await settled();
+    await waitFor(() => expect(screen.getByTestId('media-image')).toBeInTheDocument());
+    expect(screen.queryByTestId('maturity-reveal')).toBeNull();
+    expect(screen.queryByTestId('cover-reveal')).toBeNull();
+    expect(document.querySelector('[style*="blur("]')).toBeNull();
+    for (const el of screen.queryAllByRole('button')) {
+      expect(el.getAttribute('aria-label') ?? '').not.toMatch(/18|reveal|unblur/i);
+      expect(el.textContent ?? '').not.toMatch(/18\+|reveal|unblur/i);
+    }
   });
 });
 

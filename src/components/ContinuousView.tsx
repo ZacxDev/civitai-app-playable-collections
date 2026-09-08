@@ -17,8 +17,9 @@ import type { Palette } from '../theme.js';
 import { assignColumns, columnCount } from '../modes/columns.js';
 import { selectPlayable } from '../modes/autoplay.js';
 import { advanceOffset, clampDt, shouldAutoScroll } from '../modes/scroll-engine.js';
-import { shouldBlur } from '../lib/maturity.js';
-import { MaturityBadge, MATURITY_BLUR_PX } from './Maturity.js';
+import { filterToCeiling } from '../lib/maturity.js';
+import { useViewerCeiling } from '../lib/viewer-maturity.js';
+import { MaturityBadge } from './Maturity.js';
 
 /** Fetch more when the tail sentinel comes near — continuous modes burn items fast. */
 const SENTINEL_MARGIN = '400px';
@@ -50,7 +51,7 @@ export interface ContinuousViewProps {
 export function ContinuousView(props: ContinuousViewProps) {
   const {
     orientation,
-    items,
+    items: allItems,
     muted,
     scrollSpeed,
     reducedMotion,
@@ -65,6 +66,15 @@ export function ContinuousView(props: ContinuousViewProps) {
     initialOffset = 0,
     onOffsetChange,
   } = props;
+
+  // 🔴 THE CEILING IS APPLIED HERE, NOT ONLY IN THE CALLER — same argument as
+  // Player's: `CollectionViewer` already filters, so this is normally a no-op,
+  // but it means no call site can mount this surface over unfiltered items. An
+  // over-ceiling tile is ABSENT from the wall/ticker, not blurred: there is no
+  // tile to tap, so there is nothing to reveal. Everything downstream (columns,
+  // the autoplay cap, the clone copy) reads `items`.
+  const ceiling = useViewerCeiling();
+  const items = useMemo(() => filterToCeiling(allItems, ceiling), [allItems, ceiling]);
 
   const autoScroll = shouldAutoScroll(reducedMotion, paused);
   const horizontal = orientation === 'horizontal';
@@ -249,10 +259,9 @@ function Tile({
   registerTile: (el: HTMLElement | null, mediaId: number) => void;
   registerLazy: (img: HTMLImageElement | null) => void;
 }) {
-  // Mature tiles render blurred with a rating badge; the tile tap opens the
-  // classic lightbox where the full blur-until-reveal gate applies.
-  const blur = shouldBlur(item.nsfwLevel);
-  const media = blur ? { ...mediaEl, filter: `blur(${MATURITY_BLUR_PX}px)` } : mediaEl;
+  // Every tile that reaches here is within the viewer's ceiling (the surface
+  // filtered the list), so it renders at full strength with a rating badge.
+  const media = mediaEl;
   // The poster URL is derived by string-replacing `.mp4→.jpg` (brittle); if it
   // or a lazy cover 404s, fall back to a neutral placeholder instead of a broken
   // image icon.

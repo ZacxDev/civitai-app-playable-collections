@@ -376,10 +376,14 @@ describe('which files carry colour literals — the rubric line, made checkable'
     .map((f) => f.slice(SRC.length))
     .sort();
 
-  it('is exactly the documented set — two exceptions plus six media-overlay files', () => {
+  it('is exactly the documented set — two exceptions plus five media-overlay files', () => {
+    // 🔴 SHRANK BY ONE IN 0.2.11, AND THE SHRINK IS THE POINT. CollectionGrid.tsx
+    // left this set because its only colour literals lived in the tap-to-reveal
+    // overlay that the maturity rework deleted (a white-on-rgba scrim). An
+    // enumerated set is what makes a deletion visible as a deletion instead of a
+    // number quietly going down in prose nobody checks.
     expect(carriers).toEqual([
       'components/BrandMark.tsx', // DOCUMENTED: an identity, invariant across themes
-      'components/CollectionGrid.tsx',
       'components/CollectionViewer.tsx',
       'components/Maturity.tsx',
       'components/Player.tsx',
@@ -388,8 +392,8 @@ describe('which files carry colour literals — the rubric line, made checkable'
       'theme.ts', // DOCUMENTED: `stage` — reads against arbitrary media, not a page bg
     ]);
     // The count the rubric quotes, derived rather than typed.
-    expect(carriers.length).toBe(8);
-    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(6);
+    expect(carriers.length).toBe(7);
+    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(5);
   });
 
   // 🔴 NOT a restatement of the list above — that one would pass with `.css`
