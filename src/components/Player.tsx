@@ -17,7 +17,7 @@
 // "the creator" at press time) and whether its own transport is running
 // (`pickerOpen`, which pauses it so the media cannot move under an open picker).
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
 import { Button, Loader, Slider } from '@civitai/blocks-react/ui';
@@ -174,9 +174,21 @@ export function Player(props: PlayerProps) {
   // 🔴 THIS IS THE ONLY THING PLAYER STILL CONTRIBUTES TO THE MONEY PATH, and it
   // reports the LIVE item deliberately. The picker's job is to FREEZE it at press
   // time; freezing it here as well would hide a drift bug rather than prevent one.
+  //
+  // 🔴 `useLayoutEffect`, NOT `useEffect`, AND THAT IS A MONEY BUG THIS ARC
+  // ALREADY SHIPPED ONCE — caught by CI, not by the local suite. A PASSIVE effect
+  // is flushed on the scheduler's own timetable, so between the commit that mounts
+  // (or advances) this surface and the commit that delivers the report, the owner's
+  // `currentItem` is STALE — `null` on mount. The tip control is live in that
+  // window and `tipPossible` is still true, because the CURATOR side does not
+  // depend on the media. So a press landing there opens a picker with the creator
+  // side silently missing: it looks exactly like the self-tip collapse, and it is
+  // not one. A layout effect is flushed synchronously inside the same commit, so
+  // no press and no paint can observe the gap. The window is real in both
+  // directions — mount, and a mode switch that replaces one surface with another.
   const onCurrentItemChangeRef = useRef(onCurrentItemChange);
   onCurrentItemChangeRef.current = onCurrentItemChange;
-  useEffect(() => {
+  useLayoutEffect(() => {
     onCurrentItemChangeRef.current?.(current ?? null);
   }, [current]);
 

@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useLayoutEffect, useRef } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Harness } from '@civitai/blocks-react/testing';
@@ -48,6 +49,53 @@ describe('ContinuousView — structure + orientation', () => {
     const view = screen.getByTestId('continuous-view');
     expect(view).toHaveAttribute('data-orientation', 'vertical');
     expect(within(view).getAllByTestId('continuous-tile')).toHaveLength(4);
+  });
+});
+
+describe('ContinuousView reports the media this surface stands for', () => {
+  it('names the first item when the observer has said nothing yet', () => {
+    // 🔴 THE FALLBACK IS NOT COSMETIC. `inViewIds` is empty until the
+    // IntersectionObserver's first callback (and forever in an environment without
+    // one). Without the fallback the creator side of the tip picker resolves to
+    // `null` on this surface, and the picker silently offers a curator-only tip —
+    // a collapse that looks exactly like the self-tip collapse and is not one.
+    const seen = vi.fn();
+    renderView({ items: [img(7), img(8)], onCurrentItemChange: seen });
+    expect(seen.mock.calls.at(-1)?.[0]).toMatchObject({ mediaId: 7 });
+  });
+
+  it('🔴 reports WITHIN THE COMMIT, not on the scheduler\'s timetable', () => {
+    // The twin of `Player.test.tsx`'s probe of the same name — read that one for
+    // the money bug this pins and why ordering, not timing, is the discriminator.
+    // Both surfaces feed the SAME owner state, so a guard on one of them leaves
+    // the other free to regress: the Player-side probe passes with THIS
+    // component's report still deferred.
+    let verdict = 'probe did not run';
+    function Probe() {
+      const reported = useRef(false);
+      useLayoutEffect(() => {
+        verdict = reported.current ? 'REPORTED-IN-COMMIT' : 'DEFERRED-PAST-COMMIT';
+      }, []);
+      return (
+        <ContinuousView
+          orientation="vertical"
+          items={[img(1), img(2)]}
+          muted
+          scrollSpeed={40}
+          reducedMotion
+          paused={false}
+          autoplayCap={5}
+          c={c}
+          onTapItem={() => {}}
+          onTogglePause={() => {}}
+          onCurrentItemChange={() => {
+            reported.current = true;
+          }}
+        />
+      );
+    }
+    render(<Probe />);
+    expect(verdict).toBe('REPORTED-IN-COMMIT');
   });
 });
 

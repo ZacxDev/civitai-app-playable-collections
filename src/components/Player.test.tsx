@@ -16,7 +16,7 @@
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Harness } from '@civitai/blocks-react/testing';
@@ -75,6 +75,44 @@ describe('Player reports the media on screen up, live', () => {
     await waitFor(() =>
       expect(seen.mock.calls.at(-1)?.[0]).toMatchObject({ mediaId: 1002, creator: { userId: CAROL } }),
     );
+  });
+
+  it('🔴 reports WITHIN THE COMMIT, not on the scheduler\'s timetable', async () => {
+    // 🔴 THIS PINS A MONEY BUG THAT SHIPPED TO CI AND WAS GREEN LOCALLY.
+    //
+    // The report used to be a PASSIVE effect. Passive effects are flushed on
+    // React's own schedule, so between the commit that mounts this surface and the
+    // flush that delivers the report, the owner's `currentItem` is STALE — `null`
+    // on mount. The tip control is live in that window, and `tipPossible` stays
+    // true because the CURATOR side does not depend on the media: a press landing
+    // there opens a picker with the creator side silently MISSING. It looks
+    // exactly like the self-tip collapse and it is not one.
+    //
+    // 🔴 THE DISCRIMINATOR IS ORDERING, NOT TIMING, WHICH IS WHY THIS IS A
+    // RELIABLE LOCAL WITNESS WHERE THE e2e SHAPE IS NOT. React runs a CHILD's
+    // layout effects before its PARENT's. So a parent layout effect that inspects
+    // "has the child reported yet?" answers YES iff the child reported from a
+    // layout effect, and NO if it reported from a passive one — deterministically,
+    // on any machine, under real or fake timers. Testing-library's `act()` flushes
+    // passive effects before `render()` returns, which is exactly why every
+    // ordinary assertion here stayed green while CI went red.
+    let verdict = 'probe did not run';
+    function Probe() {
+      const reported = useRef(false);
+      useLayoutEffect(() => {
+        verdict = reported.current ? 'REPORTED-IN-COMMIT' : 'DEFERRED-PAST-COMMIT';
+      }, []);
+      return (
+        <Host
+          items={[byBob, byCarol]}
+          onCurrentItemChange={() => {
+            reported.current = true;
+          }}
+        />
+      );
+    }
+    render(<Probe />);
+    expect(verdict).toBe('REPORTED-IN-COMMIT');
   });
 
   it('reports null when the ceiling leaves nothing playable', async () => {

@@ -130,9 +130,14 @@ export function ContinuousView(props: ContinuousViewProps) {
     () => items.find((it) => inViewIds.has(it.mediaId)) ?? items[0] ?? null,
     [items, inViewIds],
   );
+  // 🔴 `useLayoutEffect`, for the same reason as Player's twin of this block —
+  // read that one. A PASSIVE effect leaves the owner's `currentItem` stale for the
+  // window between this surface committing and the scheduler flushing, and the tip
+  // control is live in that window. On this surface the window opens on every
+  // mode switch INTO it, which is an ordinary two-click action.
   const onCurrentItemChangeRef = useRef(onCurrentItemChange);
   onCurrentItemChangeRef.current = onCurrentItemChange;
-  useEffect(() => {
+  useLayoutEffect(() => {
     onCurrentItemChangeRef.current?.(currentItem);
   }, [currentItem]);
 
