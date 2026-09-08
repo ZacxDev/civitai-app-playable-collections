@@ -54,21 +54,26 @@ src/
 
 ## Run locally
 
+This repo installs with **pnpm**, and the node + pnpm majors are pinned by the
+flake (`.nvmrc` is the single authority for node — CI reads the same file).
+Neither binary is expected on `PATH` outside the dev shell:
+
 ```sh
-npm install
+direnv allow                     # or: nix develop
+pnpm install --frozen-lockfile
 
 # Dev harness — mounts the SDK mock host + the in-memory fake API (no backend).
 # Opens on http://localhost:5187. URL toggles: ?viewer=anon, ?theme=light.
-npm run dev:harness
+pnpm run dev:harness
 
 # Type-check / build / test
-npm run typecheck
-npm run build          # tsc --noEmit && vite build -> dist/
-npm test               # vitest run (node + jsdom projects)
+pnpm run typecheck
+pnpm run build         # tsc --noEmit && vite build -> dist/
+pnpm test              # vitest run (node + jsdom projects)
 ```
 
-> On a machine without `pnpm` on PATH, run the binaries directly, e.g.
-> `~/.nix-profile/bin/npx vitest run`, `~/.nix-profile/bin/npm run build`.
+> Without direnv, prefix a one-shot command:
+> `nix develop --command pnpm test`.
 
 ## Settings (device-local)
 

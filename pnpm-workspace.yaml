@@ -1,0 +1,30 @@
+# Single-package repo. The root has to be declared explicitly or pnpm — and
+# `actions/setup-node`'s `cache: pnpm` — error with "packages field missing or
+# empty" the moment this file exists at all.
+packages:
+  - '.'
+
+# pnpm's default `minimumReleaseAge` gate refuses to install package versions
+# published very recently. Without these exclusions `pnpm import` and
+# `pnpm install` both fail outright (ERR_PNPM_RESOLUTION_POLICY_VIOLATIONS_*) —
+# measured on this repo, 2 violations before this block existed.
+#
+# Every entry is a Civitai first-party package pinned in package.json, and the
+# version listed is the one package-lock.json already resolved to, so nothing
+# here loosens what the app builds against:
+#   - @civitai/app-sdk@0.38.0     — the block message/type contract: BLOCK_SCOPES
+#     (incl. the 4-segment `apps:storage:shared:*`), `defineBlock`, the tip and
+#     collection payload shapes src/types.ts mirrors.
+#   - @civitai/blocks-react@0.48.0 — the hooks + IframeTransport, the host follow
+#     bridge used by 0.2.10, and the `/testing` mock host every *.test.tsx and
+#     the dev Harness mount against.
+#   - @civitai/components@0.4.1    — the attribute-driven CSS primitives the skin
+#     (src/skin.css) is written on top of.
+#   - @civitai/theme@0.3.1         — the `--civitai-*` design tokens (src/theme.ts,
+#     src/bootTheme.ts). 0.3.1 is the latest published; do not bump blindly.
+# All resolve straight from the npm registry — no `link:`/`overrides`.
+minimumReleaseAgeExclude:
+  - '@civitai/app-sdk@0.38.0'
+  - '@civitai/blocks-react@0.48.0'
+  - '@civitai/components@0.4.1'
+  - '@civitai/theme@0.3.1'

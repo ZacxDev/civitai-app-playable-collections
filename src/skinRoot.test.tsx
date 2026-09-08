@@ -18,7 +18,7 @@
 //     SHRINKS. 🔴 That half lives in src/skin.test.ts, NOT here: this file runs in
 //     the `dom` (jsdom) project, where `import.meta.url` is an http: URL and
 //     `fileURLToPath` throws — a source-reading test belongs in the `node`
-//     project. Both projects run under a bare `npm test`; check both are green.
+//     project. Both projects run under a bare `pnpm test`; check both are green.
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 

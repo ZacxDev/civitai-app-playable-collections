@@ -26,7 +26,7 @@ import './index.css';
 // component styles exist before the first paint).
 injectBlocksStyles();
 
-// `npm run dev:harness` sets VITE_DEV_HARNESS=true to mount the local mock host
+// `pnpm run dev:harness` sets VITE_DEV_HARNESS=true to mount the local mock host
 // (the published `@civitai/blocks-react/testing` Harness) that posts a fake
 // BLOCK_INIT + answers the viewer/consent protocol. The mock host does NOT
 // answer the block HTTP endpoints, so in dev we inject a fake in-memory
