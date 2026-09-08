@@ -60,6 +60,13 @@ const chromiumPath = resolveChromium();
 export default defineConfig({
   base: '/',
   plugins: [react()],
+  // 🔴 REQUIRED BY THE BROWSER TIER, harmless everywhere else. In browser mode the
+  // SDK packages and the app can otherwise resolve to DIFFERENT React copies, and
+  // the second one has a null dispatcher — the failure surfaces as
+  // `Cannot read properties of null (reading 'useState')` from inside a perfectly
+  // ordinary component, which reads like a bug in that component rather than a
+  // resolution problem.
+  resolve: { dedupe: ['react', 'react-dom'] },
   server: {
     // The dev harness fires a fake BLOCK_INIT from window.location.origin and
     // the SDK IframeTransport drops any postMessage whose origin isn't its
