@@ -43,8 +43,11 @@ export interface ContinuousViewProps {
    * picker has a creator to name here too (T5 criterion 2 — Ticker and Wall
    * could not tip a creator at all before, because neither had a "current item").
    *
-   * 🔴 IT IS THE FIRST IN-VIEW TILE IN DISPLAY ORDER, AND IT FALLS BACK TO THE
-   * FIRST ITEM. Both halves are load-bearing. In-view comes from the SAME
+   * 🔴 IT IS THE FIRST IN-VIEW TILE IN `items` ORDER, AND IT FALLS BACK TO THE
+   * FIRST ITEM. ⚠️ `items` order is NOT visual order on the vertical wall —
+   * `assignColumns` round-robins into columns — so this names "an item the viewer
+   * can see", not "the top-left one". The picker's preview names the recipient
+   * before the confirm, which is where that ambiguity is resolved for the viewer. Both halves are load-bearing. In-view comes from the SAME
    * `useInViewIds` observer that already decides which videos may autoplay, so
    * the item named here is one the viewer can actually see. The fallback covers
    * every environment with no working `IntersectionObserver` (jsdom, and any

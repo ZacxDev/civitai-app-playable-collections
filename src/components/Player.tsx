@@ -77,6 +77,17 @@ export interface PlayerProps {
    * whose creator the open picker names.
    */
   pickerOpen?: boolean;
+  /**
+   * Hold the transport still, WITHOUT swallowing the viewer's own controls.
+   *
+   * 🔴 THE DIFFERENCE FROM `pickerOpen` IS THE WHOLE POINT. The owner sets this
+   * when a tip is outstanding but no picker is up: the app must not advance the
+   * media BY ITSELF, because the split plan is keyed to the media and drifting off
+   * it orphans a leg the viewer still needs to retry. But the viewer is not
+   * trapped — every control, key and click still works, and using one is a
+   * deliberate act that forfeits the plan in the open.
+   */
+  holdPaused?: boolean;
   /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
   cast?: boolean;
   /** OS reduced-motion preference — pauses cast auto-advance when set. */
@@ -104,6 +115,7 @@ export function Player(props: PlayerProps) {
     onCurrentItemChange,
     showSettingsControl = true,
     pickerOpen = false,
+    holdPaused = false,
     cast = false,
     reducedMotion = false,
     isMobile,
@@ -197,18 +209,23 @@ export function Player(props: PlayerProps) {
   // the STAGE from moving under a viewer who is reading a preview, which is the
   // behaviour they would expect anyway. Playback resumes only if it was running
   // when the picker opened, so this never starts a paused player.
+  // 🔴 `holdPaused` IS PART OF THE SAME GATE, AND ITS JOB IS THE *RESUME* SIDE.
+  // Releasing on `pickerOpen` alone restarted the timer the moment a picker
+  // closed — including the close that leaves a half-failed plan behind, five
+  // seconds before the auto-advance moved the media out from under it.
+  const holdStill = pickerOpen || holdPaused;
   const resumeAfterPickerRef = useRef(false);
   const playerRef = useRef(player);
   playerRef.current = player;
   useEffect(() => {
-    if (pickerOpen) {
-      resumeAfterPickerRef.current = playerRef.current.playing;
+    if (holdStill) {
+      resumeAfterPickerRef.current = resumeAfterPickerRef.current || playerRef.current.playing;
       playerRef.current.pause();
     } else if (resumeAfterPickerRef.current) {
       resumeAfterPickerRef.current = false;
       playerRef.current.play();
     }
-  }, [pickerOpen]);
+  }, [holdStill]);
 
   // ---- keyboard (all viewports; the platform routes real key events to the
   // focused iframe, and arrow keys are the desktop-primary control) ----

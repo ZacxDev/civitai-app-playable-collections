@@ -64,6 +64,40 @@ describe('ContinuousView reports the media this surface stands for', () => {
     expect(seen.mock.calls.at(-1)?.[0]).toMatchObject({ mediaId: 7 });
   });
 
+  it('🔴 names the first IN-VIEW tile once the observer has spoken — not items[0]', async () => {
+    // 🔴 THIS EXECUTES THE ARM PRODUCTION ALWAYS TAKES AND THE SUITE NEVER DID.
+    // `currentItem` is `items.find(in view) ?? items[0]`. Every other test in the
+    // repo leaves `inViewIds` EMPTY (nothing fires an intersection at this
+    // component), so they all resolve through the FALLBACK — while a real browser
+    // always has an IntersectionObserver and therefore always takes the other
+    // branch. The suite and production were exercising different code.
+    //
+    // The discriminator is a PARTIAL intersection: with everything in view,
+    // "first in view" and "first item" are the same element and the assertion is
+    // vacuous. Here tile 0 is scrolled off, so only a real in-view lookup can name
+    // tile 1 — a consumer that ignored the observer answers with tile 0.
+    const seen = vi.fn();
+    renderView({ items: [img(11), img(12), img(13)], onCurrentItemChange: seen });
+    expect(seen.mock.calls.at(-1)?.[0]).toMatchObject({ mediaId: 11 }); // control: the fallback
+
+    await act(async () => {
+      flushIntersections(true, (_el, i) => i !== 0);
+    });
+    await waitFor(() => expect(seen.mock.calls.at(-1)?.[0]).toMatchObject({ mediaId: 12 }));
+  });
+
+  it('falls back again when the observer reports NOTHING in view', async () => {
+    // Scrolled between tiles, or a browser that has not delivered a callback yet.
+    // The tip picker must still have a creator to name rather than silently
+    // collapsing to a curator-only tip.
+    const seen = vi.fn();
+    renderView({ items: [img(21), img(22)], onCurrentItemChange: seen });
+    await act(async () => {
+      flushIntersections(true, () => false);
+    });
+    await waitFor(() => expect(seen.mock.calls.at(-1)?.[0]).toMatchObject({ mediaId: 21 }));
+  });
+
   it('🔴 reports WITHIN THE COMMIT, not on the scheduler\'s timetable', () => {
     // The twin of `Player.test.tsx`'s probe of the same name — read that one for
     // the money bug this pins and why ordering, not timing, is the discriminator.

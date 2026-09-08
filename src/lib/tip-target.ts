@@ -15,7 +15,7 @@
 // four fields plus the same key through its own injected `ApiClient` (see the
 // non-goal recorded in `lib/tip-allowance.ts`: the upstream hook raw-`fetch`es,
 // which would bypass the fake every test and the dev harness depend on, and lose
-// this client's `ApiError` taxonomy). `tip-hook-parity.test.ts` is what stops
+// this client's `ApiError` taxonomy). `src/tip-contract.test.ts` is what stops
 // those two shapes drifting apart silently.
 
 /** One side a tip can be sent to, resolved to the exact entity it is for. */

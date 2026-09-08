@@ -15,7 +15,7 @@
 // one — and never from both at once. That is what makes "exactly ONE tip
 // affordance per view" a structural fact rather than a styling convention:
 // `getAllByTestId('chrome-tip')` has length 1 in Slideshow, in Ticker, in Wall
-// and with the lightbox open, and `collection-viewer-affordances.test.tsx`
+// and with the lightbox open, and `src/components/tip-affordance.test.tsx`
 // asserts exactly that. Before T5 the row existed only on the continuous modes
 // and carried a curator tip alone, while `Player` drew a SEPARATE four-button
 // rail — so the two surfaces disagreed on placement, on component AND on which
@@ -282,9 +282,21 @@ export function CollectionViewer(props: CollectionViewerProps) {
     (item: MediaItem) => {
       const idx = displayItems.findIndex((it) => it.mediaId === item.mediaId);
       setLightboxIndex(idx >= 0 ? idx : 0);
+      // 🔴 DO NOT ALSO SEED `lightboxItem` FROM THE TAPPED TILE HERE. It looks
+      // prudent — this callback HAS the item — and it was written that way for one
+      // round, but the lightbox Player reports through a LAYOUT effect, which is
+      // flushed inside the very commit that mounts it. So the slot is correct
+      // before anything can be painted or pressed, and a second writer for the same
+      // value is a second source of truth with no way to observe it being wrong:
+      // both a seed here and a clear on close survived as mutants against the whole
+      // suite, which is what unfalsifiable duplication looks like. The stale window
+      // they were added to close is closed at its source (`Player.tsx`, search
+      // `useLayoutEffect`), and the two commit-ordering probes are what guard it.
     },
     [displayItems],
   );
+
+  const closeLightbox = useCallback(() => setLightboxIndex(null), []);
 
   // =========================================================================
   // The ONE tip affordance
@@ -328,6 +340,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const [tipOpenFor, setTipOpenFor] = useState<{ creator: SplitRecipient; curator: SplitRecipient } | null>(null);
   /** Reported up by the picker: a leg is on the wire, so nothing may dismiss it. */
   const [tipSending, setTipSending] = useState(false);
+  /**
+   * The key of the tip the viewer most recently OPENED, whether or not the picker
+   * is still up. It is what lets this component ask "does that tip still have
+   * money outstanding?" after the picker has been dismissed.
+   */
+  const [lastTipKey, setLastTipKey] = useState<string | null>(null);
 
   const openTip = useCallback(() => {
     // Logged-out: tipping needs an account, so prompt sign-in UP FRONT rather
@@ -342,7 +360,30 @@ export function CollectionViewer(props: CollectionViewerProps) {
     // move (a timer, a filter, a reload, a wall scrolling on) without
     // redirecting a single Buzz.
     setTipOpenFor({ creator: liveCreator, curator: liveCurator });
+    setLastTipKey(splitTipKey(liveCreator, liveCurator));
   }, [viewerUserId, onRequestSignIn, tipPossible, liveCreator, liveCurator]);
+
+  /**
+   * The tip the viewer last opened still has money outstanding — a plan exists for
+   * it, so at least one leg is unsent (a completed tip DELETES its plan).
+   *
+   * 🔴 THIS IS WHY THE APP MUST NOT START MOTION BY ITSELF. The plan is keyed to
+   * the MEDIA, and the picker promises in so many words that "reopening this split
+   * picks the same tip back up". Closing the picker used to RESUME the transport,
+   * so five seconds of doing nothing advanced the item, moved the key, orphaned the
+   * outstanding leg and handed the viewer a blank Send — which mints a FRESH
+   * idempotency key for a transfer whose predecessor may already have landed. On
+   * Ticker and Wall it needs no viewer action at all, because they auto-scroll.
+   *
+   * 🔴 THE FIX IS NOT TO RE-POINT THE KEY. A different image genuinely IS a
+   * different tip — resuming the old plan there would show a viewer a
+   * partial-failure panel and a Retry for a tip they never started on this media,
+   * and pressing it would replay keys against the wrong entity. So the app simply
+   * declines to move on its own while money is outstanding. The viewer can still
+   * press Play, or navigate: that is a deliberate act, and it forfeits the plan
+   * visibly rather than behind their back.
+   */
+  const outstandingTip = lastTipKey != null && splitPlans[lastTipKey] != null;
 
   // The logical tip the open picker is for, and the plan App is holding for it.
   const openTipKey = tipOpenFor ? splitTipKey(tipOpenFor.creator, tipOpenFor.curator) : null;
@@ -362,14 +403,25 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const onTipDone = useCallback(() => {
     if (openTipKey != null) onSplitPlanChange(openTipKey, null);
     setTipOpenFor(null);
+    // Nothing is outstanding any more, so the surfaces are released to move again.
+    setLastTipKey(null);
   }, [openTipKey, onSplitPlanChange]);
 
-  // 🔴 THE APP'S OWN Escape GATE, AND IT HAS TO LIVE HERE NOW. `Modal` closes on
-  // Escape from a `document` handler; this one is on `window`, above it. Two
-  // things it must do that the modal cannot: refuse to dismiss while a leg is on
-  // the wire (the POST is not cancelled by closing — the Buzz still leaves, and
-  // the partial-failure UI with its retry never appears), and exist at all on the
-  // continuous surfaces, where there is no Player to have hosted it.
+  // 🔴 THE APP'S OWN Escape GATE. ⚠️ AN EARLIER VERSION OF THIS COMMENT CLAIMED
+  // THIS HANDLER IS WHAT REFUSES A MID-SEND DISMISSAL, AND THAT WAS WRONG ABOUT
+  // THE ORDERING. A real Escape from the focused dialog bubbles target → document
+  // → window, and `Modal`'s own listener is on `document`, so the MODAL decides
+  // first; this handler cannot prevent a dismissal it has already allowed. The
+  // load-bearing mid-send gate is `closeOnEscape={!sending}` inside
+  // `TipSplitModal`, and it must stay there.
+  //
+  // What THIS handler is genuinely for: closing the picker for key events that
+  // never reach `document` at all, and being the app's own record of the same
+  // decision so the two cannot disagree. `tipping`/`tipSending` are checked here
+  // for that reason — belt and braces with the modal's gate, not instead of it.
+  // (The covering test dispatches on `window`, whose propagation path is `window`
+  // alone, so it exercises THIS gate and never the modal's. Do not read it as
+  // evidence about the modal's.)
   useEffect(() => {
     if (!pickerOpen) return;
     const onKey = (e: KeyboardEvent) => {
@@ -651,6 +703,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onCurrentItemChange={setSurfaceItem}
             showSettingsControl={false}
             pickerOpen={pickerOpen}
+            holdPaused={outstandingTip}
             cast={cast}
             reducedMotion={reducedMotion}
             isMobile={isMobile}
@@ -671,7 +724,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             // the wall keeps scrolling under an open picker: the money is still
             // right (the recipients are frozen at press time), but the viewer is
             // reading a preview naming a creator whose tile has left the screen.
-            paused={paused || pickerOpen}
+            paused={paused || pickerOpen || outstandingTip}
             autoplayCap={autoplayCap}
             c={c}
             onTapItem={openLightbox}
@@ -719,7 +772,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
               <Button
                 size="sm"
                 variant="subtle"
-                onClick={() => setLightboxIndex(null)}
+                onClick={closeLightbox}
                 data-testid="lightbox-exit"
                 aria-label="Close the media viewer"
               >
@@ -752,9 +805,10 @@ export function CollectionViewer(props: CollectionViewerProps) {
             initialItemIndex={lightboxIndex}
             onCurrentItemChange={setLightboxItem}
             pickerOpen={pickerOpen}
+            holdPaused={outstandingTip}
             isMobile={isMobile}
             c={c}
-            onExit={() => setLightboxIndex(null)}
+            onExit={closeLightbox}
           />
           </FocusTrap>
         </div>

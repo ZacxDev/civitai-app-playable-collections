@@ -77,11 +77,17 @@ describe('the app speaks the same tip contract as upstream useTip / useTipAllowa
   });
 
   it('the allowance read exposes the `remaining` figure upstream exposes', () => {
-    const allowance: AppTipAllowance = { cap: 25000, spent: 24700, remaining: 300 };
-    expect(appAllowanceIsUpstreamShaped(allowance).remaining).toBe(300);
-    // The app never recomputes `remaining` from cap − spent; it reads the
-    // server's own figure, exactly as upstream's hook does.
-    expect(allowance.remaining).toBe(allowance.cap - allowance.spent);
+    // 🔴 `remaining` DISAGREES WITH cap − spent ON PURPOSE HERE. The earlier
+    // version of this case asserted `remaining === cap - spent` on a hand-written
+    // literal — arithmetic about the fixture, true in the ONE configuration where
+    // "reads the server's figure" and "recomputes it" agree, so it could not tell
+    // those two apart while its comment claimed it did. Upstream's own doc says
+    // `spent` is reservation-based and "can briefly over-count", so the server's
+    // `remaining` is authoritative and need NOT equal the subtraction. A fixture
+    // where they differ is the only one that shows which value is carried.
+    const allowance: AppTipAllowance = { cap: 25000, spent: 24700, remaining: 111 };
+    expect(appAllowanceIsUpstreamShaped(allowance).remaining).toBe(111);
+    expect(allowance.remaining).not.toBe(allowance.cap - allowance.spent);
   });
 
   it('the per-tip cap the app pre-blocks against is the server figure, not a guess', () => {

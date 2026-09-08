@@ -412,6 +412,38 @@ describe('the server allowance reaches the pickers (hazard 4)', () => {
     );
   });
 
+  it('🔴 carries the SERVER\'s `remaining`, and never recomputes it from cap − spent', async () => {
+    // 🔴 THE FIXTURE DISAGREES WITH THE SUBTRACTION ON PURPOSE — that is the only
+    // shape that can tell the two apart, and no test in the repo had one. Upstream
+    // documents `spent` as reservation-based and able to "briefly OVER-count
+    // between a reserve and its refund", so `remaining` is the server's own answer
+    // and is NOT required to equal `cap - spent`. An app that recomputed it would
+    // show 700 here and let a 700 tip through against a real ceiling of 120 — a
+    // pre-block that is wrong in the permissive direction.
+    const base = createFakeApi({ viewerUserId: 99, balance: 100000 }) as FakeApi;
+    const api: ApiClient = {
+      ...base,
+      async getTipAllowance() {
+        return { cap: 25000, spent: 24300, remaining: 120 };
+      },
+    };
+    await openFirst(api);
+    const modal = await openSplit();
+    await waitFor(() =>
+      expect(within(modal).getByTestId('tip-split-allowance')).toHaveTextContent('Up to 120 Buzz in total.'),
+    );
+
+    // …and it is the figure the client-side gate actually uses, not just a readout.
+    const input = within(modal).getByTestId('split-amount-input');
+    await userEvent.clear(input);
+    await userEvent.type(input, '700');
+    expect(await screen.findByTestId('split-error')).toHaveTextContent(
+      "Only 120 Buzz left in today's tip allowance.",
+    );
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    expect(base.__tips()).toHaveLength(0);
+  });
+
   it('🔴 a FAILED allowance read does not make tipping impossible', async () => {
     const base = createFakeApi({ viewerUserId: 99, balance: 5000 }) as FakeApi;
     const api: ApiClient = {

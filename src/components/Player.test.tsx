@@ -4,9 +4,15 @@
 // DROPPED. Player no longer owns tipping — one tip affordance, in a chrome row
 // `CollectionViewer` renders on all three surfaces — so the snapshot contract,
 // the plan-identity contract and the mid-transfer dismissal gate are now
-// exercised where the picker actually lives: `tip-affordance.test.tsx`. Each of
-// those cases survived the move with its fixtures and its assertions intact;
-// the only thing that changed is which component the press goes through.
+// exercised where the picker actually lives: `tip-affordance.test.tsx`.
+//
+// ⚠️ FOUR of the six moved with their fixtures and assertions intact. TWO did
+// not, and an earlier version of this header said "each survived the move",
+// which was false: `marks the ✓ against the media that was TIPPED` tested
+// per-target tipped state that no longer exists (one button cannot mark three
+// destinations), and `leaves the SINGLE-TARGET picker open while its transfer is
+// on the wire` tested a picker that is gone. The mid-send dismissal gate those
+// two shared is still covered, once, in `tip-affordance.test.tsx`.
 //
 // What stays here is what only Player can answer:
 //   - it enforces the maturity ceiling ITSELF, whatever the caller passes,

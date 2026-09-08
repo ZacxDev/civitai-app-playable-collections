@@ -280,6 +280,28 @@ describe('follow toggle — one control, host-mediated', () => {
     expect(api.__isFollowed(101)).toBe(false);
   });
 
+  it('🔴 a successful follow DROPS THE CACHED READS — the seam nobody owned', async () => {
+    // 🔴 RETARGETED, NOT REWRITTEN, AND IT SHOULD NEVER HAVE BEEN AT RISK. This
+    // guard was written for the retired `follow-toggle` rail button; consolidating
+    // onto `chrome-follow` would have deleted it with the rail, and the PR nearly
+    // shipped without it. `App.tsx`'s own comment claims "the invalidation on a
+    // CONFIRMED follow is untouched" — this is the only thing in the repo that
+    // makes that a checkable claim rather than a sentence.
+    //
+    // Why it matters: `followed` is embedded in the cached list AND detail
+    // payloads, and following does not go through the client at all, so nothing
+    // else drops them. Without this, re-opening the collection inside the
+    // 5-minute TTL shows the pre-follow flag and the grid badge disagrees with the
+    // button. `cache.test.ts` tests the WRAPPER in isolation; only this asserts
+    // that App actually calls it.
+    const invalidateReads = vi.fn();
+    const api = { ...createFakeApi({ viewerUserId: 99 }), invalidateReads } as unknown as ApiClient;
+    await openNeon(api);
+    expect(invalidateReads).not.toHaveBeenCalled(); // control: not fired by merely opening
+    await userEvent.click(screen.getByTestId('chrome-follow'));
+    await waitFor(() => expect(invalidateReads).toHaveBeenCalledTimes(1));
+  });
+
   it('unfollows again, adopting the echo both ways', async () => {
     const api = createFakeApi({ viewerUserId: 99 }) as FakeApi;
     await openNeon(api);

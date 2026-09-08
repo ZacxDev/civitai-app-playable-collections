@@ -285,6 +285,102 @@ describe('🔴 creator, curator AND a split are all reachable from the one contr
 });
 
 // ===========================================================================
+// The LIGHTBOX money path — the seam the affordance-count tests do not reach
+// ===========================================================================
+
+describe('🔴 tipping from INSIDE the lightbox', () => {
+  // 🔴 COUNTING THE BUTTON IS NOT EXERCISING IT. Until these cases existed, every
+  // lightbox test in the repo opened the dialog, asserted `chrome-tip` was there,
+  // and closed it — so the two props that make the lightbox's money correct had no
+  // witness at all, and both survived as mutants against the whole suite:
+  //   * `onCurrentItemChange={setLightboxItem}` → `setSurfaceItem` — `lightboxItem`
+  //     then stays null, the creator side collapses, and the picker tells a viewer
+  //     who does NOT own the media "This is your media, so the whole tip goes to
+  //     the collection curator" while sending the curator the entire total.
+  //   * `pickerOpen={pickerOpen}` → `false` — the lightbox Player keeps advancing
+  //     under an open picker AND its window-level Escape closes the whole lightbox
+  //     on the keystroke that dismisses the dialog.
+
+  async function openLightboxOn(tileIndex: number) {
+    await switchTo('continuous-vertical');
+    await userEvent.click(screen.getAllByTestId('continuous-tile')[tileIndex]);
+    return screen.findByTestId('lightbox');
+  }
+
+  it('pays the creator of the TAPPED tile, not the wall\'s first item', async () => {
+    // The discriminator is the tile INDEX: tapping the second tile must name
+    // carol, while everything that reads the surface slot still names bob.
+    const onTip = makeTip();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const lightbox = await openLightboxOn(1);
+    expect(within(lightbox).getByTestId('progress-label')).toHaveTextContent('2 / 2');
+
+    await userEvent.click(within(lightbox).getByTestId('chrome-tip'));
+    const modal = await screen.findByTestId('tip-split-modal');
+    await userEvent.click(within(modal).getByTestId('tip-target-creator'));
+    expect(screen.getByTestId('split-preview-creator')).toHaveTextContent('@carol (creator): 50 Buzz');
+
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await waitFor(() => expect(onTip).toHaveBeenCalledTimes(1));
+    expect(onTip.mock.calls[0][0]).toMatchObject({
+      kind: 'creator',
+      toUserId: CAROL,
+      entityType: 'Image',
+      entityId: 1002,
+    });
+  });
+
+  it('🔴 the FIRST lightbox of a session already knows its media — no null window', async () => {
+    // `lightboxItem` starts null and is filled by the newly-mounted Player. Seeded
+    // from the tapped tile in the same update, there is no render in which the
+    // dialog is up and the creator side is missing. Pressing Tip the instant the
+    // dialog appears is the reachable version of that window.
+    const onTip = makeTip();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const lightbox = await openLightboxOn(0);
+    await userEvent.click(within(lightbox).getByTestId('chrome-tip'));
+    const modal = await screen.findByTestId('tip-split-modal');
+    // Both sides present ⇒ the creator side did not collapse.
+    expect(within(modal).getByTestId('split-preview-creator')).toHaveTextContent('@bob (creator)');
+    expect(within(modal).getByTestId('split-preview-curator')).toHaveTextContent('@alice (curator)');
+    expect(modal).not.toHaveTextContent('This is your media');
+  });
+
+  it('pauses the LIGHTBOX transport while the picker is open, and Escape does not close the dialog', async () => {
+    const onTip = makeTip();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const lightbox = await openLightboxOn(0);
+    expect(within(lightbox).getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'true');
+
+    await userEvent.click(within(lightbox).getByTestId('chrome-tip'));
+    await screen.findByTestId('tip-split-modal');
+    expect(within(lightbox).getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+
+    // 🔴 One Escape dismisses the PICKER and leaves the dialog standing. Without
+    // the gate the lightbox Player's own window handler runs too and calls
+    // `onExit()`, tearing the dialog down on the same keystroke.
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+    expect(screen.getByTestId('lightbox')).toBeInTheDocument();
+  });
+
+  it('closing the lightbox hands the tip target back to the surface underneath', async () => {
+    const onTip = makeTip();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const lightbox = await openLightboxOn(1);
+    await userEvent.click(within(lightbox).getByTestId('lightbox-exit'));
+    await waitFor(() => expect(screen.queryByTestId('lightbox')).toBeNull());
+
+    // Back on the wall, the target is the wall's item again — not the tile the
+    // dialog was showing a moment ago.
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    const modal = await screen.findByTestId('tip-split-modal');
+    await userEvent.click(within(modal).getByTestId('tip-target-creator'));
+    expect(screen.getByTestId('split-preview-creator')).toHaveTextContent('@bob (creator)');
+  });
+});
+
+// ===========================================================================
 // C5 — the press-time snapshot
 // ===========================================================================
 
@@ -475,6 +571,44 @@ describe('🔴 a half-failed plan survives the four things that unmount a surfac
     expect(onTip.mock.calls[0][2]).toBe(creatorKey);
     // …and it is still bob who was paid, not the creator who drifted into view.
     expect(onTip.mock.calls[0][0]).toMatchObject({ toUserId: BOB, entityId: 1001 });
+  });
+
+  it('🔴 the media does not DRIFT AWAY from an outstanding plan on its own', async () => {
+    // 🔴 THE PICKER PROMISES THIS IN SO MANY WORDS: "Closing is safe too:
+    // reopening this split picks the same tip back up, for as long as this page
+    // stays open." The plan is keyed to the MEDIA, so that promise holds only
+    // while the media stays put — and closing the picker used to RESUME the
+    // transport, so five seconds of doing nothing moved the key, orphaned the
+    // outstanding curator leg, and handed the viewer a blank Send. Confirming
+    // that mints a FRESH idempotency key for a transfer whose predecessor may
+    // already have landed. On Ticker and Wall it is worse: they auto-scroll, so
+    // the drift needs no viewer action at all.
+    //
+    // The fix is not to re-point the key — a different image genuinely IS a
+    // different tip (the case below depends on that). It is that the app must not
+    // START MOTION BY ITSELF while a tip is outstanding. The viewer can still
+    // press Play, or navigate; that is a choice, and it forfeits the plan visibly.
+    const onTip = curatorRefusedOnce();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const modal = await openPicker();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(screen.getByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+
+    // The viewer presses Close — the button this very state relabels, right beside
+    // the promise quoted above.
+    await userEvent.click(screen.getByTestId('split-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    // 🔴 THE ASSERTION. The transport must NOT be running: there is money
+    // outstanding on the item it would advance away from.
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2');
+
+    // …and the plan is therefore still reachable, exactly as the copy says.
+    const reopened = await openPicker();
+    expect(await within(reopened).findByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+    expect(within(reopened).getByTestId('split-retry')).toBeInTheDocument();
   });
 
   it('does not carry a half-failed plan across to a different image BY THE SAME CREATOR', async () => {
