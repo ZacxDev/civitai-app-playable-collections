@@ -108,12 +108,15 @@ function ciPackageManager(workflow: string): string {
   // A workflow that invokes no package manager at all has none to compare
   // against, and answering "npm" for it would be an invention rather than a
   // reading. Throw instead — same rule as every other extractor in this file.
-  const invoked = new Set(
-    [...workflow.matchAll(/^\s*-\s+run:\s*(npm|pnpm|yarn|bun)\b/gm)].map((m) => m[1]),
-  );
-  if (invoked.size === 0) {
+  //
+  // Matched anywhere in the workflow rather than as a `- run:` list item on
+  // purpose: the same step is written at least three ways across these repos
+  // (`- run: pnpm install`, a bare `run:` under a `name:`d step, and lines
+  // inside a `run: |` block), and a guard that goes red on a reformat is a
+  // guard people learn to merge through.
+  if (!/\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci|run|test|build|exec)\b/.test(workflow)) {
     throw new Error(
-      'ci.yml runs no npm/pnpm/yarn/bun command — there is no CI package manager to compare against',
+      'ci.yml invokes no npm/pnpm/yarn/bun command — there is no CI package manager to compare against',
     );
   }
 
