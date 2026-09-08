@@ -86,7 +86,7 @@ async function openSplitOn(api: ApiClient, viewer: ViewerInfo = { id: VIEWER, us
   const grid = await screen.findByTestId('collection-grid');
   await user.click(within(grid).getAllByTestId('collection-card')[0]);
   await screen.findByTestId('player');
-  await user.click(screen.getByTestId('tip-split'));
+  await user.click(screen.getByTestId('chrome-tip'));
   const modal = await screen.findByTestId('tip-split-modal');
   return { user, modal };
 }

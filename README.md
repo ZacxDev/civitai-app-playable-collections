@@ -45,9 +45,12 @@ src/
     engine.ts           Pure playlist state machine (next/prev/wrap/shuffle/seek)
     usePlayer.ts        React hook: image auto-advance timing + video-loop counting
   components/
-    Player.tsx          The full-page stage + overlay chrome + transport controls
+    Player.tsx          The full-page stage + transport controls
+    CollectionViewer.tsx  The shell around the three modes; owns the ONE tip +
+                          follow row and the tip picker
     CollectionGrid.tsx  Discover/mine grid, cards, popular rail
-    TipModal.tsx        Buzz amount picker (presets + custom, validation)
+    TipSplitModal.tsx   THE tip picker — recipient (creator / split / curator)
+                        + amount, validation, plan + retry
     toast.tsx           Toast queue + host
   main.tsx / Harness.tsx / dev-transport.ts   Dev-harness + prod entry wiring
 ```

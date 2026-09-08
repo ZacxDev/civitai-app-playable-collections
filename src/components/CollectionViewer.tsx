@@ -1,13 +1,26 @@
-// CollectionViewer — the v0.1.6 shell around the three view modes.
+// CollectionViewer — the shell around the three view modes.
 //
 // Owns the per-collection VIEW state (mode, media-type filter, seeded shuffle,
 // pause) and the GLOBAL view prefs (mute, scroll speed), and renders:
 //   - a persistent, pack-styled control surface (mode switcher + a settings
 //     popover holding mute / shuffle / filter / speed / sec-per-image / loop),
+//   - the ONE viewer-action row (Follow + Tip) — see below,
 //   - the active mode surface: classic <Player>, or a continuous <ContinuousView>,
-//   - collection-level chrome (Follow + Tip curator) on the continuous modes,
 //   - a lightbox: tapping a continuous tile opens the classic single-item Player
-//     (Feature 3) with the full tip/follow/play controls.
+//     (Feature 3).
+//
+// 🔴 THE VIEWER-ACTION ROW IS RENDERED FROM ONE PLACE, ON PURPOSE (T5).
+// `viewerActionRow()` below is called from exactly two branches — the normal
+// surface, and INSIDE the lightbox, which is `aria-modal` and covers the normal
+// one — and never from both at once. That is what makes "exactly ONE tip
+// affordance per view" a structural fact rather than a styling convention:
+// `getAllByTestId('chrome-tip')` has length 1 in Slideshow, in Ticker, in Wall
+// and with the lightbox open, and `collection-viewer-affordances.test.tsx`
+// asserts exactly that. Before T5 the row existed only on the continuous modes
+// and carried a curator tip alone, while `Player` drew a SEPARATE four-button
+// rail — so the two surfaces disagreed on placement, on component AND on which
+// actions existed at all, and a viewer could not tip a creator from Ticker or
+// Wall at all.
 //
 // Data (items, paging, follow/tip/balance) stays in App; this component is view
 // orchestration + local interaction. Mount it with `key={detail.id}` so the
@@ -38,8 +51,8 @@ import {
 import { Player } from './Player.js';
 import { ContinuousView } from './ContinuousView.js';
 import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
-import { TipModal, type TipSender } from './TipModal.js';
-import type { PlannedLeg } from './TipSplitModal.js';
+import type { TipSender } from '../lib/tip-target.js';
+import { TipSplitModal, splitTipKey, type PlannedLeg, type SplitRecipient } from './TipSplitModal.js';
 import { FocusTrap } from './FocusTrap.js';
 
 export interface CollectionViewerProps {
@@ -53,16 +66,6 @@ export interface CollectionViewerProps {
   followed: boolean;
   /** Adopt the host's echo after a confirmed follow write (host bridge). */
   onFollowChange: (collectionId: number, followed: boolean) => void;
-  /** Surface a renderable message from the follow bridge (Player's rail). */
-  onNotice: (kind: 'success' | 'error' | 'info', message: string) => void;
-  /**
-   * A follow whose outcome is UNKNOWN (transport timeout, or a code-less server
-   * error raised after the row may already have committed) — drop cached reads.
-   *
-   * 🔴 REQUIRED. While optional, an audit deleted this prop AND both forwards to
-   * Player below and the entire suite stayed green — see PlayerProps.
-   */
-  onFollowUncertain: () => void;
   onTip: TipSender;
   /** Prompt a logged-out viewer to sign in (tipping requires an account). */
   onRequestSignIn?: () => void;
@@ -75,9 +78,14 @@ export interface CollectionViewerProps {
    */
   dailyTipRemaining?: number;
   /**
-   * Split-tip plans, owned by App. Forwarded VERBATIM to both Players (the mode
-   * surface and the lightbox) so a half-failed split survives a mode switch, the
-   * lightbox opening/closing, and this component unmounting.
+   * Split-tip plans, owned by App.
+   *
+   * 🔴 THEY STAY IN App EVEN THOUGH THE PICKER MOVED HERE. This component is
+   * unmounted by leaving the collection and remounted (`key={detail.id}`) by
+   * opening a different one, so a plan owned here would still die on one of the
+   * four ordinary actions the plan exists to survive. Read the header of
+   * TipSplitModal for what a lost plan costs: a re-confirm mints fresh keys, the
+   * server has nothing to replay, and a leg that already landed is paid twice.
    */
   splitPlans: Readonly<Record<string, PlannedLeg[]>>;
   onSplitPlanChange: (key: string, plan: PlannedLeg[] | null) => void;
@@ -119,8 +127,6 @@ export function CollectionViewer(props: CollectionViewerProps) {
     buzzBalance,
     followed,
     onFollowChange,
-    onNotice,
-    onFollowUncertain,
     onTip,
     onRequestSignIn,
     tipping,
@@ -171,9 +177,21 @@ export function CollectionViewer(props: CollectionViewerProps) {
     setCast(false);
     onCastRef.current?.(false);
   }, []);
-  // ---- lightbox + curator tip ----
+  // ---- lightbox ----
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
-  const [tipCuratorOpen, setTipCuratorOpen] = useState(false);
+
+  // ---- which media the tip picker would name as "the creator" ----
+  //
+  // 🔴 TWO SLOTS, NOT ONE, AND THAT IS A RACE FIX RATHER THAN TIDINESS. When the
+  // lightbox is open over a continuous surface, BOTH are mounted and BOTH report
+  // — the wall keeps reporting its first in-view tile while the lightbox Player
+  // reports the item the viewer actually tapped. Merged into one slot, whichever
+  // fired last would win, so the recipient a press froze would depend on render
+  // order. Kept apart, the lightbox's own item wins for exactly as long as the
+  // lightbox is up, deterministically, and closing it restores the surface's.
+  const [surfaceItem, setSurfaceItem] = useState<MediaItem | null>(null);
+  const [lightboxItem, setLightboxItem] = useState<MediaItem | null>(null);
+  const currentItem = lightboxIndex != null ? lightboxItem : surfaceItem;
 
   const curatorIsSelf = viewerUserId != null && detail.curator.userId === viewerUserId;
 
@@ -268,24 +286,172 @@ export function CollectionViewer(props: CollectionViewerProps) {
     [displayItems],
   );
 
-  const doCuratorTip = useCallback(
-    async (amount: number) => {
-      const ok = await onTip(
-        {
-          kind: 'curator',
-          toUserId: detail.curator.userId,
-          username: detail.curator.username,
-          entityType: 'Collection',
-          entityId: detail.id,
-        },
-        amount,
-      );
-      if (ok) setTipCuratorOpen(false);
-    },
-    [onTip, detail],
-  );
+  // =========================================================================
+  // The ONE tip affordance
+  // =========================================================================
+  //
+  // 🔴 `null` MEANS "THIS SIDE DOES NOT EXIST", NOT "DISABLED". The server 403s a
+  // self-tip, so offering the leg and letting it fail would take the viewer's
+  // confirmation and then half-fail. `splitTipTotal` gives the whole total to the
+  // surviving side, and the picker says why.
+  //
+  // 🔴 THESE TWO ARE THE LIVE DERIVATION. They decide whether the control is
+  // OFFERED and what to FREEZE when it is pressed. Nothing downstream of the
+  // press may read them again — re-reading them after the press is the exact
+  // 0.2.10 defect (the media auto-advances every few seconds, so a picker held
+  // open across one interval paid the NEXT item's creator against the NEXT
+  // item's id, while the viewer had read a preview naming someone else).
+  const liveCreator: SplitRecipient =
+    currentItem != null && !(viewerUserId != null && currentItem.creator.userId === viewerUserId)
+      ? {
+          kind: 'creator',
+          toUserId: currentItem.creator.userId,
+          username: currentItem.creator.username,
+          entityType: 'Image',
+          entityId: currentItem.mediaId,
+        }
+      : null;
+  const liveCurator: SplitRecipient = curatorIsSelf
+    ? null
+    : {
+        kind: 'curator',
+        toUserId: detail.curator.userId,
+        username: detail.curator.username,
+        entityType: 'Collection',
+        entityId: detail.id,
+      };
+  // Both sides collapsed = the viewer owns the media AND the collection; there is
+  // nobody to pay, so the control is disabled rather than opening an empty picker.
+  const tipPossible = liveCreator != null || liveCurator != null;
+
+  /** The FROZEN pair the open picker is for. `null` = no picker open. */
+  const [tipOpenFor, setTipOpenFor] = useState<{ creator: SplitRecipient; curator: SplitRecipient } | null>(null);
+  /** Reported up by the picker: a leg is on the wire, so nothing may dismiss it. */
+  const [tipSending, setTipSending] = useState(false);
+
+  const openTip = useCallback(() => {
+    // Logged-out: tipping needs an account, so prompt sign-in UP FRONT rather
+    // than opening the amount picker and bouncing only after a selection.
+    if (viewerUserId == null) {
+      onRequestSignIn?.();
+      return;
+    }
+    if (!tipPossible) return;
+    // 🔴 FREEZE BOTH SIDES HERE. Everything the picker sends, previews and
+    // reports back is resolved from this snapshot, so the media underneath may
+    // move (a timer, a filter, a reload, a wall scrolling on) without
+    // redirecting a single Buzz.
+    setTipOpenFor({ creator: liveCreator, curator: liveCurator });
+  }, [viewerUserId, onRequestSignIn, tipPossible, liveCreator, liveCurator]);
+
+  // The logical tip the open picker is for, and the plan App is holding for it.
+  const openTipKey = tipOpenFor ? splitTipKey(tipOpenFor.creator, tipOpenFor.curator) : null;
+  const openTipPlan = openTipKey != null ? (splitPlans[openTipKey] ?? null) : null;
+
+  const pickerOpen = tipOpenFor != null;
+
+  /**
+   * Every leg landed — retire the plan and close.
+   *
+   * 🔴 THE PLAN IS RETIRED, AND THAT DELETION IS LOAD-BEARING. `splitTipKey` is
+   * per-MEDIA, so a retained completed plan makes reopening the picker on the
+   * media just tipped resume it: the amount, the presets, the recipient row and
+   * Send are all locked by `plan != null`, and `failed` is false so no Retry ever
+   * appears — a picker with no action at all, recoverable only by reloading.
+   */
+  const onTipDone = useCallback(() => {
+    if (openTipKey != null) onSplitPlanChange(openTipKey, null);
+    setTipOpenFor(null);
+  }, [openTipKey, onSplitPlanChange]);
+
+  // 🔴 THE APP'S OWN Escape GATE, AND IT HAS TO LIVE HERE NOW. `Modal` closes on
+  // Escape from a `document` handler; this one is on `window`, above it. Two
+  // things it must do that the modal cannot: refuse to dismiss while a leg is on
+  // the wire (the POST is not cancelled by closing — the Buzz still leaves, and
+  // the partial-failure UI with its retry never appears), and exist at all on the
+  // continuous surfaces, where there is no Player to have hosted it.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (tipSending || tipping) return;
+      setTipOpenFor(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pickerOpen, tipSending, tipping]);
 
   const isContinuous = mode !== 'classic';
+
+  /**
+   * The ONE viewer-action row: Follow, Tip, and (continuous only) Pause.
+   *
+   * 🔴 CALLED FROM EXACTLY TWO BRANCHES AND NEVER BOTH — see this file's header.
+   * If you add a third call site, add it to the affordance-count test in the same
+   * commit, because "exactly one" is the acceptance criterion, not a preference.
+   */
+  const viewerActionRow = () => (
+    <div style={chromeRow()} data-testid="viewer-actions">
+      {isContinuous && lightboxIndex == null && (
+        <Button
+          size="sm"
+          variant={paused ? 'filled' : 'light'}
+          onClick={() => setPaused((p) => !p)}
+          aria-pressed={paused}
+          data-testid="toggle-pause"
+        >
+          {paused ? '▶ Resume' : '⏸ Pause'}
+        </Button>
+      )}
+      {/* 🔴 UPSTREAM CONTROL, NOT A HAND-ROLLED ONE, IN ALL THREE VIEWS (T5
+          criterion 3). It buys the three outcomes a hand-rolled follow reliably
+          gets wrong: `declined` renders NOTHING (the viewer dismissed the host's
+          confirm — the app's old glyph rail toasted an error at them),
+          `sign-in-required` routes to sign-in rather than an error line, and the
+          optimistic flip is replaced by the HOST'S ECHO instead of the guess.
+
+          `variant` names the NOT-following state; the following state is always
+          `light` upstream so the two are distinguishable without reading the
+          label. That inverts this app's old filled/outline pairing, which is the
+          one deliberate visual delta.
+
+          ⚠️ WHAT WENT WITH THE HAND-ROLLED CONTROL, RECORDED RATHER THAN
+          GLOSSED: `useFollowToggle` reported a TIMEOUT and a code-less server
+          error as AMBIGUOUS and dropped the app's read cache, because either can
+          be raised after the row committed. `FollowButton` exposes no failure
+          callback at all, so the app cannot learn that happened and the cache
+          drop has no equivalent here. The exposure is a stale `followed` flag for
+          the cache TTL after an ambiguous write — no money, no writes. Closing it
+          properly is an upstream prop, not a workaround in this repo. */}
+      <FollowButton
+        size="sm"
+        variant="outline"
+        collectionId={detail.id}
+        collectionName={detail.name}
+        followed={followed}
+        // Upstream's `onChange` reports only the flag, so supply the id this
+        // control is BOUND to. That is safe where deriving it from "what is
+        // open" is not: the binding cannot drift mid-flight, because a
+        // different collection remounts this subtree (`key={detail.id}`).
+        onChange={(f) => onFollowChange(detail.id, f)}
+        data-testid="chrome-follow"
+      />
+      <Button
+        size="sm"
+        variant="light"
+        onClick={openTip}
+        disabled={!tipPossible || tipping}
+        title={
+          !tipPossible
+            ? "This is your own media in your own collection — there's no one to tip."
+            : undefined
+        }
+        data-testid="chrome-tip"
+      >
+        💸 Tip
+      </Button>
+    </div>
+  );
 
   return (
     <div data-testid="collection-viewer" data-mode={mode} data-cast={cast ? 'on' : 'off'} data-layout={isMobile ? 'mobile' : 'desktop'} style={rootStyle(c)}>
@@ -336,7 +502,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
           {/* A "⚡ <balance>" Buzz pill sat here. Removed 2026-09-05 with the two
               other readouts (App header, Player top overlay). 🔴 `buzzBalance` is
               STILL a required prop and is still forwarded to Player and to the
-              curator TipModal below, which pre-validates a tip against it — the
+              tip picker below, which pre-validates a tip against it — the
               badge went, the balance did not. */}
         </div>
       </div>
@@ -357,58 +523,12 @@ export function CollectionViewer(props: CollectionViewerProps) {
         </button>
       )}
 
-      {/* ---- collection-level chrome + pause (continuous modes) ---- */}
-      {isContinuous && !cast && (
-        <div style={chromeRow()}>
-          <Button
-            size="sm"
-            variant={paused ? 'filled' : 'light'}
-            onClick={() => setPaused((p) => !p)}
-            aria-pressed={paused}
-            data-testid="toggle-pause"
-          >
-            {paused ? '▶ Resume' : '⏸ Pause'}
-          </Button>
-          {/* 🔴 UPSTREAM CONTROL, NOT A HAND-ROLLED ONE (0.2.10). This row's
-              button was already a `Button` with the same size + variant shape,
-              so adopting `FollowButton` costs almost no visual change here (the
-              `☆`/`★` glyphs DO go — the labels become plain "Follow" /
-              "Following") and buys the
-              three outcomes a hand-rolled follow reliably gets wrong: `declined`
-              renders NOTHING (the viewer dismissed the host's confirm — the old
-              code toasted an error at them), `sign-in-required` routes to
-              sign-in rather than an error line, and the optimistic flip is
-              replaced by the HOST'S ECHO instead of the guess.
-
-              `variant` names the NOT-following state; the following state is
-              always `light` upstream so the two are distinguishable without
-              reading the label. That inverts this app's old filled/outline
-              pairing, which is the one deliberate visual delta. */}
-          <FollowButton
-            size="sm"
-            variant="outline"
-            collectionId={detail.id}
-            collectionName={detail.name}
-            followed={followed}
-            // Upstream's `onChange` reports only the flag, so supply the id this
-            // control is BOUND to. That is safe where deriving it from "what is
-            // open" is not: the binding cannot drift mid-flight, because a
-            // different collection remounts this subtree (`key={detail.id}`).
-            onChange={(f) => onFollowChange(detail.id, f)}
-            data-testid="chrome-follow"
-          />
-          <Button
-            size="sm"
-            variant="light"
-            onClick={() => (viewerUserId == null ? onRequestSignIn?.() : setTipCuratorOpen(true))}
-            disabled={curatorIsSelf || tipping}
-            title={curatorIsSelf ? "You can't tip your own collection." : undefined}
-            data-testid="chrome-tip-curator"
-          >
-            🎁 Tip curator
-          </Button>
-        </div>
-      )}
+      {/* ---- the ONE viewer-action row — every mode, hidden only in ambient ----
+          Suppressed while the lightbox is up, because the lightbox renders this
+          same row inside itself: `aria-modal` covers this one, so rendering both
+          would put a second, unreachable tip button in the DOM and make "exactly
+          one affordance" false while looking correct on screen. */}
+      {!cast && lightboxIndex == null && viewerActionRow()}
 
       {/* ---- settings popover ---- */}
       {settingsOpen && !cast && (
@@ -521,27 +641,16 @@ export function CollectionViewer(props: CollectionViewerProps) {
       <div style={{ position: 'relative' }}>
         {mode === 'classic' ? (
           <Player
-            detail={detail}
             items={displayItems}
             settings={settings}
             onSecondsPerImageChange={onSecondsPerImageChange}
             onVideoLoopCountChange={onVideoLoopCountChange}
-            viewerUserId={viewerUserId}
-            buzzBalance={buzzBalance}
             muted={prefs.muted}
             initialItemIndex={initialPosition}
             onPositionChange={onClassicPosition}
+            onCurrentItemChange={setSurfaceItem}
             showSettingsControl={false}
-            followed={followed}
-            onFollowChange={onFollowChange}
-            onNotice={onNotice}
-            onFollowUncertain={onFollowUncertain}
-            onTip={onTip}
-            onRequestSignIn={onRequestSignIn}
-            tipping={tipping}
-            dailyTipRemaining={dailyTipRemaining}
-            splitPlans={splitPlans}
-            onSplitPlanChange={onSplitPlanChange}
+            pickerOpen={pickerOpen}
             cast={cast}
             reducedMotion={reducedMotion}
             isMobile={isMobile}
@@ -558,10 +667,15 @@ export function CollectionViewer(props: CollectionViewerProps) {
             muted={prefs.muted}
             scrollSpeed={prefs.scrollSpeed}
             reducedMotion={reducedMotion}
-            paused={paused}
+            // 🔴 THE PICKER PAUSES THE DRIFT TOO (T5 criterion 5). Without this
+            // the wall keeps scrolling under an open picker: the money is still
+            // right (the recipients are frozen at press time), but the viewer is
+            // reading a preview naming a creator whose tile has left the screen.
+            paused={paused || pickerOpen}
             autoplayCap={autoplayCap}
             c={c}
             onTapItem={openLightbox}
+            onCurrentItemChange={setSurfaceItem}
             onTogglePause={() => setPaused((p) => !p)}
             hasMore={hasMore}
             loadingMore={loadingMore}
@@ -625,26 +739,19 @@ export function CollectionViewer(props: CollectionViewerProps) {
               </div>
             </div>
           </div>
+          {/* The SAME row as the normal surface, from the same function — the
+              lightbox covers the outer one, so this is where it lives while the
+              dialog is up, and there is still exactly one in the document. */}
+          {viewerActionRow()}
           <Player
-            detail={detail}
             items={displayItems}
             settings={settings}
             onSecondsPerImageChange={onSecondsPerImageChange}
             onVideoLoopCountChange={onVideoLoopCountChange}
-            viewerUserId={viewerUserId}
-            buzzBalance={buzzBalance}
             muted={prefs.muted}
             initialItemIndex={lightboxIndex}
-            followed={followed}
-            onFollowChange={onFollowChange}
-            onNotice={onNotice}
-            onFollowUncertain={onFollowUncertain}
-            onTip={onTip}
-            onRequestSignIn={onRequestSignIn}
-            tipping={tipping}
-            dailyTipRemaining={dailyTipRemaining}
-            splitPlans={splitPlans}
-            onSplitPlanChange={onSplitPlanChange}
+            onCurrentItemChange={setLightboxItem}
+            pickerOpen={pickerOpen}
             isMobile={isMobile}
             c={c}
             onExit={() => setLightboxIndex(null)}
@@ -653,21 +760,24 @@ export function CollectionViewer(props: CollectionViewerProps) {
         </div>
       )}
 
-      {/* ---- curator tip (continuous chrome) ---- */}
-      {tipCuratorOpen && (
-        <TipModal
-          target={{
-            kind: 'curator',
-            toUserId: detail.curator.userId,
-            username: detail.curator.username,
-            entityType: 'Collection',
-            entityId: detail.id,
-          }}
+      {/* ---- THE tip picker ---- */}
+      {tipOpenFor && (
+        <TipSplitModal
+          // The FROZEN pair — never `liveCreator`/`liveCurator` again.
+          creator={tipOpenFor.creator}
+          curator={tipOpenFor.curator}
           balance={buzzBalance}
           submitting={tipping}
           dailyRemaining={dailyTipRemaining}
-          onConfirm={doCuratorTip}
-          onClose={() => setTipCuratorOpen(false)}
+          // Each leg is one `ApiClient.tip` POST carrying the plan's key.
+          onSendLeg={(target, amount, idempotencyKey) => onTip(target, amount, idempotencyKey)}
+          onDone={onTipDone}
+          onClose={() => setTipOpenFor(null)}
+          plan={openTipPlan}
+          onPlanChange={(plan) => {
+            if (openTipKey != null) onSplitPlanChange(openTipKey, plan);
+          }}
+          onSendingChange={setTipSending}
         />
       )}
     </div>

@@ -62,8 +62,6 @@ function renderViewer(over: Partial<React.ComponentProps<typeof CollectionViewer
     buzzBalance: 1000,
     followed: false,
     onFollowChange: () => {},
-    onNotice: () => {},
-    onFollowUncertain: () => {},
     onTip: async () => true,
     tipping: false,
     splitPlans: {},
@@ -208,8 +206,6 @@ function renderAtCeiling(
     buzzBalance: 1000,
     followed: false,
     onFollowChange: () => {},
-    onNotice: () => {},
-    onFollowUncertain: () => {},
     onTip: async () => true,
     tipping: false,
     splitPlans: {},
@@ -409,35 +405,9 @@ describe('CollectionViewer — ambient mode label (dogfood: "Cast" did not cast)
   });
 });
 
-describe('CollectionViewer — logged-out tipping (dogfood: tip failed only at the end)', () => {
-  it('an anon viewer\'s curator tip prompts sign-in up front and does NOT open the modal', async () => {
-    const onRequestSignIn = vi.fn();
-    renderViewer({ items: [img(1), img(2)], viewerUserId: null, onRequestSignIn });
-    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
-    await userEvent.click(screen.getByTestId('chrome-tip-curator'));
-    expect(onRequestSignIn).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId('tip-modal')).toBeNull();
-  });
-
-  it('an anon viewer\'s creator tip (classic player) prompts sign-in up front', async () => {
-    const onRequestSignIn = vi.fn();
-    renderViewer({ items: [img(1)], viewerUserId: null, onRequestSignIn });
-    await userEvent.click(screen.getByTestId('tip-creator'));
-    expect(onRequestSignIn).toHaveBeenCalledTimes(1);
-    expect(screen.queryByTestId('tip-modal')).toBeNull();
-  });
-});
-
-describe('CollectionViewer — self-tip explanation (dogfood: disabled with no reason)', () => {
-  it('the disabled self-tip curator control explains why', async () => {
-    // viewerUserId 5 === detail.curator.userId → self-tip.
-    renderViewer({ items: [img(1)], viewerUserId: 5 });
-    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
-    const btn = screen.getByTestId('chrome-tip-curator');
-    expect(btn).toBeDisabled();
-    expect(btn).toHaveAttribute('title', "You can't tip your own collection.");
-  });
-});
+// The logged-out bounce and the self-tip explanation moved to
+// `tip-affordance.test.tsx` with the control itself — there is one tip button
+// now, so those cases are stated once per MODE rather than once per button.
 
 describe('CollectionViewer — default mode + mode switching', () => {
   it('defaults to the classic slideshow (Player)', () => {
@@ -465,14 +435,19 @@ describe('CollectionViewer — default mode + mode switching', () => {
     expect(onLoadMore).not.toHaveBeenCalled();
   });
 
-  it('shows collection-level chrome (pause / follow / tip curator) only in continuous modes', async () => {
+  it('the viewer-action row is on EVERY mode; only Pause is continuous-only', async () => {
+    // 🔴 TITLE AND BODY BOTH INVERTED IN T5, DELIBERATELY. This used to assert
+    // that follow + tip appear ONLY in the continuous modes — which is precisely
+    // the inconsistency the consolidation removes. Pause stays continuous-only
+    // because classic has its own transport bar.
     renderViewer();
     expect(screen.queryByTestId('toggle-pause')).toBeNull();
-    expect(screen.queryByTestId('chrome-follow')).toBeNull();
+    expect(screen.getByTestId('chrome-follow')).toBeInTheDocument();
+    expect(screen.getByTestId('chrome-tip')).toBeInTheDocument();
     await userEvent.click(screen.getByTestId('mode-switcher-continuous-vertical'));
     expect(screen.getByTestId('toggle-pause')).toBeInTheDocument();
     expect(screen.getByTestId('chrome-follow')).toBeInTheDocument();
-    expect(screen.getByTestId('chrome-tip-curator')).toBeInTheDocument();
+    expect(screen.getByTestId('chrome-tip')).toBeInTheDocument();
   });
 });
 
@@ -525,9 +500,8 @@ describe('CollectionViewer — media-type filter + re-page-to-fill (Feature 5)',
         buzzBalance={0}
         followed={false}
         
-        onFollowChange={() => {}} onNotice={() => {}}
-        onFollowUncertain={() => {}}
-        splitPlans={{}}
+        onFollowChange={() => {}}
+          splitPlans={{}}
         onSplitPlanChange={() => {}}
         onTip={async () => true}
         tipping={false}
@@ -570,17 +544,17 @@ describe('CollectionViewer — media-type filter + re-page-to-fill (Feature 5)',
 });
 
 describe('CollectionViewer — tap → lightbox (Feature 3)', () => {
-  it('opens the classic single-item view with tip creator + curator, follow, play', async () => {
+  it('opens the classic single-item view with the viewer-action row and play', async () => {
     renderViewer({ items: [img(1), vid(2), img(3)] });
     await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
     await userEvent.click(screen.getAllByTestId('continuous-tile')[1]);
 
     const lightbox = await screen.findByTestId('lightbox');
     expect(within(lightbox).getByTestId('player')).toBeInTheDocument();
-    // Full single-item controls are carried over.
-    expect(within(lightbox).getByTestId('tip-creator')).toBeInTheDocument();
-    expect(within(lightbox).getByTestId('tip-curator')).toBeInTheDocument();
-    expect(within(lightbox).getByTestId('follow-toggle')).toBeInTheDocument();
+    // The one tip + follow row travels INTO the dialog, which covers the one
+    // outside it (the count itself is asserted in `tip-affordance.test.tsx`).
+    expect(within(lightbox).getByTestId('chrome-tip')).toBeInTheDocument();
+    expect(within(lightbox).getByTestId('chrome-follow')).toBeInTheDocument();
     expect(within(lightbox).getByTestId('ctrl-play')).toBeInTheDocument();
 
     // The lightbox opened on the tapped item (index 1 of the display order).
@@ -608,12 +582,12 @@ describe('CollectionViewer — remember mode + per-collection isolation (Feature
   });
 });
 
-describe('CollectionViewer — curator tip from continuous chrome', () => {
-  it('opens the tip modal for the curator', async () => {
+describe('CollectionViewer — the tip control opens THE picker', () => {
+  it('from the continuous chrome', async () => {
     renderViewer();
     await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
-    await userEvent.click(screen.getByTestId('chrome-tip-curator'));
-    expect(await screen.findByTestId('tip-modal')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    expect(await screen.findByTestId('tip-split-modal')).toBeInTheDocument();
   });
 });
 

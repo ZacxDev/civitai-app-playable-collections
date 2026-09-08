@@ -60,11 +60,14 @@ export interface ServerTipAllowance {
  * Read the viewer's real remaining daily tip allowance once per view, and re-read
  * it on demand.
  *
- * 🔴 ONE READ FOR THE WHOLE VIEW, NOT ONE PER CONTROL. There are three tip
- * affordances on the player screens (`tip-creator`, `tip-curator`,
- * `chrome-tip-curator`) plus the split popover; each mounting its own read would
- * put N identical GETs on the wire for one number that is the same for all of
- * them. App holds this hook and threads `remaining` down.
+ * 🔴 ONE READ FOR THE WHOLE VIEW, NOT ONE PER CONTROL. Written when there were
+ * four tip affordances (`tip-creator`, `tip-curator`, `chrome-tip-curator` and
+ * the split popover), each of which would have put an identical GET on the wire
+ * for one number that is the same for all of them. T5 left ONE affordance, so
+ * the saving is smaller — but the reason to hold the read at App is now
+ * stronger, not weaker: `refetch()` after a successful leg has to reach the
+ * picker that is still open, and the picker is a child of the view. App holds
+ * this hook and threads `remaining` down.
  *
  * Routed through the injected `ApiClient` rather than the SDK's own
  * `useTipAllowance()` on purpose — that hook raw-`fetch`es the host origin,

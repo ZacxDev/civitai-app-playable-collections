@@ -36,6 +36,51 @@ export const DEFAULT_CREATOR_PERCENT = 50;
 
 export type TipLegKind = 'creator' | 'curator';
 
+/**
+ * The three destinations ONE press can have (T5): the whole tip to the creator
+ * of the media on screen, the whole tip to the curator, or divided between them.
+ *
+ * 🔴 THIS LIVES IN THE MONEY MODULE, NOT IN THE PICKER, BECAUSE IT IS A CLAIM
+ * ABOUT `splitTipTotal`'S BOUNDARIES rather than about a row of buttons. The
+ * picker used to be one of three tip affordances; when it became the only one,
+ * "which recipient did the viewer choose" stopped being a slider position and
+ * became a decision the money math has to agree with.
+ */
+export type TipRecipientChoice = 'creator' | 'split' | 'curator';
+
+/**
+ * The creator's share each destination sets.
+ *
+ * 🔴 `creator` AND `curator` ARE THE EXTREMES OF THE SAME MODEL, NOT SEPARATE
+ * MODES. `splitTipTotal` already emits ONE leg carrying the whole total at 100
+ * and at 0 — never a 0-Buzz companion leg — so choosing "Creator" produces
+ * exactly the transfer the retired `tip-creator` button produced, under the same
+ * math. A parallel single-target path would have been a second implementation of
+ * the thing the consolidation exists to remove.
+ */
+export const RECIPIENT_PERCENT: Record<TipRecipientChoice, number> = {
+  creator: 100,
+  split: DEFAULT_CREATOR_PERCENT,
+  curator: 0,
+};
+
+/**
+ * Which destination a creator-share currently means.
+ *
+ * 🔴 THE BOUNDARIES MUST AGREE WITH `splitTipTotal`'s, EXACTLY. It gives the
+ * whole total to the creator at `>= 100` and to the curator at `<= 0`. Any other
+ * threshold here would let the control claim "Split" while the money went to one
+ * side, or claim one side while the money divided — a label that disagrees with
+ * the transfer. `tip-split.test.ts` pins the two together across the WHOLE
+ * 0..100 range rather than at the three labelled points, because a mutant that
+ * shifts a boundary by one is invisible at 100/50/0.
+ */
+export function recipientChoice(creatorPercent: number): TipRecipientChoice {
+  if (creatorPercent >= 100) return 'creator';
+  if (creatorPercent <= 0) return 'curator';
+  return 'split';
+}
+
 /** One transfer of a split: who, and how much. */
 export interface TipLeg {
   kind: TipLegKind;

@@ -318,29 +318,29 @@ describe('Buzz: the readout is gone, the BALANCE is not', () => {
     expect(screen.queryByText(/1,234/)).toBeNull();
   });
 
-  it('🔴 still threads the balance into TipModal — "You have 1,234 Buzz."', async () => {
+  it('🔴 still threads the balance into the tip picker — "You have 1,234 Buzz."', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api, buzzBalance: { blue: 1000, green: 34, yellow: 200 } });
     await openFirstCollection();
-    await userEvent.click(screen.getByTestId('tip-creator'));
-    const modal = await screen.findByTestId('tip-modal');
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    const modal = await screen.findByTestId('tip-split-modal');
     // The exact summed figure from the GET_BUZZ_BALANCE bridge, rendered by the
-    // modal. This is the positive control for the absence assertions above.
+    // picker. This is the positive control for the absence assertions above.
     expect(modal).toHaveTextContent('You have 1,234 Buzz.');
   });
 
-  it('🔴 still REJECTS a tip larger than the balance (validateTipAmount reached the real figure)', async () => {
+  it('🔴 still REJECTS a tip larger than the balance (the real figure reached the validator)', async () => {
     // The behavioural half. The line above is a string; this asserts the balance
     // actually flows into the validator and blocks a spend.
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api, buzzBalance: { blue: 100, green: 0, yellow: 0 } });
     await openFirstCollection();
-    await userEvent.click(screen.getByTestId('tip-creator'));
-    const input = await screen.findByTestId('tip-amount-input');
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    const input = await screen.findByTestId('split-amount-input');
     await userEvent.clear(input);
     await userEvent.type(input, '400');
-    expect(await screen.findByTestId('tip-error')).toHaveTextContent('100 Buzz balance');
-    expect(screen.getByTestId('tip-confirm')).toBeDisabled();
+    expect(await screen.findByTestId('split-error')).toHaveTextContent('100 Buzz balance');
+    expect(screen.getByTestId('split-confirm')).toBeDisabled();
   });
 });
 
@@ -594,10 +594,11 @@ describe('App — analytics events (Feature #10)', () => {
     await userEvent.click(screen.getByTestId('chrome-follow'));
     await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'follow', collectionId: 101, followed: true })));
 
-    // Tip the curator.
-    await userEvent.click(screen.getByTestId('chrome-tip-curator'));
-    const modal = await screen.findByTestId('tip-modal');
-    await userEvent.click(within(modal).getByTestId('tip-confirm'));
+    // Tip the curator, through the one affordance.
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    const modal = await screen.findByTestId('tip-split-modal');
+    await userEvent.click(within(modal).getByTestId('tip-target-curator'));
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
     await waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: 'tip', kind: 'curator', amount: 50 })));
   });
 

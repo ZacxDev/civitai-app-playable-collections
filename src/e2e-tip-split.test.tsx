@@ -32,9 +32,9 @@ async function openFirst(api: ApiClient, viewer: ViewerInfo = { id: 99, username
   await screen.findByTestId('player');
 }
 
-/** Open the split popover from the player's right rail. */
+/** Open THE tip picker from the one viewer-action row (T5). */
 async function openSplit() {
-  await userEvent.click(screen.getByTestId('tip-split'));
+  await userEvent.click(screen.getByTestId('chrome-tip'));
   return screen.findByTestId('tip-split-modal');
 }
 
@@ -246,6 +246,74 @@ describe('🔴 DISMISSING the popover must not destroy the plan (the re-confirm 
   });
 });
 
+describe('🔴 LEAVING THE COLLECTION does not destroy the plan — the App-level owner', () => {
+  /**
+   * 🔴 THE ONE CASE THAT DISCRIMINATES *WHERE* THE PLAN LIVES. Dismissing the
+   * picker, switching view mode and opening the lightbox all leave
+   * `CollectionViewer` mounted, so a plan owned there would survive all three and
+   * every one of those tests would stay green. Exiting to the grid unmounts it,
+   * and re-opening remounts it under `key={detail.id}` — so only `App` (or higher)
+   * can carry a plan across this, and only this case says so.
+   *
+   * What a lost plan costs, exactly: the creator leg landed. Reopening mints a
+   * FRESH key, the server has never seen it, so it cannot collapse the replay —
+   * and bob is paid twice for one press.
+   */
+  function curatorRefusedOnceApi(base: FakeApi): ApiClient {
+    let curatorAttempts = 0;
+    return {
+      ...base,
+      async tip(input: TipInput) {
+        if (input.toUserId === CURATOR_ID && ++curatorAttempts === 1) {
+          throw new ApiError('forbidden', 403, 'You do not have permission to do that.');
+        }
+        return base.tip(input);
+      },
+    };
+  }
+
+  it('exit to the grid → reopen the collection → the SAME plan resumes, landed leg intact', async () => {
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 }) as FakeApi;
+    await openFirst(curatorRefusedOnceApi(base));
+    const modal = await openSplit();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(base.__tips()).toHaveLength(1);
+    expect(base.__balance()).toBe(4975);
+    const creatorKey = base.__tips()[0].idempotencyKey;
+
+    // Close the picker, then LEAVE the collection entirely.
+    await userEvent.click(screen.getByTestId('split-cancel'));
+    await userEvent.click(screen.getByTestId('viewer-exit'));
+    const grid = await screen.findByTestId('collection-grid');
+
+    // …and come back to it.
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    await screen.findByTestId('player');
+    const reopened = await openSplit();
+
+    expect(await within(reopened).findByTestId('split-leg-creator')).toHaveAttribute('data-status', 'sent');
+    expect(within(reopened).getByTestId('split-leg-curator')).toHaveAttribute('data-status', 'failed');
+
+    // Press whatever the reopened picker offers as its primary action. A resumed
+    // plan offers Retry; a plan that died offers a fresh Send — and it is
+    // precisely that fresh Send which double-pays.
+    const action =
+      within(reopened).queryByTestId('split-retry') ?? within(reopened).getByTestId('split-confirm');
+    await userEvent.click(action);
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    // 🔴 THE INVARIANT. Two transfers for one logical tip, 50 Buzz total, and the
+    // creator's key unchanged. A plan that died on the exit lands here as three
+    // transfers, a 4925 balance and a second creator row under a new key.
+    expect(base.__tips()).toHaveLength(2);
+    expect(base.__tips().filter((t) => t.toUserId === CREATOR_ID)).toHaveLength(1);
+    expect(base.__tips()[0].idempotencyKey).toBe(creatorKey);
+    expect(base.__balance()).toBe(4950);
+    expect(base.__tipSpentToday()).toBe(50);
+  });
+});
+
 describe('self-tip collapse through the real app (hazard 3)', () => {
   it('the CURATOR viewing their own collection sends the whole total to the creator', async () => {
     // alice (11) curates "Neon Cities"; bob (22) made the first item.
@@ -302,12 +370,12 @@ describe('self-tip collapse through the real app (hazard 3)', () => {
     ];
     const api = createFakeApi({ viewerUserId: 99, balance: 5000, collections: seed }) as FakeApi;
     await openFirst(api);
-    const btn = screen.getByTestId('tip-split');
+    const btn = screen.getByTestId('chrome-tip');
     expect(btn).toBeDisabled();
     expect(btn).toHaveAttribute('title', "This is your own media in your own collection — there's no one to tip.");
-    // The single-target controls are disabled for the same reason.
-    expect(screen.getByTestId('tip-creator')).toBeDisabled();
-    expect(screen.getByTestId('tip-curator')).toBeDisabled();
+    // There is nothing else to check: the two single-target controls that used
+    // to be disabled alongside it no longer exist (T5). Their absence is pinned
+    // in `components/tip-affordance.test.tsx`.
     expect(api.__tips()).toHaveLength(0);
   });
 });

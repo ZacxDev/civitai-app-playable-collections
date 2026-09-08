@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Player } from './components/Player.js';
 import { usePlayerSettings, STORAGE_KEYS } from './settings.js';
 import { palette } from './theme.js';
-import type { CollectionDetail, MediaItem } from './types.js';
+import type { MediaItem } from './types.js';
 
 const c = palette();
 
@@ -14,15 +14,6 @@ function img(id: number): MediaItem {
 function vid(id: number): MediaItem {
   return { mediaId: id, type: 'video', url: `v/${id}`, width: 1, height: 1, creator: { userId: 1, username: 'a' }, nsfwLevel: 1 };
 }
-const detail: CollectionDetail = {
-  id: 1,
-  name: 'Test',
-  description: null,
-  curator: { userId: 5, username: 'cur' },
-  isPublic: true,
-  followed: false,
-};
-
 /**
  * Wrapper that wires the REAL localStorage-backed settings hook to the Player,
  * so the in-app sliders drive both the persisted store and the player behavior.
@@ -31,21 +22,10 @@ function Wrapper({ items }: { items: MediaItem[] }) {
   const { settings, setSecondsPerImage, setVideoLoopCount } = usePlayerSettings();
   return (
     <Player
-      detail={detail}
       items={items}
       settings={settings}
       onSecondsPerImageChange={setSecondsPerImage}
       onVideoLoopCountChange={setVideoLoopCount}
-      viewerUserId={99}
-      buzzBalance={100}
-      followed={false}
-      
-      onFollowChange={() => {}} onNotice={() => {}}
-      onFollowUncertain={() => {}}
-      onTip={async () => true}
-      tipping={false}
-      splitPlans={{}}
-      onSplitPlanChange={() => {}}
       isMobile={false}
       c={c}
       onExit={() => {}}

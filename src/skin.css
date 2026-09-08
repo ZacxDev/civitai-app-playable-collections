@@ -13,7 +13,7 @@
    ── WHY THE TOKENS AND NOT THE COMPONENTS ────────────────────────────────────
    Eight components reference `var(--civitai-color-*)` directly rather than going
    through src/theme.ts's `palette()` (App.tsx, CollectionGrid, CollectionViewer,
-   ModeSwitcher, TipModal, toast, …). Re-pointing each at an app-local palette
+   ModeSwitcher, the tip picker, toast, …). Re-pointing each at an app-local palette
    would be eight diffs that can drift apart, and would still leave the
    `@civitai/blocks-react/ui` pack components (Button/Alert/Card/Modal/…) on the
    platform's blue. Redefining the tokens skins all of it at once, in one place,
