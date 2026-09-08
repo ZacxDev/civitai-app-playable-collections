@@ -29,6 +29,13 @@ const detail = (id = 101): CollectionDetail => ({
   followed: false,
 });
 
+/**
+ * The collection name the fixture renders. Named rather than inlined because the
+ * 0.2.14 chrome tests COUNT its occurrences — a literal repeated across three
+ * cases is how a rename turns a real regression into a green suite.
+ */
+const DETAIL_NAME = 'Neon';
+
 /** Fresh in-memory Storage so persistence tests are isolated. */
 function memStorage(): Storage {
   const m = new Map<string, string>();
@@ -616,5 +623,65 @@ describe('CollectionViewer — curator tip from continuous chrome', () => {
     await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
     await userEvent.click(screen.getByTestId('chrome-tip-curator'));
     expect(await screen.findByTestId('tip-modal')).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 0.2.14 — the Player's white-on-media top overlay (back + title + curator) was
+// removed because in `classic` mode it DUPLICATED the themed toolbar directly
+// above it. 🔴 The two contexts now differ deliberately, so both are pinned:
+// classic mode must show the title ONCE, and the lightbox — an `aria-modal`
+// dialog that COVERS that toolbar — must carry its own themed header, or it has
+// no exit and no accessible name.
+// ---------------------------------------------------------------------------
+
+describe('CollectionViewer — the title/back chrome appears exactly once per context', () => {
+  it('🔴 classic mode: the collection name renders ONCE, and the Player owns no exit', async () => {
+    renderViewer({ items: [img(1), img(2)] });
+
+    // The themed toolbar is the only place the name appears. Before 0.2.14 the
+    // Player drew it a second time over the media.
+    const named = screen.getAllByTitle(DETAIL_NAME);
+    expect(named).toHaveLength(1);
+
+    // …and the only back affordance is the toolbar's.
+    expect(screen.getByTestId('viewer-exit')).toBeInTheDocument();
+    expect(screen.queryByTestId('player-exit')).toBeNull();
+  });
+
+  it('🔴 the lightbox carries its OWN themed header — it covers the toolbar, so it cannot inherit one', async () => {
+    renderViewer({ items: [img(1), vid(2), img(3)] });
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    await userEvent.click(screen.getAllByTestId('continuous-tile')[1]);
+
+    const lightbox = await screen.findByTestId('lightbox');
+    const header = within(lightbox).getByTestId('lightbox-header');
+
+    // It names the COLLECTION, not the item — the item changes as the player
+    // advances, which would move the dialog's accessible name under the viewer.
+    expect(header).toHaveTextContent(DETAIL_NAME);
+
+    // The dialog's accessible name is wired to that title, not to a generic
+    // literal, so an assistive technology announces which collection this is.
+    expect(lightbox).toHaveAttribute('aria-labelledby', 'pc-lightbox-title');
+    expect(within(lightbox).getByText(DETAIL_NAME)).toHaveAttribute('id', 'pc-lightbox-title');
+  });
+
+  it('🔴 the lightbox exit is reachable, labelled, and actually closes the dialog', async () => {
+    // Without this the modal is a trap: the Player no longer has an exit, so if
+    // the header's back button regresses there is NO way out of the dialog.
+    renderViewer({ items: [img(1), vid(2), img(3)] });
+    await userEvent.click(screen.getByTestId('mode-switcher-continuous-horizontal'));
+    await userEvent.click(screen.getAllByTestId('continuous-tile')[1]);
+
+    const lightbox = await screen.findByTestId('lightbox');
+    const exit = within(lightbox).getByTestId('lightbox-exit');
+    expect(exit).toHaveAccessibleName('Close the media viewer');
+
+    // Keyboard-operable, not merely clickable: focus it and press Enter.
+    exit.focus();
+    expect(exit).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(screen.queryByTestId('lightbox')).toBeNull());
   });
 });
