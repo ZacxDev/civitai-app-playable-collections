@@ -21,5 +21,14 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The `browser` vitest project runs in a REAL chromium, because jsdom has no
+      # layout engine and no cascade layers and is therefore structurally blind to
+      # a whole class of defect. On this runner Playwright's own managed browser is
+      # the right one — `vite.config.ts` only overrides the executable on NixOS —
+      # but it is not installed by `pnpm install`, so fetch it explicitly.
+      # 🔴 Without this step `pnpm test` FAILS here rather than skipping the tier,
+      # which is deliberate: a browser suite that quietly self-skips in CI reports
+      # safety it never checked.
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test
       - run: pnpm build
