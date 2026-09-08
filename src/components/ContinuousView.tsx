@@ -187,6 +187,7 @@ export function ContinuousView(props: ContinuousViewProps) {
             onTap={onTapItem}
             registerTile={registerTile}
             registerLazy={registerLazy}
+            horizontal={horizontal}
           />
         ))}
       </div>
@@ -205,6 +206,7 @@ export function ContinuousView(props: ContinuousViewProps) {
                 onTap={onTapItem}
                 registerTile={registerTile}
                 registerLazy={registerLazy}
+                horizontal={horizontal}
               />
             ))}
           </div>
@@ -249,6 +251,7 @@ function Tile({
   onTap,
   registerTile,
   registerLazy,
+  horizontal,
 }: {
   item: MediaItem;
   clone: boolean;
@@ -258,10 +261,12 @@ function Tile({
   onTap: (item: MediaItem) => void;
   registerTile: (el: HTMLElement | null, mediaId: number) => void;
   registerLazy: (img: HTMLImageElement | null) => void;
+  /** Ticker (row) vs wall (grid) — decides whether the tile needs its own width. */
+  horizontal: boolean;
 }) {
   // Every tile that reaches here is within the viewer's ceiling (the surface
   // filtered the list), so it renders at full strength with a rating badge.
-  const media = mediaEl;
+  const media = mediaStyle(item);
   // The poster URL is derived by string-replacing `.mp4→.jpg` (brittle); if it
   // or a lazy cover 404s, fall back to a neutral placeholder instead of a broken
   // image icon.
@@ -279,10 +284,10 @@ function Tile({
       tabIndex={clone ? -1 : 0}
       onClick={() => !clone && onTap(item)}
       ref={clone ? undefined : (el) => registerTile(el, item.mediaId)}
-      style={tileStyle(c)}
+      style={tileStyle(c, horizontal)}
     >
       {broken ? (
-        <div style={{ ...mediaEl, ...tilePlaceholder(c) }} data-testid={clone ? undefined : 'continuous-placeholder'} aria-hidden="true">
+        <div style={{ ...media, ...tilePlaceholder(c) }} data-testid={clone ? undefined : 'continuous-placeholder'} aria-hidden="true">
           ▶
         </div>
       ) : item.type === 'video' ? (
@@ -494,7 +499,46 @@ function tilePlaceholder(c: Palette): CSSProperties {
   };
 }
 
-function tileStyle(c: Palette): CSSProperties {
+/**
+ * The ticker's fixed tile width. It matches what `maxWidth: 260` used to cap the
+ * media to, so tiles are the size they always were — the difference is that the
+ * box now EXISTS before the media does.
+ */
+const TILE_W = 260;
+
+/**
+ * Widest and narrowest box we will reserve, as width÷height.
+ *
+ * 🔴 A CLAMP, NOT A PREFERENCE. `MediaItem.width`/`height` are whatever the API
+ * says, and a junk or extreme value would otherwise reserve a box tall enough to
+ * push every other tile off the screen — trading a shift for something worse.
+ * `objectFit: 'cover'` means a clamped ratio still fills its box correctly; the
+ * item is cropped, not distorted.
+ */
+const MIN_ASPECT = 1 / 3;
+const MAX_ASPECT = 3;
+/** Reserved when the item's own dimensions are unusable. Square is neutral. */
+const FALLBACK_ASPECT = 1;
+
+/**
+ * The aspect ratio to reserve for one item, as a CSS `aspect-ratio` number.
+ *
+ * 🔴 THIS IS THE WHOLE FIX. Before it, a tile's size came only from its media:
+ * `mediaEl` was `width: '100%'` inside a `flex: '0 0 auto'` parent with no width,
+ * so the percentage resolved against an INDEFINITE width — i.e. 0 — until the
+ * image or poster loaded, at which point the tile snapped to its intrinsic size
+ * and everything after it on the row jumped. `MediaItem` has carried `width` and
+ * `height` all along, so the box was always computable without waiting.
+ */
+function aspectOf(item: Pick<MediaItem, 'width' | 'height'>): number {
+  const { width, height } = item;
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return FALLBACK_ASPECT;
+  }
+  return Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, width / height));
+}
+
+function tileStyle(c: Palette, horizontal: boolean): CSSProperties {
   return {
     position: 'relative',
     display: 'block',
@@ -504,9 +548,27 @@ function tileStyle(c: Palette): CSSProperties {
     overflow: 'hidden',
     background: c.card,
     cursor: 'pointer',
-    // horizontal tiles are fixed-ish width; vertical tiles fill their column
-    width: undefined,
+    // 🔴 The ticker is a flex ROW, so a tile with no width is sized entirely by
+    // its content and collapses to 0 until that content loads. A definite width
+    // is what stops the row re-flowing. The wall is a GRID whose columns are
+    // `minmax(0, 1fr)`, so its tiles already have a definite width from the
+    // column — giving them a fixed one would break the responsive layout.
+    width: horizontal ? TILE_W : undefined,
     flex: '0 0 auto',
   };
 }
-const mediaEl: CSSProperties = { display: 'block', width: '100%', maxWidth: 260, height: 'auto', objectFit: 'cover' };
+
+/**
+ * Media fills its tile and RESERVES its height from the item's own ratio, so the
+ * tile is its final size before the first byte arrives. `height: auto` is gone
+ * deliberately: it is what made the height depend on the loaded resource.
+ */
+function mediaStyle(item: Pick<MediaItem, 'width' | 'height'>): CSSProperties {
+  return {
+    display: 'block',
+    width: '100%',
+    height: 'auto',
+    aspectRatio: aspectOf(item),
+    objectFit: 'cover',
+  };
+}

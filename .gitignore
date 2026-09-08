@@ -6,3 +6,9 @@ dist/
 coverage/
 # nix-direnv's cache for the `use flake` in .envrc — machine-local and large.
 .direnv/
+
+# Browser-tier run artifacts (vitest browser mode writes failure screenshots and
+# attachment payloads next to the specs). They are per-run debris, never source —
+# and they appear as UNTRACKED files right where a `git add` would sweep them up.
+__screenshots__/
+.vitest-attachments/
