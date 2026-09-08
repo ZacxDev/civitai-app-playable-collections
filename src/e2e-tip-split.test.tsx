@@ -272,6 +272,43 @@ describe('🔴 LEAVING THE COLLECTION does not destroy the plan — the App-leve
     };
   }
 
+  it('🔴 …and the surfaces are STILL held after that remount, not drifting again', async () => {
+    // 🔴 THE HOLD MUST OUTLIVE THE COMPONENT, BECAUSE THE PLAN DOES. The first
+    // version of the hold remembered "the tip the viewer last opened" in
+    // `CollectionViewer` state — and `App` mounts that component as
+    // `key={detail.id}`, so leaving the collection reset it to null while the plan
+    // itself (owned by App, deliberately) survived. Reopening therefore came back
+    // UNHELD with money still outstanding: five seconds later the auto-advance
+    // moved the media, the key moved with it, and the picker offered a blank Send
+    // that mints a fresh key for a curator leg whose predecessor may already have
+    // landed. Exactly the drift the hold was added to stop, re-armed by the one
+    // action the plan is designed to survive.
+    //
+    // This is the sibling of the case above: that one proves the PLAN survives the
+    // remount, this one proves the PROTECTION does. Passing the first while
+    // failing this is precisely the shape that shipped.
+    const base = createFakeApi({ viewerUserId: 99, balance: 5000 }) as FakeApi;
+    await openFirst(curatorRefusedOnceApi(base));
+    const modal = await openSplit();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    expect(base.__tips()).toHaveLength(1);
+    await userEvent.click(screen.getByTestId('split-cancel'));
+
+    // Held here — the case that already passes.
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+
+    await userEvent.click(screen.getByTestId('viewer-exit'));
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    await screen.findByTestId('player');
+
+    // 🔴 THE ASSERTION. Still held, on the same media, with the outstanding leg
+    // still reachable — a fresh mount must not hand the timer back.
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
+  });
+
   it('exit to the grid → reopen the collection → the SAME plan resumes, landed leg intact', async () => {
     const base = createFakeApi({ viewerUserId: 99, balance: 5000 }) as FakeApi;
     await openFirst(curatorRefusedOnceApi(base));

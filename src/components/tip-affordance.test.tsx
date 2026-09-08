@@ -26,6 +26,7 @@ import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CollectionViewer, type CollectionViewerProps } from './CollectionViewer.js';
+import { flushIntersections } from '../test-setup.js';
 import { palette } from '../theme.js';
 import type { TipTarget } from '../lib/tip-target.js';
 import type { CollectionDetail, MediaItem } from '../types.js';
@@ -97,12 +98,20 @@ function Host({
   viewerUserId = VIEWER,
   dailyTipRemaining,
   storage,
+  reducedMotion = true,
 }: {
   items: MediaItem[];
   onTip: TipMock;
   viewerUserId?: number | null;
   dailyTipRemaining?: number;
   storage?: Storage;
+  /**
+   * 🔴 DEFAULTS TO `true`, AND ANY AUTO-SCROLL ASSERTION MUST TURN IT OFF.
+   * `shouldAutoScroll(reducedMotion, paused)` is already `off` under reduced
+   * motion, so a test that asserts "the wall is not scrolling" with the default
+   * fixture passes whether or not the code under test does anything at all.
+   */
+  reducedMotion?: boolean;
 }) {
   const [splitPlans, setSplitPlans] = useState<CollectionViewerProps['splitPlans']>({});
   const props: CollectionViewerProps = {
@@ -132,9 +141,22 @@ function Host({
     c,
     onExit: () => {},
     storage: storage ?? memStorage(),
-    reducedMotion: true,
+    reducedMotion,
   };
   return <CollectionViewer {...props} />;
+}
+
+/**
+ * Refuse the curator leg exactly once, then accept it — the half-failed plan every
+ * outstanding-tip case is built on. Module scope, because both the C6 block and
+ * the continuous-surface block need it.
+ */
+function curatorRefusedOnce(): TipMock {
+  let attempts = 0;
+  return vi.fn(async (target: TipTarget, _amount: number, _idempotencyKey?: string) => {
+    if (target.kind === 'curator' && ++attempts === 1) return false;
+    return true;
+  });
 }
 
 /** Switch to a view mode through the real ModeSwitcher. */
@@ -330,11 +352,20 @@ describe('🔴 tipping from INSIDE the lightbox', () => {
     });
   });
 
-  it('🔴 the FIRST lightbox of a session already knows its media — no null window', async () => {
-    // `lightboxItem` starts null and is filled by the newly-mounted Player. Seeded
-    // from the tapped tile in the same update, there is no render in which the
-    // dialog is up and the creator side is missing. Pressing Tip the instant the
-    // dialog appears is the reachable version of that window.
+  it('the FIRST lightbox of a session opens with both sides present (POSITIVE CONTROL)', async () => {
+    // ⚠️ LABELLED HONESTLY: THIS IS A POSITIVE CONTROL, NOT REGRESSION COVERAGE.
+    // `lightboxItem` starts null and is filled by the newly-mounted Player's
+    // LAYOUT effect, so by the time testing-library hands control back the slot is
+    // already correct — and it would be under a passive effect too, because
+    // `act()` flushes those before `render()` returns. So this case cannot fail
+    // for the ordering defect its earlier name claimed ("no null window"), and an
+    // earlier version of this comment credited a `setLightboxItem` seed in
+    // `openLightbox` that does not exist and must not be re-added.
+    //
+    // What it IS worth: it proves the dialog's first paint offers BOTH sides, so
+    // the surrounding cases are not passing over a picker that silently collapsed.
+    // The ordering property itself is pinned by the two `reports WITHIN THE COMMIT`
+    // probes in Player.test.tsx / ContinuousView.test.tsx.
     const onTip = makeTip();
     render(<Host items={[byBob, byCarol]} onTip={onTip} />);
     const lightbox = await openLightboxOn(0);
@@ -448,19 +479,116 @@ describe('🔴 the picker freezes its recipients at press time, not at confirm',
 });
 
 // ===========================================================================
+// Ticker / Wall — the surfaces the drift hazard is WORST on
+// ===========================================================================
+
+describe('🔴 the continuous surfaces, with the observer actually speaking', () => {
+  // 🔴 EVERY OTHER Ticker/Wall CASE IN THIS FILE RESOLVES THE CREATOR THROUGH THE
+  // FALLBACK ARM. `currentItem` is `items.find(in view) ?? items[0]`, and nothing
+  // else here fires an intersection, so `inViewIds` is empty and the suite
+  // exercises an arm a real browser never takes. These fire a PARTIAL
+  // intersection — the only shape where "first in view" and "first item" are
+  // different elements — so the branch production always takes carries the money
+  // assertion for once.
+
+  it('tips the creator of the tile the viewer can actually SEE', async () => {
+    const onTip = makeTip();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    await switchTo('continuous-vertical');
+
+    // Tile 0 is scrolled off; tile 1 is in view.
+    await act(async () => {
+      flushIntersections(true, (_el, i) => i !== 0);
+    });
+
+    const modal = await openPicker();
+    await userEvent.click(within(modal).getByTestId('tip-target-creator'));
+    // 🔴 carol, not bob. Through the fallback this reads bob and the test is
+    // indistinguishable from one that never fired an intersection at all.
+    expect(screen.getByTestId('split-preview-creator')).toHaveTextContent('@carol (creator)');
+
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await waitFor(() => expect(onTip).toHaveBeenCalledTimes(1));
+    expect(onTip.mock.calls[0][0]).toMatchObject({ toUserId: CAROL, entityId: 1002 });
+  });
+
+  it('🔴 the Pause control reports the state it is actually in, and says why it is stuck', async () => {
+    // 🔴 A CONTROL THAT MISREPORTS THE THING IT CONTROLS IS WORSE THAN A DISABLED
+    // ONE. The button rendered from the LOCAL `paused` flag alone, so while the
+    // outstanding-tip hold had the wall stopped it sat there reading "⏸ Pause"
+    // over an already-still surface — and pressing it did nothing, twice, with no
+    // explanation anywhere on screen. The viewer's reasonable conclusion is that
+    // the app is broken, at the exact moment they have Buzz half-sent.
+    const onTip = curatorRefusedOnce();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} reducedMotion={false} />);
+    await switchTo('continuous-vertical');
+
+    // Control: before any tip it is a live, unpressed Pause.
+    const before = screen.getByTestId('toggle-pause');
+    expect(before).toHaveTextContent('Pause');
+    expect(before).toHaveAttribute('aria-pressed', 'false');
+    expect(before).not.toBeDisabled();
+
+    const modal = await openPicker();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    await userEvent.click(screen.getByTestId('split-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    const held = screen.getByTestId('toggle-pause');
+    expect(held).toHaveTextContent('Resume');
+    expect(held).toHaveAttribute('aria-pressed', 'true');
+    expect(held).toBeDisabled();
+    expect(held).toHaveAttribute(
+      'title',
+      'Paused while part of your tip is still unsent — retry it, or start a new tip.',
+    );
+
+    // Settling the tip hands the control back.
+    const reopened = await openPicker();
+    await userEvent.click(within(reopened).getByTestId('split-retry'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+    await waitFor(() => expect(screen.getByTestId('toggle-pause')).not.toBeDisabled());
+    expect(screen.getByTestId('toggle-pause')).toHaveTextContent('Pause');
+  });
+
+  it('🔴 the WALL stops drifting while a tip is outstanding, and starts again when it is settled', async () => {
+    // 🔴 `reducedMotion: false` IS LOAD-BEARING. Under the fixture default,
+    // `shouldAutoScroll` is already false and this assertion would hold with the
+    // whole hold deleted — the vacuous-by-config shape.
+    const onTip = curatorRefusedOnce();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} reducedMotion={false} />);
+    await switchTo('continuous-vertical');
+    const view = screen.getByTestId('continuous-view');
+    expect(view).toHaveAttribute('data-autoscroll', 'on'); // control: it really does drift
+
+    const modal = await openPicker();
+    expect(screen.getByTestId('continuous-view')).toHaveAttribute('data-autoscroll', 'off');
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    await userEvent.click(screen.getByTestId('split-cancel'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+
+    // 🔴 THE POINT: the picker is CLOSED and the wall is still still. This surface
+    // needs no viewer action to drift, so releasing here would move the media —
+    // and the key with it — with the curator leg still outstanding.
+    expect(screen.getByTestId('continuous-view')).toHaveAttribute('data-autoscroll', 'off');
+
+    // Settle the tip; the wall is released.
+    const reopened = await openPicker();
+    await userEvent.click(within(reopened).getByTestId('split-retry'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+    await waitFor(() =>
+      expect(screen.getByTestId('continuous-view')).toHaveAttribute('data-autoscroll', 'on'),
+    );
+  });
+});
+
+// ===========================================================================
 // C6 — the plan outlives everything that unmounts a surface
 // ===========================================================================
 
 describe('🔴 a half-failed plan survives the four things that unmount a surface', () => {
-  /** Refuse the curator leg exactly once, then accept it. */
-  function curatorRefusedOnce(): TipMock {
-    let attempts = 0;
-    return vi.fn(async (target: TipTarget, _amount: number, _idempotencyKey?: string) => {
-      if (target.kind === 'curator' && ++attempts === 1) return false;
-      return true;
-    });
-  }
-
   async function halfFail(onTip: TipMock, storage: Storage) {
     render(<Host items={[byBob, byCarol]} onTip={onTip} storage={storage} />);
     const modal = await openPicker();
@@ -571,6 +699,52 @@ describe('🔴 a half-failed plan survives the four things that unmount a surfac
     expect(onTip.mock.calls[0][2]).toBe(creatorKey);
     // …and it is still bob who was paid, not the creator who drifted into view.
     expect(onTip.mock.calls[0][0]).toMatchObject({ toUserId: BOB, entityId: 1001 });
+  });
+
+  it('🔴 REOPENING the picker while the hold is already on still pauses the transport', async () => {
+    // 🔴 THE DEP-ARRAY HOLE, AND IT HAD NO WITNESS. The pause effect keyed on the
+    // MERGED hold flag, so `pickerOpen` going false→true while the outstanding-tip
+    // hold was already on was not a dep change and `pause()` never ran. Reachable
+    // in three ordinary presses, and it is exactly the "advances under an open
+    // picker" defect the lightbox tests kill in their own context.
+    const onTip = curatorRefusedOnce();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const modal = await openPicker();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    await userEvent.click(screen.getByTestId('split-cancel'));
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+
+    // The viewer restarts playback themselves — explicitly allowed while held.
+    await userEvent.click(screen.getByTestId('ctrl-play'));
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'true');
+
+    // …then reopens the picker to retry. The transport must stop again.
+    await openPicker();
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('🔴 does NOT restart playback the viewer deliberately stopped during a hold', async () => {
+    // The mirror of the case above. The outstanding-tip hold spans the viewer's own
+    // presses, so a resume decision captured when the hold BEGAN is stale by the
+    // time it ends — acting on it restarts playback for someone who paused it.
+    const onTip = curatorRefusedOnce();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const modal = await openPicker();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    await userEvent.click(screen.getByTestId('split-cancel'));
+
+    // Play, then deliberately pause again, while the hold is on.
+    await userEvent.click(screen.getByTestId('ctrl-play'));
+    await userEvent.click(screen.getByTestId('ctrl-play'));
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+
+    // Settle the tip — the hold releases, and must NOT hand playback back.
+    const reopened = await openPicker();
+    await userEvent.click(within(reopened).getByTestId('split-retry'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('🔴 the media does not DRIFT AWAY from an outstanding plan on its own', async () => {

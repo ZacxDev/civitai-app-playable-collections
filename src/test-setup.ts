@@ -101,9 +101,16 @@ class MockIntersectionObserver implements IntersectionObserver {
 /**
  * Fire intersection for every live observer (lazy covers + the grid sentinel).
  *
- * Pass `decide` to control it PER ELEMENT — `(el, i) => i !== 0` puts everything
- * but the first observed element in view, which is the only shape that tells an
- * in-view lookup apart from a plain `items[0]`.
+ * Pass `decide` to control it PER ELEMENT — `(el, i) => i !== 0` is the shape that
+ * tells an in-view lookup apart from a plain `items[0]`, because with EVERYTHING
+ * in view the two name the same element and the assertion is vacuous.
+ *
+ * ⚠️ TWO THINGS THE INDEX IS NOT. It is per-OBSERVER, not global, and the same
+ * `decide` is handed to every live observer (in-view tiles, lazy covers, any
+ * sentinel) — so `(el, i) => i !== 0` excludes the first element of EACH of them,
+ * not one element overall. And when `decide` is given, the `isIntersecting`
+ * argument is ignored, so `flushIntersections(true, () => false)` means "fire, and
+ * nothing is in view" rather than anything about the `true`.
  */
 export function flushIntersections(
   isIntersecting = true,

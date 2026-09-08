@@ -340,12 +340,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const [tipOpenFor, setTipOpenFor] = useState<{ creator: SplitRecipient; curator: SplitRecipient } | null>(null);
   /** Reported up by the picker: a leg is on the wire, so nothing may dismiss it. */
   const [tipSending, setTipSending] = useState(false);
-  /**
-   * The key of the tip the viewer most recently OPENED, whether or not the picker
-   * is still up. It is what lets this component ask "does that tip still have
-   * money outstanding?" after the picker has been dismissed.
-   */
-  const [lastTipKey, setLastTipKey] = useState<string | null>(null);
+
 
   const openTip = useCallback(() => {
     // Logged-out: tipping needs an account, so prompt sign-in UP FRONT rather
@@ -360,12 +355,22 @@ export function CollectionViewer(props: CollectionViewerProps) {
     // move (a timer, a filter, a reload, a wall scrolling on) without
     // redirecting a single Buzz.
     setTipOpenFor({ creator: liveCreator, curator: liveCurator });
-    setLastTipKey(splitTipKey(liveCreator, liveCurator));
   }, [viewerUserId, onRequestSignIn, tipPossible, liveCreator, liveCurator]);
 
   /**
-   * The tip the viewer last opened still has money outstanding — a plan exists for
-   * it, so at least one leg is unsent (a completed tip DELETES its plan).
+   * The media ON SCREEN RIGHT NOW has money outstanding — a plan exists for the tip
+   * whose recipients it names, so at least one leg is unsent (a completed tip
+   * DELETES its plan, and so does an explicit discard).
+   *
+   * 🔴 DERIVED FROM THE LIVE MEDIA, NEVER REMEMBERED IN THIS COMPONENT'S STATE.
+   * The first version of this hold stored "the tip the viewer last opened" in a
+   * `useState` here — and `App` mounts this component as `key={detail.id}`, so
+   * LEAVING THE COLLECTION reset it to null while the plan itself (owned by App,
+   * on purpose) survived. Reopening came back UNHELD with money still outstanding
+   * and re-armed the exact drift below, on the single action the plan is designed
+   * to survive. Derived, it cannot go stale and cannot outlive its subject: the
+   * per-collection position restore puts the same media back on screen, the key
+   * matches again, and the hold re-engages by itself.
    *
    * 🔴 THIS IS WHY THE APP MUST NOT START MOTION BY ITSELF. The plan is keyed to
    * the MEDIA, and the picker promises in so many words that "reopening this split
@@ -383,7 +388,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
    * press Play, or navigate: that is a deliberate act, and it forfeits the plan
    * visibly rather than behind their back.
    */
-  const outstandingTip = lastTipKey != null && splitPlans[lastTipKey] != null;
+  const outstandingTip = splitPlans[splitTipKey(liveCreator, liveCurator)] != null;
 
   // The logical tip the open picker is for, and the plan App is holding for it.
   const openTipKey = tipOpenFor ? splitTipKey(tipOpenFor.creator, tipOpenFor.curator) : null;
@@ -403,8 +408,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const onTipDone = useCallback(() => {
     if (openTipKey != null) onSplitPlanChange(openTipKey, null);
     setTipOpenFor(null);
-    // Nothing is outstanding any more, so the surfaces are released to move again.
-    setLastTipKey(null);
+    // Nothing clears a "hold" flag here: deleting the plan IS what releases the
+    // surfaces, because `outstandingTip` is derived from the plan store.
   }, [openTipKey, onSplitPlanChange]);
 
   // 🔴 THE APP'S OWN Escape GATE. ⚠️ AN EARLIER VERSION OF THIS COMMENT CLAIMED
@@ -445,14 +450,26 @@ export function CollectionViewer(props: CollectionViewerProps) {
   const viewerActionRow = () => (
     <div style={chromeRow()} data-testid="viewer-actions">
       {isContinuous && lightboxIndex == null && (
+        // 🔴 IT REPORTS THE EFFECTIVE STATE, NOT THE LOCAL FLAG. While a tip is
+        // outstanding the surface is held still by `outstandingTip`, and a control
+        // rendering only `paused` sat there reading "⏸ Pause" over an already-
+        // stopped wall — and did nothing when pressed, twice, with no explanation
+        // anywhere on screen. A control that misreports the thing it controls is
+        // worse than a disabled one, so this one says why it is disabled.
         <Button
           size="sm"
-          variant={paused ? 'filled' : 'light'}
+          variant={paused || outstandingTip ? 'filled' : 'light'}
           onClick={() => setPaused((p) => !p)}
-          aria-pressed={paused}
+          aria-pressed={paused || outstandingTip}
+          disabled={outstandingTip}
+          title={
+            outstandingTip
+              ? 'Paused while part of your tip is still unsent — retry it, or start a new tip.'
+              : undefined
+          }
           data-testid="toggle-pause"
         >
-          {paused ? '▶ Resume' : '⏸ Pause'}
+          {paused || outstandingTip ? '▶ Resume' : '⏸ Pause'}
         </Button>
       )}
       {/* 🔴 UPSTREAM CONTROL, NOT A HAND-ROLLED ONE, IN ALL THREE VIEWS (T5

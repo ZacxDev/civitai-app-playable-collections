@@ -87,7 +87,12 @@ describe('the app speaks the same tip contract as upstream useTip / useTipAllowa
     // where they differ is the only one that shows which value is carried.
     const allowance: AppTipAllowance = { cap: 25000, spent: 24700, remaining: 111 };
     expect(appAllowanceIsUpstreamShaped(allowance).remaining).toBe(111);
-    expect(allowance.remaining).not.toBe(allowance.cap - allowance.spent);
+    // 🔴 NO `expect(remaining).not.toBe(cap - spent)` HERE. That would be a
+    // statement about three literals on the line above — arithmetic that cannot
+    // fail for any change to the app, which is the same vacuity in a new costume.
+    // The behavioural claim (the app CARRIES the server's figure rather than
+    // recomputing it) needs the real hook and the real picker, and it lives in
+    // `e2e-tip-split.test.tsx` → "carries the SERVER's `remaining`".
   });
 
   it('the per-tip cap the app pre-blocks against is the server figure, not a guess', () => {

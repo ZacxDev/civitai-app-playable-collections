@@ -81,11 +81,13 @@ export interface PlayerProps {
    * Hold the transport still, WITHOUT swallowing the viewer's own controls.
    *
    * 🔴 THE DIFFERENCE FROM `pickerOpen` IS THE WHOLE POINT. The owner sets this
-   * when a tip is outstanding but no picker is up: the app must not advance the
-   * media BY ITSELF, because the split plan is keyed to the media and drifting off
-   * it orphans a leg the viewer still needs to retry. But the viewer is not
-   * trapped — every control, key and click still works, and using one is a
-   * deliberate act that forfeits the plan in the open.
+   * whenever the media on screen has a tip outstanding — picker up or not — and
+   * unlike `pickerOpen` it does NOT swallow the viewer's controls. The app must
+   * not advance the media BY ITSELF, because the split plan is keyed to the media
+   * and drifting off it orphans a leg the viewer still needs to retry. But the
+   * viewer is not trapped: every control, key and click still works. Navigating
+   * away does not retire the plan — it stays in the owner's store, and coming back
+   * to the same media re-engages this hold and offers the Retry again.
    */
   holdPaused?: boolean;
   /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
@@ -175,6 +177,15 @@ export function Player(props: PlayerProps) {
 
   // Cast auto-advance: force playback on entering cast (unless reduced-motion,
   // which pauses it — respecting the OS preference like the continuous modes).
+  //
+  // ⚠️ THIS IS AN EXCEPTION TO THE `holdPaused` RULE ABOVE, AND IT IS RECORDED
+  // RATHER THAN GLOSSED. Entering ambient is an explicit viewer action, so
+  // starting playback there is what they asked for — but a `reducedMotion` flip
+  // while ambient is already on involves no action at all and would restart the
+  // transport over an outstanding tip. Ambient hides every control including the
+  // tip button, so nothing can be pressed in that state; the exposure is the media
+  // drifting off a plan the viewer would have to re-find. Narrow, and not worth a
+  // second gate here until ambient and tipping ever coexist.
   useEffect(() => {
     if (!cast) return;
     if (reducedMotion) player.pause();
@@ -214,18 +225,45 @@ export function Player(props: PlayerProps) {
   // closed — including the close that leaves a half-failed plan behind, five
   // seconds before the auto-advance moved the media out from under it.
   const holdStill = pickerOpen || holdPaused;
+  /** Was the transport running when this hold BEGAN? */
   const resumeAfterPickerRef = useRef(false);
+  /** Are we inside a hold right now (so the entry capture happens once)? */
+  const heldRef = useRef(false);
+  /** Did a TIP become outstanding at any point during this hold? */
+  const sawOutstandingRef = useRef(false);
   const playerRef = useRef(player);
   playerRef.current = player;
   useEffect(() => {
     if (holdStill) {
-      resumeAfterPickerRef.current = resumeAfterPickerRef.current || playerRef.current.playing;
+      if (!heldRef.current) {
+        heldRef.current = true;
+        resumeAfterPickerRef.current = playerRef.current.playing;
+        sawOutstandingRef.current = false;
+      }
+      if (holdPaused) sawOutstandingRef.current = true;
+      // 🔴 UNCONDITIONAL, AND `pickerOpen` IS IN THE DEPS FOR THIS REASON. Keying
+      // the effect on the MERGED flag alone meant that opening a picker while the
+      // hold was ALREADY on (a half-failed plan, the viewer presses ▶, then
+      // reopens the picker to retry) was not a dep change at all — so `pause()`
+      // never ran and the media advanced under an open picker. The money stayed
+      // correct, because the recipients are frozen at press time; what was lost is
+      // the defence in depth that keeps the stage still under a viewer reading a
+      // preview. `pause()` is idempotent, so re-running it costs nothing.
       playerRef.current.pause();
-    } else if (resumeAfterPickerRef.current) {
+    } else if (heldRef.current) {
+      heldRef.current = false;
+      // 🔴 DO NOT AUTO-RESUME OUT OF AN OUTSTANDING-TIP HOLD. That hold spans the
+      // viewer's OWN transport presses — the controls stay live throughout — so a
+      // decision captured when the hold began is stale by the time it ends, and
+      // acting on it restarts playback for someone who deliberately paused it.
+      // A hold that was only ever a picker being open is the case the resume is
+      // for, and it is the case a test pins.
+      const resume = resumeAfterPickerRef.current && !sawOutstandingRef.current;
       resumeAfterPickerRef.current = false;
-      playerRef.current.play();
+      sawOutstandingRef.current = false;
+      if (resume) playerRef.current.play();
     }
-  }, [holdStill]);
+  }, [holdStill, pickerOpen, holdPaused]);
 
   // ---- keyboard (all viewports; the platform routes real key events to the
   // focused iframe, and arrow keys are the desktop-primary control) ----
