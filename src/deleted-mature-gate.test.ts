@@ -97,6 +97,15 @@ const FORBIDDEN_SYMBOLS = [
 /** Testids the deleted reveal affordances rendered. */
 const FORBIDDEN_TESTIDS = ['maturity-reveal', 'cover-reveal', 'cover-gate'];
 
+/**
+ * Testids the deleted "How to play" onboarding coach rendered (removed 0.2.14 on
+ * operator feedback). Kept in its OWN constant rather than folded into
+ * FORBIDDEN_TESTIDS above: these are two unrelated deletions, and merging them
+ * would make a failure report name the maturity gate for an onboarding
+ * regression. See the second `describe` at the bottom of this file.
+ */
+const FORBIDDEN_ONBOARDING_TESTIDS = ['onboarding-coach', 'onboarding-dismiss'];
+
 /** Age-confirmation / reveal COPY. Walkable by rewording — see the header. */
 const FORBIDDEN_COPY: RegExp[] = [
   /\b18\s*\+/,
@@ -222,5 +231,63 @@ describe('the store listing makes no maturity promise the code does not keep', (
     expect(manifest.description).not.toMatch(/mature|nsfw|age[- ]?gate/i);
     // The declared rating is still a real, checked claim and is untouched.
     expect(manifest.contentRating).toBe('pg13');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A SECOND, UNRELATED DELETION, guarded here because this file already owns the
+// scanner and its controls — not because it is the same subject.
+//
+// 🔴 THE FILENAME IS HISTORICAL AND NOW NARROWER THAN THE CONTENTS. It was written
+// for the 0.2.11 age-gate removal; 0.2.14 removed the "How to play" onboarding
+// coach and reuses the same instrument. Renaming the file would break every
+// reference to it in the handoff docs and the capture recipe, so the name stays
+// and this comment carries the correction. If a THIRD deletion lands here, rename.
+//
+// The scanner's POSITIVE control (it reads >30 real shipping files, and can SEE
+// content in them) is asserted once, in the first `describe` at the top of this
+// file, and covers this section too — it is the same `sources` array.
+// ---------------------------------------------------------------------------
+
+describe('the "How to play" onboarding coach is deleted and stays deleted', () => {
+  it('the coach module is gone from the tree', () => {
+    expect(existsSync(join(SRC, 'lib', 'onboarding.ts'))).toBe(false);
+    expect(existsSync(join(SRC, 'lib', 'onboarding.tsx'))).toBe(false);
+  });
+
+  it('🔴 no shipping file renders either coach testid', () => {
+    const hits: string[] = [];
+    for (const { path, text } of sources) {
+      for (const id of FORBIDDEN_ONBOARDING_TESTIDS) {
+        if (text.includes(id)) hits.push(`${rel(path)} → ${id}`);
+      }
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it('no shipping file references the deleted hook', () => {
+    const hits: string[] = [];
+    for (const { path, text } of sources) {
+      if (text.includes('useOnboarding')) hits.push(rel(path));
+    }
+    expect(hits).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL: the testid check really fires on the markup that shipped', () => {
+    // 🔴 Without this, "hits is empty" is a claim about the loop, not about the
+    // tree — the same reassuring zero the header warns about. These are the exact
+    // attributes the deleted card rendered.
+    const asShipped = [
+      '<Card padding="md" data-testid="onboarding-coach" style={coachCard}>',
+      '<Button size="sm" onClick={onboarding.dismiss} data-testid="onboarding-dismiss">',
+    ];
+    for (const line of asShipped) {
+      expect(FORBIDDEN_ONBOARDING_TESTIDS.some((id) => line.includes(id))).toBe(true);
+    }
+    // …and it does not fire on ordinary app copy, so it cannot pass by matching
+    // everything.
+    for (const line of ['<Card padding="md" data-testid="viewer-settings">', 'Back to collections']) {
+      expect(FORBIDDEN_ONBOARDING_TESTIDS.some((id) => line.includes(id))).toBe(false);
+    }
   });
 });

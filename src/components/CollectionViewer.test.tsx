@@ -82,20 +82,11 @@ function mature(id: number, nsfwLevel = 4): MediaItem {
   return { ...img(id), nsfwLevel };
 }
 
-describe('CollectionViewer — onboarding coach (Feature #10)', () => {
-  it('shows the coach on first open and hides it (persisted) after dismiss', async () => {
-    const storage = memStorage();
-    const { unmount } = renderViewer({ storage });
-    expect(screen.getByTestId('onboarding-coach')).toBeInTheDocument();
-    await userEvent.click(screen.getByTestId('onboarding-dismiss'));
-    expect(screen.queryByTestId('onboarding-coach')).toBeNull();
-    unmount();
-
-    // Reopen with the SAME storage → the coach does not return.
-    renderViewer({ storage });
-    expect(screen.queryByTestId('onboarding-coach')).toBeNull();
-  });
-});
+// The "How to play" onboarding coach (#10) was tested here until 0.2.14. The card
+// was removed on operator feedback; its absence is now pinned by the shipping-surface
+// scanner in `src/deleted-mature-gate.test.ts`, which is the right home for it —
+// a component test can only prove the card is absent from ONE render, while the
+// scanner proves the testids are absent from every file that ships.
 
 describe('CollectionViewer — cast / ambient mode (Feature #8)', () => {
   it('toggling cast hides the chrome, marks the surface, and offers an exit', async () => {

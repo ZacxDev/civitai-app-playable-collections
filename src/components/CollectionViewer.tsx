@@ -41,7 +41,6 @@ import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
 import { TipModal, type TipSender } from './TipModal.js';
 import type { PlannedLeg } from './TipSplitModal.js';
 import { FocusTrap } from './FocusTrap.js';
-import { useOnboarding } from '../lib/onboarding.js';
 
 export interface CollectionViewerProps {
   detail: CollectionDetail;
@@ -172,9 +171,6 @@ export function CollectionViewer(props: CollectionViewerProps) {
     setCast(false);
     onCastRef.current?.(false);
   }, []);
-  // One-time controls coach (#10).
-  const onboarding = useOnboarding(storage);
-
   // ---- lightbox + curator tip ----
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [tipCuratorOpen, setTipCuratorOpen] = useState(false);
@@ -346,24 +342,13 @@ export function CollectionViewer(props: CollectionViewerProps) {
       </div>
       )}
 
-      {/* ---- one-time controls coach (#10) ---- */}
-      {!cast && onboarding.show && (
-        <Card padding="md" data-testid="onboarding-coach" style={coachCard}>
-          <div style={{ display: 'grid', gap: 6 }}>
-            <strong style={{ fontSize: 14 }}>How to play</strong>
-            <ul style={coachList}>
-              <li>Switch between Slideshow, Ticker, and Wall with the mode buttons.</li>
-              <li>In the continuous modes, press &amp; hold to pause the drift.</li>
-              <li>Tap any tile to open it full-screen (tip the creator there).</li>
-            </ul>
-            <div>
-              <Button size="sm" onClick={onboarding.dismiss} data-testid="onboarding-dismiss">
-                Got it
-              </Button>
-            </div>
-          </div>
-        </Card>
-      )}
+      {/* The one-time "How to play" coach card (#10) stood here until 0.2.14.
+          Removed on operator feedback: the controls are discoverable enough that a
+          card explaining them was chrome in front of the content it described.
+          🔴 Do not "restore the onboarding" — the affordance was deliberately
+          deleted, not lost. `src/lib/onboarding.ts` went with it; the only thing
+          that ever read its `localStorage` key was this card. A returning viewer
+          may still carry that orphaned key, which nothing reads. */}
 
       {/* ---- cast mode: a single floating exit affordance (chrome is hidden) ---- */}
       {cast && (
@@ -732,8 +717,6 @@ const lightboxOverlay: CSSProperties = {
   zIndex: 50,
   background: '#000',
 };
-const coachCard: CSSProperties = { margin: '10px 14px' };
-const coachList: CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, display: 'grid', gap: 3, color: 'var(--civitai-color-text-dimmed)' };
 const castExitStyle: CSSProperties = {
   position: 'absolute',
   top: 12,
