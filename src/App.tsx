@@ -64,7 +64,13 @@ import { useServerTipAllowance } from './lib/tip-allowance.js';
 import { buildShareUrl, decodeDeepLink, encodeDeepLink } from './lib/deep-link.js';
 import { shareLink } from './lib/share.js';
 import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
-import { COLLECTIONS_READ_PRIVATE, defaultHasPrivateScope } from './scopes.js';
+import {
+  BUZZ_READ_SELF,
+  COLLECTIONS_READ_PRIVATE,
+  SOCIAL_TIP_SELF,
+  defaultHasPrivateScope,
+  defaultHasTipScope,
+} from './scopes.js';
 import { palette } from './theme.js';
 import { BrandMark } from './components/BrandMark.js';
 import { paintTheme } from './bootTheme.js';
@@ -136,13 +142,21 @@ export interface AppProps {
    * the real request→re-mint→observe round-trip.
    */
   isPrivateGranted?: (tokenScopes: string[]) => boolean;
+  /**
+   * Predicate over the current block-token scopes deciding whether the viewer has
+   * granted `social:tip:self`. Defaults to the real check. Same test-seam shape as
+   * `isPrivateGranted`, and needed for the same reason: the mock host models
+   * consent for one scope, so a test maps that onto the tip grant to drive the
+   * real press -> REQUEST_CONSENT -> re-mint -> picker-opens round trip.
+   */
+  isTipGranted?: (tokenScopes: string[]) => boolean;
   /** Bounded-retry config for the auto-run data loaders (test seam). */
   retry?: RetryConfig;
   /** Analytics sink (Feature #10). A test injects one; prod plugs a transport. */
   onEvent?: AnalyticsSink;
 }
 
-export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
+export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
   const host = useHostOrigin();
@@ -214,6 +228,33 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     // token with the scope and pushes TOKEN_REFRESH, which flips hasPrivateScope
     // and triggers a mine reload below. Declined => nothing changes (no error).
     requestConsent({ scopes: [COLLECTIONS_READ_PRIVATE] });
+  }, [viewer, requestSignIn, requestConsent]);
+
+  // Can this token actually send a tip? See `scopes.ts` for why this is keyed on
+  // `social:tip:self` alone even though the request below asks for both.
+  const hasTipScope = (isTipGranted ?? defaultHasTipScope)(token.scopes ?? []);
+
+  /**
+   * The viewer pressed Tip without the grant that makes tipping possible.
+   *
+   * 🔴 THIS IS WHY THE PRESS MUST NOT OPEN THE PICKER. Without `social:tip:self`
+   * the server refuses every leg at the scope gate, so the picker can only walk a
+   * viewer through choosing a recipient and an amount and then tell them "not
+   * sent" with no route to fix it — which is exactly what a real 2-Buzz tip did on
+   * 2026-09-08. Asking for the grant is the only action that can succeed, so it is
+   * the one the press performs.
+   *
+   * Both scopes are requested together: tipping is the point, and a picker that
+   * cannot show a balance is a degraded one. Fire-and-forget, like the private
+   * request above — on grant the host re-mints and pushes TOKEN_REFRESH, which
+   * flips `hasTipScope`; declined changes nothing and raises no error.
+   */
+  const requestTipConsent = useCallback(() => {
+    if (!viewer) {
+      requestSignIn();
+      return;
+    }
+    requestConsent({ scopes: [SOCIAL_TIP_SELF, BUZZ_READ_SELF] });
   }, [viewer, requestSignIn, requestConsent]);
 
   // Real HTTP client (prod) unless a fake is injected (tests/dev).
@@ -866,6 +907,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           onFollowChange={onFollowChange}
           onTip={doTip}
           onRequestSignIn={() => requestSignIn()}
+          hasTipScope={hasTipScope}
+          onRequestTipConsent={requestTipConsent}
           tipping={tipping}
           // `null` (unresolved / failed read) becomes `undefined`, which is the
           // pickers' "no local pre-block" default. A failed allowance read must

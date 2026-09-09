@@ -80,7 +80,11 @@ async function openSplitOn(api: ApiClient, viewer: ViewerInfo = { id: VIEWER, us
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   render(
     <Harness viewer={viewer} theme="dark" showLog={false}>
-      <App api={api} />
+      {/* The Harness token carries no `social:tip:self`, so without this the T5 consent
+          gate short-circuits every tip case in this file into a REQUEST_CONSENT. These
+          suites are about the money MECHANICS, not about consent — the gate has its own
+          red/green pair in `components/tip-affordance.test.tsx`. */}
+      <App api={api} isTipGranted={() => true} />
     </Harness>,
   );
   const grid = await screen.findByTestId('collection-grid');

@@ -19,6 +19,7 @@ function renderApp(
     viewer?: ViewerInfo | null;
     theme?: 'light' | 'dark';
     isPrivateGranted?: (scopes: string[]) => boolean;
+    isTipGranted?: (scopes: string[]) => boolean;
     onOutbound?: (msg: { type: string; payload?: unknown }) => void;
     retry?: { retries: number; delayMs: number };
     /** Seed the mock host's per-pool Buzz wallet (GET_BUZZ_BALANCE bridge). */
@@ -38,7 +39,17 @@ function renderApp(
       buzzBalance={opts.buzzBalance}
       shared={opts.shared}
     >
-      <App api={opts.api} isPrivateGranted={opts.isPrivateGranted} retry={opts.retry} onEvent={opts.onEvent} />
+      {/* The Harness token carries no `social:tip:self`, so without this the T5 consent
+          gate short-circuits every tip case in this file into a REQUEST_CONSENT. These
+          suites are about the money MECHANICS, not about consent — the gate has its own
+          red/green pair in `components/tip-affordance.test.tsx`. */}
+      <App
+        api={opts.api}
+        isPrivateGranted={opts.isPrivateGranted}
+        isTipGranted={opts.isTipGranted ?? (() => true)}
+        retry={opts.retry}
+        onEvent={opts.onEvent}
+      />
     </Harness>,
   );
 }
@@ -477,6 +488,37 @@ describe('App — private collections consent gate', () => {
     expect(screen.queryByText('My Private Board')).not.toBeInTheDocument();
     // graceful: no error surface
     expect(screen.queryByTestId('grid-error')).not.toBeInTheDocument();
+  });
+
+  it('🔴 pressing Tip WITHOUT the grant sends a REQUEST_CONSENT for BOTH money scopes — asserted on the wire', async () => {
+    const outbound: Array<{ type: string; payload?: unknown }> = [];
+    const api = createFakeApi({ viewerUserId: 99 });
+    // `isTipGranted: () => false` models the real production default: the mint is
+    // fail-closed on a missing grant row, so a first-time viewer's token carries
+    // neither money scope. Measured live 2026-09-08 — consent for
+    // `social:tip:self` existed on ONE row across the whole grants table.
+    renderApp({ api, isTipGranted: () => false, onOutbound: (m) => outbound.push(m) });
+    // Open a collection (this describe has no shared helper for it).
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    await screen.findByTestId('player');
+
+    // CONTROL: nothing has asked for consent before the press. Without this the
+    // assertion below cannot tell "the press did it" from "something already had".
+    expect(outbound.find((m) => m.type === 'REQUEST_CONSENT')).toBeUndefined();
+
+    await userEvent.click(await screen.findByTestId('chrome-tip'));
+
+    const consentMsg = outbound.find((m) => m.type === 'REQUEST_CONSENT');
+    expect(consentMsg).toBeTruthy();
+    // BOTH, and exactly these two. `social:tip:self` is what the server gates the
+    // transfer on; `buzz:read:self` is what puts a balance in the picker. Asking
+    // for only the first leaves a picker that can send but cannot say from what.
+    expect(consentMsg?.payload).toMatchObject({
+      scopes: ['social:tip:self', 'buzz:read:self'],
+    });
+    // And no picker: it could only end in "not sent".
+    expect(screen.queryByTestId('tip-split-modal')).toBeNull();
   });
 
   it('the affordance sends a REQUEST_CONSENT for collections:read:private (declined path stays public-only, no error)', async () => {

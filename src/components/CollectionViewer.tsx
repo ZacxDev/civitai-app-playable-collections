@@ -69,6 +69,18 @@ export interface CollectionViewerProps {
   onTip: TipSender;
   /** Prompt a logged-out viewer to sign in (tipping requires an account). */
   onRequestSignIn?: () => void;
+  /**
+   * Does the viewer's token carry `social:tip:self`?
+   *
+   * 🔴 DEFAULTS TO `true`, AND THAT IS A DELIBERATE TRADE, NOT AN OVERSIGHT. Every
+   * pre-existing caller and fixture omits it, and defaulting to `false` would put
+   * a consent prompt in front of every one of them. The cost is that the guard is
+   * OFF unless a caller opts in — `App` always passes it, and the affordance test
+   * passes `false` explicitly. If you add a second mount point, pass this.
+   */
+  hasTipScope?: boolean;
+  /** Ask the host to open its consent UI for the money scopes. */
+  onRequestTipConsent?: () => void;
   tipping: boolean;
   /**
    * The viewer's REAL remaining daily tip allowance, read once per view from the
@@ -129,6 +141,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
     onFollowChange,
     onTip,
     onRequestSignIn,
+    hasTipScope = true,
+    onRequestTipConsent,
     tipping,
     dailyTipRemaining,
     splitPlans,
@@ -350,12 +364,26 @@ export function CollectionViewer(props: CollectionViewerProps) {
       return;
     }
     if (!tipPossible) return;
+    // 🔴 NO GRANT => ASK FOR IT; DO NOT OPEN A PICKER THAT CANNOT SEND. The mint
+    // is fail-closed, so a viewer who has never consented gets a token with no
+    // `social:tip:self` and the server refuses every leg at the scope gate — the
+    // picker would collect a recipient and an amount and then report "not sent"
+    // with nothing the viewer could do about it. Measured live 2026-09-08.
+    // Ordered after `tipPossible` so that a viewer with nobody to pay is never
+    // asked for a grant that would buy them nothing. ⚠️ NOT COVERED BY A TEST, and
+    // deliberately so: in that state the control is `disabled`, so the ordering is
+    // unreachable through a real press. A test for it would pass on the disabled
+    // attribute and read as coverage of an ordering nothing can observe.
+    if (!hasTipScope) {
+      onRequestTipConsent?.();
+      return;
+    }
     // 🔴 FREEZE BOTH SIDES HERE. Everything the picker sends, previews and
     // reports back is resolved from this snapshot, so the media underneath may
     // move (a timer, a filter, a reload, a wall scrolling on) without
     // redirecting a single Buzz.
     setTipOpenFor({ creator: liveCreator, curator: liveCurator });
-  }, [viewerUserId, onRequestSignIn, tipPossible, liveCreator, liveCurator]);
+  }, [viewerUserId, onRequestSignIn, tipPossible, hasTipScope, onRequestTipConsent, liveCreator, liveCurator]);
 
   /**
    * The media ON SCREEN RIGHT NOW has money outstanding — a plan exists for the tip
