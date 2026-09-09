@@ -99,6 +99,9 @@ function Host({
   dailyTipRemaining,
   storage,
   reducedMotion = true,
+  hasTipScope,
+  onRequestTipConsent,
+  onRequestSignIn,
 }: {
   items: MediaItem[];
   onTip: TipMock;
@@ -112,6 +115,10 @@ function Host({
    * fixture passes whether or not the code under test does anything at all.
    */
   reducedMotion?: boolean;
+  /** See the consent block at the foot of this file. Defaults to "granted". */
+  hasTipScope?: boolean;
+  onRequestTipConsent?: () => void;
+  onRequestSignIn?: () => void;
 }) {
   const [splitPlans, setSplitPlans] = useState<CollectionViewerProps['splitPlans']>({});
   const props: CollectionViewerProps = {
@@ -142,6 +149,9 @@ function Host({
     onExit: () => {},
     storage: storage ?? memStorage(),
     reducedMotion,
+    hasTipScope,
+    onRequestTipConsent,
+    onRequestSignIn,
   };
   return <CollectionViewer {...props} />;
 }
@@ -1048,6 +1058,73 @@ describe('an anon viewer is bounced to sign-in BEFORE the amount picker', () => 
     await switchTo(mode);
     await userEvent.click(screen.getByTestId('chrome-tip'));
     expect(onRequestSignIn).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('tip-split-modal')).toBeNull();
+  });
+});
+
+// ===========================================================================
+// The CONSENT GATE — a viewer without `social:tip:self` must be ASKED, not walked
+// into a picker that cannot send.
+//
+// 🔴 THIS IS A REGRESSION TEST, NOT AN INVARIANT GUARD. Before the fix the first
+// case FAILS: the press opened `tip-split-modal` and never called the consent
+// callback, which is precisely the live behaviour measured on 2026-09-08 — the
+// mint is fail-closed on a missing grant row, so the token arrived with no tip
+// scope, the server refused every leg at the scope gate, and the viewer got
+// "None of that tip came back confirmed" with no route to fix it.
+// ===========================================================================
+
+describe('🔴 the tip press asks for consent when the token cannot tip', () => {
+  it('WITHOUT the scope: the press requests consent and NO picker opens', async () => {
+    const onRequestTipConsent = vi.fn();
+    render(
+      <Host
+        items={[byBob, byCarol]}
+        onTip={makeTip()}
+        hasTipScope={false}
+        onRequestTipConsent={onRequestTipConsent}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    expect(onRequestTipConsent).toHaveBeenCalledTimes(1);
+    // The whole point: no picker. A picker here can only end in "not sent".
+    expect(screen.queryByTestId('tip-split-modal')).toBeNull();
+  });
+
+  it('POSITIVE CONTROL — WITH the scope the picker opens and consent is NOT requested', async () => {
+    const onRequestTipConsent = vi.fn();
+    render(
+      <Host
+        items={[byBob, byCarol]}
+        onTip={makeTip()}
+        hasTipScope
+        onRequestTipConsent={onRequestTipConsent}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    expect(await screen.findByTestId('tip-split-modal')).toBeInTheDocument();
+    expect(onRequestTipConsent).not.toHaveBeenCalled();
+  });
+
+  it('a LOGGED-OUT viewer routes to SIGN-IN, not to consent — the order matters', async () => {
+    const onRequestTipConsent = vi.fn();
+    const onRequestSignIn = vi.fn();
+    render(
+      <Host
+        items={[byBob, byCarol]}
+        onTip={makeTip()}
+        viewerUserId={null}
+        hasTipScope={false}
+        onRequestTipConsent={onRequestTipConsent}
+        onRequestSignIn={onRequestSignIn}
+      />,
+    );
+    await userEvent.click(screen.getByTestId('chrome-tip'));
+    // Both guards would fire on this fixture; sign-in must win. Asking a
+    // logged-out viewer to grant a scope is asking for something they cannot
+    // give — there is no account for the grant to attach to.
+    expect(onRequestSignIn).toHaveBeenCalledTimes(1);
+    expect(onRequestTipConsent).not.toHaveBeenCalled();
     expect(screen.queryByTestId('tip-split-modal')).toBeNull();
   });
 });
