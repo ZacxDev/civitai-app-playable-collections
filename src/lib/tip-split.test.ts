@@ -5,11 +5,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_CREATOR_PERCENT,
+  RECIPIENT_PERCENT,
   TIP_MIN,
   TIP_TOTAL_MAX,
   newIdempotencyKey,
+  recipientChoice,
   splitTipTotal,
   validateTipSplit,
+  type TipRecipientChoice,
 } from './tip-split.js';
 
 const BOTH = { creatorEligible: true, curatorEligible: true };
@@ -187,5 +190,57 @@ describe('newIdempotencyKey', () => {
     expect(a).toBeTruthy();
     expect(b).toBeTruthy();
     expect(a).not.toBe(b);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T5 — the destination the viewer chose must be the destination the money goes to
+// ---------------------------------------------------------------------------
+
+describe('recipientChoice agrees with splitTipTotal at every percentage', () => {
+  /**
+   * 🔴 THE WHOLE 0..100 RANGE, NOT THE THREE LABELLED POINTS. The chip row sets
+   * 100 / 50 / 0, so a test that only checks those three passes with either
+   * boundary shifted by one — and a shifted boundary is exactly the defect worth
+   * catching: the control would read "Split" while `splitTipTotal` sent one leg,
+   * or read "Creator" while it sent two. Sweeping the range makes the label and
+   * the transfer one claim rather than two that happen to agree at three points.
+   */
+  it('a choice of `split` means TWO legs, and `creator`/`curator` mean ONE', () => {
+    for (let pct = 0; pct <= 100; pct += 1) {
+      const legs = splitTipTotal(100, pct, BOTH);
+      const choice = recipientChoice(pct);
+      if (choice === 'split') {
+        expect(legs, `pct=${pct}`).toHaveLength(2);
+      } else {
+        expect(legs, `pct=${pct}`).toHaveLength(1);
+        expect(legs[0].kind, `pct=${pct}`).toBe(choice);
+        // The single leg carries the WHOLE total — never a share of it.
+        expect(legs[0].amount, `pct=${pct}`).toBe(100);
+      }
+    }
+  });
+
+  it('every named destination maps to a percentage that produces it', () => {
+    // A round-trip rather than three hardcoded numbers: if someone set
+    // `RECIPIENT_PERCENT.split` to 100 the chips would silently collapse to two
+    // destinations, and only this pairing notices.
+    const seen = new Set<TipRecipientChoice>();
+    for (const [choice, pct] of Object.entries(RECIPIENT_PERCENT) as Array<[TipRecipientChoice, number]>) {
+      expect(recipientChoice(pct), `${choice} -> ${pct}`).toBe(choice);
+      seen.add(choice);
+    }
+    // 🔴 The set is CLOSED and has THREE members. Criterion 2 is "all three
+    // targets", so a fourth (or a lost third) is a change to the promise.
+    expect([...seen].sort()).toEqual(['creator', 'curator', 'split']);
+  });
+
+  it('a collapsed side ignores the percentage entirely', () => {
+    // When one recipient is the viewer there is only one destination, whatever
+    // the stored percentage says — the chip row is not even rendered there.
+    for (const pct of [0, 1, 50, 99, 100]) {
+      expect(splitTipTotal(100, pct, CREATOR_ONLY)).toEqual([{ kind: 'creator', amount: 100 }]);
+      expect(splitTipTotal(100, pct, CURATOR_ONLY)).toEqual([{ kind: 'curator', amount: 100 }]);
+    }
   });
 });

@@ -127,7 +127,7 @@ export interface TipResult {
  * remaining allowance was derived from a `localStorage` running total, which is
  * inert in the opaque-origin sandbox (it throws, so the estimate was always the
  * full cap and tracked nothing) and in any case counted only tips made through
- * THIS app on THIS device. `TipModal` had already stopped rendering the number
+ * THIS app on THIS device. The picker had already stopped rendering the number
  * for that reason and recorded a host-provided store as owed upstream; this is
  * that store.
  */

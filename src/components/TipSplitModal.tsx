@@ -1,10 +1,24 @@
-// The %-split tip popover: one amount, one slider, one confirm — Buzz divided
-// between the creator of the media on screen and the collection's curator
-// (operator feedback round 3).
+// 🔴 THIS IS *THE* TIP PICKER — the app has exactly one, and this is it (T5).
 //
-// Built on the same `@civitai/blocks-react/ui` shell as `TipModal` (Modal +
-// preset Buttons + TextInput + FocusTrap) with a percentage `Slider` added, and
-// on the app's own `ApiClient.tip` underneath.
+// It began as the %-split popover beside two single-target buttons (operator
+// feedback round 3). Operator feedback round 4 collapsed the three affordances
+// into one, and this control is what survived, because it already spanned every
+// destination the other two offered: 100% is a creator-only tip, 0% is a
+// curator-only tip, anything between is a split. The recipient row below makes
+// those three legible instead of leaving them buried in a percentage; the
+// percentage model itself is unchanged.
+//
+// The file and its testids still say "split" for a boring reason: renaming them
+// would have rewritten every money assertion in the suite in the same commit
+// that changed the money path. The name is historical; the control is the whole
+// tip surface.
+//
+// One amount, one recipient choice, one confirm — Buzz to the creator of the
+// media on screen, to the collection's curator, or divided between them.
+//
+// Built on the `@civitai/blocks-react/ui` shell (Modal + preset Buttons +
+// TextInput + FocusTrap) with a percentage `Slider` added, and on the app's own
+// `ApiClient.tip` underneath.
 //
 // 🔴 NOT `TipButton` FROM THE UI PACK, AND THAT IS A DECISION, NOT AN OVERSIGHT.
 // The upstream control takes a FIXED `amount` prop and owns its own confirm — it
@@ -40,17 +54,19 @@ import { Button, Modal, Slider, TextInput } from '@civitai/blocks-react/ui';
 
 import {
   DEFAULT_CREATOR_PERCENT,
+  RECIPIENT_PERCENT,
   TIP_TOTAL_MAX,
   newIdempotencyKey,
+  recipientChoice,
   splitTipTotal,
   validateTipSplit,
   type TipLegKind,
 } from '../lib/tip-split.js';
 import { effectiveTipCap } from '../lib/tip-allowance.js';
 import { FocusTrap } from './FocusTrap.js';
-import type { TipTarget } from './TipModal.js';
+import type { TipTarget } from '../lib/tip-target.js';
 
-/** Preset totals, mirroring `TipModal`'s so the two pickers feel like one control. */
+/** Preset totals. Unchanged from when there were two pickers — deliberately. */
 export const SPLIT_PRESETS = [10, 50, 100, 500] as const;
 /** Preset splits, as the creator's share. */
 export const SPLIT_PERCENT_PRESETS = [100, 75, 50, 25, 0] as const;
@@ -277,8 +293,10 @@ export function TipSplitModal({
    */
   const nothingLanded = failed && sentLegs.length === 0;
 
+  const choice = recipientChoice(creatorPercent);
+
   const title = bothEligible
-    ? 'Split a tip'
+    ? 'Send a tip'
     : eligibility.creatorEligible
       ? `Tip ${creator?.username ? `@${creator.username}` : 'the creator'}`
       : `Tip ${curator?.username ? `@${curator.username}` : 'the curator'}`;
@@ -300,11 +318,11 @@ export function TipSplitModal({
       withCloseButton={!sending}
     >
       <FocusTrap>
-        <div data-testid="tip-split-modal" aria-label="Split a tip" style={bodyStyle}>
+        <div data-testid="tip-split-modal" aria-label="Send a tip" style={bodyStyle}>
           {/* ---- what the viewer is buying ---- */}
           <p style={leadText}>
             {bothEligible
-              ? 'One tip, divided between the creator of this media and the collection curator.'
+              ? 'Choose who it goes to, and how much.'
               : eligibility.creatorEligible
                 ? // Hazard 3, made visible: the curator leg is GONE, not disabled,
                   // and the copy says why rather than leaving a missing half.
@@ -320,6 +338,37 @@ export function TipSplitModal({
                 nothing. When the read has not resolved it is just the cap. */}
             Up to {ceiling.toLocaleString()} Buzz in total.
           </p>
+
+          {/* ---- WHO gets it: the three destinations of the one affordance ----
+              🔴 THIS ROW IS WHY ONE BUTTON CAN REPLACE THREE. The rail used to
+              carry `tip-creator`, `tip-curator` and `tip-split` as separate
+              presses; the destination is now a choice INSIDE the picker, made
+              before the amount and re-read in the preview below. It is rendered
+              only when both sides can receive — with one side collapsed there is
+              exactly one destination and the lead line above already names it,
+              so a chip row would be a control with no choice in it. */}
+          {bothEligible && (
+            <div style={presetRow} role="group" aria-label="Who receives this tip">
+              {(['creator', 'split', 'curator'] as const).map((r) => (
+                <Button
+                  key={r}
+                  size="sm"
+                  variant={choice === r ? 'filled' : 'light'}
+                  onClick={() => {
+                    setCreatorPercent(RECIPIENT_PERCENT[r]);
+                    setTouched(true);
+                  }}
+                  aria-pressed={choice === r}
+                  // Locked once a plan exists, for the same reason the amount is:
+                  // the legs the server has seen were minted for THIS destination.
+                  disabled={plan != null}
+                  data-testid={`tip-target-${r}`}
+                >
+                  {r === 'creator' ? 'Creator' : r === 'curator' ? 'Curator' : 'Split'}
+                </Button>
+              ))}
+            </div>
+          )}
 
           {/* ---- total ---- */}
           <div style={presetRow} role="group" aria-label="Preset amounts">
@@ -359,8 +408,9 @@ export function TipSplitModal({
             aria-label="Total tip amount in Buzz"
           />
 
-          {/* ---- the split itself (only when both sides can receive) ---- */}
-          {bothEligible && (
+          {/* ---- the split itself: the percentage model, unchanged, now behind
+              the "Split" destination rather than behind its own button ---- */}
+          {bothEligible && choice === 'split' && (
             <>
               <div style={presetRow} role="group" aria-label="Preset splits">
                 {SPLIT_PERCENT_PRESETS.map((p) => (
@@ -396,14 +446,22 @@ export function TipSplitModal({
             </>
           )}
 
-          {/* ---- the preview: exactly how much each side gets, before confirming ---- */}
+          {/* ---- the preview: exactly which transfers happen, before confirming ----
+              🔴 A ROW EXISTS IFF A LEG EXISTS. It used to key on ELIGIBILITY, so
+              choosing a single destination still rendered the other side at
+              "0 Buzz" — a recipient line for a transfer that is not going to be
+              made. Once the destination became a choice inside this control (T5)
+              that stopped being a cosmetic oddity: the viewer picks "Creator",
+              reads a panel that names the curator too, and the confirm sends one
+              leg. Keyed on the PLAN, the preview and the send are the same list
+              by construction, which is the property this panel exists to have. */}
           <div style={previewBox} data-testid="split-preview">
-            {eligibility.creatorEligible && (
+            {preview.some((l) => l.kind === 'creator') && (
               <span data-testid="split-preview-creator">
                 {creator?.username ? `@${creator.username}` : 'Creator'} (creator): {previewFor('creator').toLocaleString()} Buzz
               </span>
             )}
-            {eligibility.curatorEligible && (
+            {preview.some((l) => l.kind === 'curator') && (
               <span data-testid="split-preview-curator">
                 {curator?.username ? `@${curator.username}` : 'Curator'} (curator): {previewFor('curator').toLocaleString()} Buzz
               </span>

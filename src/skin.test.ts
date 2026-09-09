@@ -391,20 +391,30 @@ describe('which files carry colour literals — the rubric line, made checkable'
     // them, so it holds no literals at all. The transport controls did not stop
     // being white-on-scrim; they stopped being a SECOND PLACE that decides what
     // white-on-scrim means.
+    //
+    // 🔴 SHRANK BY ONE MORE IN 0.2.15, AND ONLY THE MERGED TREE COULD SEE IT.
+    // `components/Player.tsx` left the set, and NEITHER branch that emptied it
+    // could observe that alone: on `main` that file carried literals in three
+    // places, the transport work took two (the `Loader color="#fff"` and the
+    // elapsed-time `textShadow`) and the tip consolidation took the third (the
+    // `#fff` badge on the deleted overlay rail). Each branch was green on its
+    // own because the other's literals were still there; merged, the file holds
+    // none and this enumerated set is what said so. That is the guard working —
+    // a shrink is visible as a shrink instead of a number quietly going down.
     expect(carriers).toEqual([
       'components/BrandMark.tsx', // DOCUMENTED: an identity, invariant across themes
       'components/CollectionViewer.tsx',
       'components/Maturity.tsx',
-      'components/Player.tsx',
       'components/toast.tsx',
       'theme.ts', // DOCUMENTED: `stage` — reads against arbitrary media, not a page bg
     ]);
     // The count the rubric quotes. 7 → 6 in 0.2.15 when `components/styles.ts`
-    // stopped restating the `stage` values and started reading them.
-    expect(carriers.length).toBe(6);
+    // stopped restating the `stage` values and started reading them, then 6 → 5
+    // when `components/Player.tsx` lost its last literal.
+    expect(carriers.length).toBe(5);
     // The media-overlay subset, i.e. the set minus the two documented exceptions.
-    // 5 → 4 in 0.2.15 with `components/styles.ts`.
-    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(4);
+    // 5 → 4 in 0.2.15 with `components/styles.ts`, then 4 → 3 with `Player.tsx`.
+    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(3);
   });
 
   // 🔴 NOT a restatement of the list above — that one would pass with `.css`

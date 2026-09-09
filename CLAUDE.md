@@ -19,9 +19,37 @@ touching it — each one records the defect it exists to prevent):
   would each pass the server's per-transfer gate, so 5000 is enforced on the
   total here. Every leg that exists carries at least `TIP_MIN`; a leg of 0 is not
   a tip.
-- **Following is host-mediated and writes nothing on its own.**
-  `src/lib/follow.ts` — `declined`, `sign-in-required` and `timedOut` are three
-  distinct outcomes and a `timedOut` does **not** mean no write happened.
+- **There is exactly ONE tip affordance, and it is the same one on every
+  surface.** `src/components/CollectionViewer.tsx` renders `viewerActionRow()`
+  from one place — the normal surface, or inside the lightbox that covers it,
+  never both — so `chrome-tip` and `chrome-follow` each appear exactly once in
+  Slideshow, Ticker, Wall and the lightbox. The picker it opens
+  (`src/components/TipSplitModal.tsx`) is the whole tip surface: 100% is a
+  creator tip, 0% a curator tip, anything between a split. Four separate
+  presses (`tip-creator`, `tip-curator`, `tip-split`, `follow-toggle`) lived on
+  a `Player`-owned rail until T5, which made them structurally impossible to
+  offer on Ticker and Wall. Pinned by
+  `src/components/tip-affordance.test.tsx`.
+- **Recipients are frozen at PRESS time, and playback pauses while the picker
+  is open.** The snapshot is what makes the money correct (the media
+  auto-advances); the pause is defence in depth. `CollectionViewer` freezes the
+  pair in `tipOpenFor` and never re-reads `liveCreator`/`liveCurator` after the
+  press.
+- **The split plan and its idempotency keys are owned by `App`, and nothing
+  lower.** Dismissing the picker, switching view mode and opening the lightbox
+  all leave `CollectionViewer` mounted — but LEAVING the collection unmounts it,
+  and a plan that dies there mints fresh keys the server cannot replay, paying a
+  landed leg twice. That last case is the only one that discriminates, and it is
+  pinned in `src/e2e-tip-split.test.tsx`.
+- **Following is host-mediated and writes nothing on its own.** Upstream
+  `FollowButton` is the one control in all three views (T5): `declined` renders
+  NOTHING, `sign-in-required` routes to `REQUEST_SIGN_IN`, and every other
+  rejection renders its own sentence rather than the bare code. 🔴 The app's own
+  `src/lib/follow.ts` went with the consolidation, and with it the
+  ambiguous-outcome read-cache drop (`onFollowUncertain`): `FollowButton`
+  exposes no failure callback, so a timed-out follow can leave a stale
+  `followed` flag for the cache TTL. Closing that is an upstream prop, not a
+  second follow implementation here.
 - **Maturity gating.** `src/lib/maturity.ts` + `src/components/Maturity.tsx`:
   anything above PG-13 stays blurred until the viewer confirms 18+ once.
 - **Scopes.** `block.manifest.json` declares six; `src/manifest.test.ts` pins the

@@ -38,6 +38,26 @@ export interface ContinuousViewProps {
   c: Palette;
   /** Tap a tile → open it in the classic lightbox. */
   onTapItem: (item: MediaItem) => void;
+  /**
+   * Reports WHICH media this surface currently stands for, so the owner's tip
+   * picker has a creator to name here too (T5 criterion 2 — Ticker and Wall
+   * could not tip a creator at all before, because neither had a "current item").
+   *
+   * 🔴 IT IS THE FIRST IN-VIEW TILE IN `items` ORDER, AND IT FALLS BACK TO THE
+   * FIRST ITEM. ⚠️ `items` order is NOT visual order on the vertical wall —
+   * `assignColumns` round-robins into columns — so this names "an item the viewer
+   * can see", not "the top-left one". The picker's preview names the recipient
+   * before the confirm, which is where that ambiguity is resolved for the viewer. Both halves are load-bearing. In-view comes from the SAME
+   * `useInViewIds` observer that already decides which videos may autoplay, so
+   * the item named here is one the viewer can actually see. The fallback covers
+   * every environment with no working `IntersectionObserver` (jsdom, and any
+   * browser before the observer's first callback): without it `inViewIds` is
+   * empty, the creator side resolves to `null`, and the picker would silently
+   * offer a curator-only tip on a surface where a creator tip is exactly what
+   * the viewer asked for — a collapse that LOOKS like the self-tip collapse and
+   * is not one.
+   */
+  onCurrentItemChange?: (item: MediaItem | null) => void;
   /** Press/hold or the pause control toggles this. */
   onTogglePause: () => void;
   hasMore?: boolean;
@@ -59,6 +79,7 @@ export function ContinuousView(props: ContinuousViewProps) {
     autoplayCap,
     c,
     onTapItem,
+    onCurrentItemChange,
     onTogglePause,
     hasMore = false,
     loadingMore = false,
@@ -105,6 +126,23 @@ export function ContinuousView(props: ContinuousViewProps) {
     const ordered = items.filter((it) => it.type === 'video' && inViewIds.has(it.mediaId)).map((it) => it.mediaId);
     return selectPlayable(ordered, autoplayCap);
   }, [items, inViewIds, autoplayCap]);
+
+  // ---- which media this surface stands for, for the owner's tip picker ----
+  // See `onCurrentItemChange`'s doc for why the fallback is not optional.
+  const currentItem = useMemo(
+    () => items.find((it) => inViewIds.has(it.mediaId)) ?? items[0] ?? null,
+    [items, inViewIds],
+  );
+  // 🔴 `useLayoutEffect`, for the same reason as Player's twin of this block —
+  // read that one. A PASSIVE effect leaves the owner's `currentItem` stale for the
+  // window between this surface committing and the scheduler flushing, and the tip
+  // control is live in that window. On this surface the window opens on every
+  // mode switch INTO it, which is an ordinary two-click action.
+  const onCurrentItemChangeRef = useRef(onCurrentItemChange);
+  onCurrentItemChangeRef.current = onCurrentItemChange;
+  useLayoutEffect(() => {
+    onCurrentItemChangeRef.current?.(currentItem);
+  }, [currentItem]);
 
   // ---- lazy cover swap for images (data-src → src on intersect) ----
   const registerLazy = useLazyImages();

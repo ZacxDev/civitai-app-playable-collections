@@ -9,7 +9,7 @@ import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TipSplitModal, splitTipKey, type PlannedLeg } from './TipSplitModal.js';
-import type { TipTarget } from './TipModal.js';
+import type { TipTarget } from '../lib/tip-target.js';
 
 const CREATOR: TipTarget = {
   kind: 'creator',
@@ -131,7 +131,12 @@ describe('the split preview — what each side gets, before confirming', () => {
   it('a 0% slider position gives the curator the whole total, with no 0-Buzz creator leg', async () => {
     const { calls, onDone } = setup();
     fireEvent.change(screen.getByTestId('split-percent'), { target: { value: '0' } });
-    expect(screen.getByTestId('split-preview-creator')).toHaveTextContent('@bob (creator): 0 Buzz');
+    // 🔴 THE CREATOR ROW IS ABSENT, NOT "0 Buzz" (changed in T5, and this line is
+    // the assertion that changed). The preview keys on the PLAN now, so it lists
+    // exactly the transfers the confirm will make — the old "@bob (creator): 0
+    // Buzz" named a recipient who was never going to be paid, which stopped being
+    // cosmetic once picking one destination became a normal thing to do here.
+    expect(screen.queryByTestId('split-preview-creator')).toBeNull();
     expect(screen.getByTestId('split-preview-curator')).toHaveTextContent('@alice (curator): 50 Buzz');
     await userEvent.click(screen.getByTestId('split-confirm'));
     await waitFor(() => expect(onDone).toHaveBeenCalled());

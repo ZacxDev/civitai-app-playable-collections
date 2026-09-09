@@ -79,7 +79,7 @@ import { CollectionGrid, PopularRail, RecentRail } from './components/Collection
 import { useRecent, type RecentEntry } from './lib/recent.js';
 import { useAnalytics, type AnalyticsSink } from './lib/analytics.js';
 import { CollectionViewer } from './components/CollectionViewer.js';
-import type { TipTarget } from './components/TipModal.js';
+import type { TipTarget } from './lib/tip-target.js';
 import type { PlannedLeg } from './components/TipSplitModal.js';
 import { ToastHost, useToasts } from './components/toast.js';
 
@@ -274,8 +274,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   const canFetch = api != null;
 
   // The viewer's REAL remaining daily tip allowance — ONE read for the whole
-  // view, threaded down to all four tip affordances (`tip-creator`,
-  // `tip-curator`, `chrome-tip-curator`, and the split popover) and re-read
+  // view, threaded down to the ONE tip affordance (`chrome-tip`, which opens
+  // the one picker — there were four before T5) and re-read
   // after each successful transfer.
   //
   // 🔴 THIS REPLACED A localStorage RUNNING TOTAL THAT COULD NEVER WORK (0.2.10).
@@ -701,7 +701,8 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
   // REMOVAL IS THE POINT (0.2.10). Following runs through the host-mediated
   // `SET_COLLECTION_FOLLOW` bridge now, so the write, the optimism, the rollback
   // and the sign-in bounce all belong to the control that owns the request
-  // (`FollowButton` upstream, `useFollowToggle` for the player's glyph rail).
+  // (upstream `FollowButton`, which since T5 is the ONE follow control in all
+  // three views).
   // App keeps only what is genuinely app state: the flag, the two lists that
   // render a badge from it, and the analytics event.
   //
@@ -741,15 +742,21 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
     [analytics, applyFollowedToLists, cachedApi],
   );
 
-  /**
-   * A follow whose outcome is UNKNOWN (transport timeout). We cannot say whether
-   * it landed, so we drop the cached reads and let the next read tell the truth
-   * — the notice shown to the viewer tells them to look again, and the cache
-   * would otherwise answer that with the pre-follow flag.
-   */
-  const onFollowUncertain = useCallback(() => {
-    cachedApi?.invalidateReads();
-  }, [cachedApi]);
+  // 🔴 THE AMBIGUOUS-OUTCOME CACHE DROP THAT STOOD HERE IS GONE, AND ITS ABSENCE
+  // IS A KNOWN GAP RATHER THAN A CLEANUP (T5). `onFollowUncertain` dropped the
+  // cached reads when a follow TIMED OUT or came back as a code-less server error
+  // — either of which can be raised AFTER the row committed — so the app's own
+  // "check the collection in a moment" advice was not answered by the 5-minute
+  // cache with the PRE-follow flag. It was fed by `useFollowToggle`, the app's
+  // hand-rolled follow control, which T5 replaced with upstream `FollowButton` so
+  // that all three views share one control. `FollowButton` reports only SUCCESS
+  // (`onChange`); it exposes no failure or timeout callback, so this app can no
+  // longer learn that an outcome was ambiguous.
+  //
+  // Exposure: a stale `followed` flag for the cache TTL after an ambiguous write.
+  // No money, no writes, and the invalidation on a CONFIRMED follow below is
+  // untouched. The fix is an upstream prop on `FollowButton`, not a second follow
+  // implementation here.
 
   // ---- tip flow ----
   const doTip = useCallback(
@@ -857,8 +864,6 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
           buzzBalance={balance}
           followed={open.followed}
           onFollowChange={onFollowChange}
-          onNotice={(kind, message) => toasts.push(kind, message)}
-          onFollowUncertain={onFollowUncertain}
           onTip={doTip}
           onRequestSignIn={() => requestSignIn()}
           tipping={tipping}
@@ -913,7 +918,7 @@ export function App({ api: injectedApi, isPrivateGranted, retry = DEFAULT_RETRY,
                 player's chrome, and it competed with the app's own content.
                 🔴 THE BALANCE ITSELF IS DELIBERATELY KEPT — `useBuzzBalance()` +
                 `totalBuzz` still run and `balance` is still threaded down to
-                TipModal, which pre-validates a tip against it. Do not "finish the
+                the tip picker, which pre-validates a tip against it. Do not "finish the
                 cleanup" by deleting the hook. */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               {/* The mark, beside the name. Under `accent` the brand lived only in

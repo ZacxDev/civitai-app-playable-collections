@@ -71,14 +71,23 @@ class MockIntersectionObserver implements IntersectionObserver {
   takeRecords(): IntersectionObserverEntry[] {
     return [];
   }
-  /** Deliver an intersection event for every currently-observed element. */
-  fire(isIntersecting = true) {
+  /**
+   * Deliver an intersection event for every currently-observed element.
+   *
+   * 🔴 `decide` EXISTS SO A TEST CAN PUT SOME ELEMENTS IN VIEW AND NOT OTHERS.
+   * The all-or-nothing form cannot discriminate any code that asks "which of these
+   * is in view" — with everything intersecting, "the first in-view item" and "the
+   * first item" are the same element, so a consumer that ignored the observer
+   * entirely still passed. That is exactly how `ContinuousView`'s in-view branch
+   * went unexecuted while its FALLBACK arm carried every assertion.
+   */
+  fire(isIntersecting = true, decide?: (el: Element, index: number) => boolean) {
     const entries = [...this.elements].map(
-      (target) =>
+      (target, index) =>
         ({
           target,
-          isIntersecting,
-          intersectionRatio: isIntersecting ? 1 : 0,
+          isIntersecting: decide ? decide(target, index) : isIntersecting,
+          intersectionRatio: (decide ? decide(target, index) : isIntersecting) ? 1 : 0,
           time: 0,
           boundingClientRect: {} as DOMRectReadOnly,
           intersectionRect: {} as DOMRectReadOnly,
@@ -89,9 +98,25 @@ class MockIntersectionObserver implements IntersectionObserver {
   }
 }
 
-/** Fire intersection for every live observer (lazy covers + the grid sentinel). */
-export function flushIntersections(isIntersecting = true) {
-  for (const obs of [...MockIntersectionObserver.instances]) obs.fire(isIntersecting);
+/**
+ * Fire intersection for every live observer (lazy covers + the grid sentinel).
+ *
+ * Pass `decide` to control it PER ELEMENT — `(el, i) => i !== 0` is the shape that
+ * tells an in-view lookup apart from a plain `items[0]`, because with EVERYTHING
+ * in view the two name the same element and the assertion is vacuous.
+ *
+ * ⚠️ TWO THINGS THE INDEX IS NOT. It is per-OBSERVER, not global, and the same
+ * `decide` is handed to every live observer (in-view tiles, lazy covers, any
+ * sentinel) — so `(el, i) => i !== 0` excludes the first element of EACH of them,
+ * not one element overall. And when `decide` is given, the `isIntersecting`
+ * argument is ignored, so `flushIntersections(true, () => false)` means "fire, and
+ * nothing is in view" rather than anything about the `true`.
+ */
+export function flushIntersections(
+  isIntersecting = true,
+  decide?: (el: Element, index: number) => boolean,
+) {
+  for (const obs of [...MockIntersectionObserver.instances]) obs.fire(isIntersecting, decide);
 }
 
 // The SDK transport is a process-wide singleton — reset it before each test so
