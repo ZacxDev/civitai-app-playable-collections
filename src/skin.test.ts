@@ -376,24 +376,35 @@ describe('which files carry colour literals — the rubric line, made checkable'
     .map((f) => f.slice(SRC.length))
     .sort();
 
-  it('is exactly the documented set — two exceptions plus five media-overlay files', () => {
+  it('is exactly the documented set — two exceptions plus four media-overlay files', () => {
     // 🔴 SHRANK BY ONE IN 0.2.11, AND THE SHRINK IS THE POINT. CollectionGrid.tsx
     // left this set because its only colour literals lived in the tap-to-reveal
     // overlay that the maturity rework deleted (a white-on-rgba scrim). An
     // enumerated set is what makes a deletion visible as a deletion instead of a
     // number quietly going down in prose nobody checks.
+    //
+    // 🔴 SHRANK AGAIN IN 0.2.15, AND THIS GUARD IS HOW THE CHANGE WAS NOTICED.
+    // `components/styles.ts` left the set: `iconBtn` had been carrying its own
+    // copies of the `stage` values — and they had already DRIFTED, its border
+    // reading `rgba(255,255,255,0.25)` against `stage.chromeBtnBorder`'s
+    // `rgba(255,255,255,0.28)`. It now reads the tokens instead of restating
+    // them, so it holds no literals at all. The transport controls did not stop
+    // being white-on-scrim; they stopped being a SECOND PLACE that decides what
+    // white-on-scrim means.
     expect(carriers).toEqual([
       'components/BrandMark.tsx', // DOCUMENTED: an identity, invariant across themes
       'components/CollectionViewer.tsx',
       'components/Maturity.tsx',
       'components/Player.tsx',
-      'components/styles.ts',
       'components/toast.tsx',
       'theme.ts', // DOCUMENTED: `stage` — reads against arbitrary media, not a page bg
     ]);
-    // The count the rubric quotes, derived rather than typed.
-    expect(carriers.length).toBe(7);
-    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(5);
+    // The count the rubric quotes. 7 → 6 in 0.2.15 when `components/styles.ts`
+    // stopped restating the `stage` values and started reading them.
+    expect(carriers.length).toBe(6);
+    // The media-overlay subset, i.e. the set minus the two documented exceptions.
+    // 5 → 4 in 0.2.15 with `components/styles.ts`.
+    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(4);
   });
 
   // 🔴 NOT a restatement of the list above — that one would pass with `.css`

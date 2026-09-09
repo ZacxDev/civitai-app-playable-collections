@@ -13,7 +13,7 @@ import { Button, Loader, Slider } from '@civitai/blocks-react/ui';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import { SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT, type PlayerSettings } from '../settings.js';
-import type { Palette } from '../theme.js';
+import { stage, type Palette } from '../theme.js';
 import { usePlayer } from '../player/usePlayer.js';
 import { useFollowToggle } from '../lib/follow.js';
 import { filterToCeiling } from '../lib/maturity.js';
@@ -731,10 +731,10 @@ export function Player(props: PlayerProps) {
             />
             {loadingMore && (
               <span data-testid="player-loading-more" title="Loading more">
-                <Loader size="sm" color="#fff" />
+                <Loader size="sm" color={stage.chromeFg} />
               </span>
             )}
-            <span style={progressText(c)} data-testid="progress-label">
+            <span style={progressText()} data-testid="progress-label">
               {player.progressLabel}
             </span>
           </div>
@@ -938,8 +938,18 @@ function bottomBar(c: Palette): CSSProperties {
     zIndex: 5,
   };
 }
-function progressText(c: Palette): CSSProperties {
-  return { color: '#fff', fontSize: 12, minWidth: 54, textAlign: 'right', textShadow: '0 1px 2px ' + c.stageBg };
+function progressText(): CSSProperties {
+  // Token-sourced, like every other piece of over-media chrome. It previously
+  // built its own shadow from `c.stageBg`, which is the STAGE BACKGROUND rather
+  // than a shadow token — a near-miss that happened to look right because that
+  // background is black.
+  return {
+    color: stage.chromeFg,
+    fontSize: 12,
+    minWidth: 54,
+    textAlign: 'right',
+    textShadow: stage.textShadow,
+  };
 }
 
 function settingsPanel(c: Palette): CSSProperties {
