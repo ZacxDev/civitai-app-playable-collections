@@ -165,9 +165,18 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const isMobile = useIsMobile();
   const toasts = useToasts();
 
-  // Buzz balance via the host-mediated GET_BUZZ_BALANCE bridge (scope-free) —
+  // Buzz balance via the host-mediated GET_BUZZ_BALANCE bridge —
   // NOT a block HTTP endpoint (the old `/api/v1/blocks/buzz` was retired by
-  // civitai #3144). Returns per-pool { blue, green, yellow }; we sum to one
+  // civitai #3144).
+  //
+  // 🔴 "(scope-free)" USED TO BE WRITTEN HERE AND IS NO LONGER TRUE. The host's
+  // `blocks.getMyBuzzBalance` now throws FORBIDDEN unless the block token carries
+  // `buzz:read:self` (civitai/civitai#4745, live 2026-09-10). It is in our manifest,
+  // so we are fine — but the word "scope-free" is what made a wrong diagnosis
+  // plausible for a day, so it is corrected rather than deleted. See `scopes.ts`
+  // for what the missing balance line does and does not tell you.
+  //
+  // Returns per-pool { blue, green, yellow }; we sum to one
   // spendable figure for the tip modal's soft ceiling. 🔴 That is now its ONLY
   // consumer — the header pill that also showed it was removed 2026-09-05 — so
   // this hook looks unused at a glance and is not. See the note at the header.
