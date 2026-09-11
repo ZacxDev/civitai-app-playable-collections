@@ -378,13 +378,23 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // question so the operator can decide whether BOTH should persist.
   // `period-persistence` in App.test.tsx pins the two behaving identically.
   const [period, setPeriod] = useState<CollectionPeriod>(DEFAULT_PERIOD);
-  // 🔴 The window is sent ONLY on the popularity sort (criterion 6). The server
-  // accepts `sort=Newest&period=Week`, ignores it, and explains itself via
-  // `sourceReason: 'period-ignored-for-non-popularity-sort'` — so sending it
-  // there would buy a request param that changes nothing and a reason string to
-  // suppress. Keeping it `undefined` also means the loader deps below do not
-  // re-fetch when the (hidden) period changes under Newest.
-  const effectivePeriod = sort === 'popular' ? period : undefined;
+  // 🔴 THE WINDOW IS A PUBLIC-DISCOVERY CONCEPT, AND IT IS SENT IN EXACTLY ONE
+  // PLACE: the public feed, on the popularity sort. Both exclusions are measured,
+  // not assumed — the server reports a distinct reason for each:
+  //   - `sort=Newest&period=Week`  -> `period-ignored-for-non-popularity-sort`
+  //   - `mode=mine&period=Month`   -> `period-ignored-outside-public-discovery`
+  // In both cases the param changes nothing and the response comes back
+  // `source: 'postgres'`, which at the consumer is INDISTINGUISHABLE from
+  // ClickHouse being down. Sending it anyway would have hung a false "ranking
+  // isn't available right now" note under the Mine tab permanently.
+  //
+  // Keeping it `undefined` also keeps the loader deps below from re-fetching
+  // when the (hidden) period changes on a surface that does not use it.
+  const discoverPeriod = sort === 'popular' ? period : undefined;
+  // What the UI may CLAIM is in effect. The loaders above are per-MODE and both
+  // run regardless of which tab is showing; this is per-TAB, because the hint,
+  // the control and the end-of-list line all describe the tab in front of you.
+  const activePeriod = tab === 'discover' ? discoverPeriod : undefined;
   const [discover, setDiscover] = useState<ListState>({ ...EMPTY_LIST, loading: true });
   const [mine, setMine] = useState<ListState>(EMPTY_LIST);
   const [popular, setPopular] = useState<ResolvedPopular[]>([]);
@@ -468,7 +478,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     setDiscover((s) => ({ ...s, loading: true, error: null }));
     try {
       const page = await withBoundedRetry(
-        () => api.listCollections({ mode: 'public', query: debouncedSearch, sort, period: effectivePeriod, limit: PAGE_LIMIT }),
+        () => api.listCollections({ mode: 'public', query: debouncedSearch, sort, period: discoverPeriod, limit: PAGE_LIMIT }),
         retry,
       );
       setDiscover({
@@ -477,12 +487,12 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         error: null,
         nextCursor: page.nextCursor,
         loadingMore: false,
-        notice: windowFallbackNotice(effectivePeriod, page),
+        notice: windowFallbackNotice(discoverPeriod, page),
       });
     } catch (err) {
       setDiscover({ ...EMPTY_LIST, error: errMessage(err) });
     }
-  }, [api, debouncedSearch, sort, effectivePeriod, retry]);
+  }, [api, debouncedSearch, sort, discoverPeriod, retry]);
 
   const loadMine = useCallback(async () => {
     if (!api) return;
@@ -493,7 +503,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     setMine((s) => ({ ...s, loading: true, error: null }));
     try {
       const page = await withBoundedRetry(
-        () => api.listCollections({ mode: 'mine', query: debouncedSearch, sort, period: effectivePeriod, limit: PAGE_LIMIT }),
+        () => api.listCollections({ mode: 'mine', query: debouncedSearch, sort, limit: PAGE_LIMIT }),
         retry,
       );
       setMine({
@@ -502,12 +512,13 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         error: null,
         nextCursor: page.nextCursor,
         loadingMore: false,
-        notice: windowFallbackNotice(effectivePeriod, page),
+        // The mine feed never asks for a window, so there is never one to miss.
+        notice: null,
       });
     } catch (err) {
       setMine({ ...EMPTY_LIST, error: errMessage(err) });
     }
-  }, [api, viewer, debouncedSearch, sort, effectivePeriod, retry]);
+  }, [api, viewer, debouncedSearch, sort, retry]);
 
   // Infinite-scroll page loaders (feedback #1): fetch the next page via the
   // stored `nextCursor` and append, deduping the inclusive-cursor re-emit.
@@ -518,7 +529,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     const cursor = s.nextCursor;
     setDiscover((p) => ({ ...p, loadingMore: true }));
     try {
-      const page = await api.listCollections({ mode: 'public', query: debouncedSearch, sort, period: effectivePeriod, cursor, limit: PAGE_LIMIT });
+      const page = await api.listCollections({ mode: 'public', query: debouncedSearch, sort, period: discoverPeriod, cursor, limit: PAGE_LIMIT });
       setDiscover((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
@@ -526,12 +537,12 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         loadingMore: false,
         // The newest page's provenance wins: a mid-scroll fallback is still a
         // fallback, and a page that recovered should clear a stale notice.
-        notice: windowFallbackNotice(effectivePeriod, page),
+        notice: windowFallbackNotice(discoverPeriod, page),
       }));
     } catch {
       setDiscover((p) => ({ ...p, loadingMore: false }));
     }
-  }, [api, debouncedSearch, sort, effectivePeriod]);
+  }, [api, debouncedSearch, sort, discoverPeriod]);
 
   const loadMoreMine = useCallback(async () => {
     if (!api || !viewer) return;
@@ -540,18 +551,18 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     const cursor = s.nextCursor;
     setMine((p) => ({ ...p, loadingMore: true }));
     try {
-      const page = await api.listCollections({ mode: 'mine', query: debouncedSearch, sort, period: effectivePeriod, cursor, limit: PAGE_LIMIT });
+      const page = await api.listCollections({ mode: 'mine', query: debouncedSearch, sort, cursor, limit: PAGE_LIMIT });
       setMine((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
         nextCursor: page.nextCursor,
         loadingMore: false,
-        notice: windowFallbackNotice(effectivePeriod, page),
+        notice: null,
       }));
     } catch {
       setMine((p) => ({ ...p, loadingMore: false }));
     }
-  }, [api, viewer, debouncedSearch, sort, effectivePeriod]);
+  }, [api, viewer, debouncedSearch, sort]);
 
   const loadPopular = useCallback(async () => {
     try {
@@ -1140,7 +1151,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
                   because they are `role="tab"` in a tablist, where the ARIA
                   pattern requires it; a group of toggle buttons must not steal
                   Tab from its own members. */}
-              {sort === 'popular' && (
+              {activePeriod != null && (
                 <Group gap={8} align="center">
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--civitai-color-text-dimmed)' }}>Popular</span>
                   <Group gap={4} role="group" aria-label="Popularity window" data-testid="period-group">
@@ -1167,7 +1178,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
                   two mechanisms; that duplicate is gone. A sentence with a full stop
                   cannot be mistaken for a chip. */}
               <span style={{ fontSize: 12, color: 'var(--civitai-color-text-dimmed)' }} data-testid="sort-hint">
-                {sortHint(sort, period)}
+                {sortHint(sort, activePeriod)}
               </span>
               {/* 🔴 WHY THIS IS A NOTE AND NOT A REWRITTEN HINT. When the server
                   cannot rank the asked-for window it silently serves the
@@ -1245,7 +1256,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
                 // bounds to ~18 pages, and the surface where "the grid just
                 // stops" reads as a broken loader. `mine` is a short list whose
                 // end has always been obvious, so it keeps today's behaviour.
-                endLabel={tab === 'discover' ? endOfResultsLabel(sort, period) : undefined}
+                endLabel={tab === 'discover' ? endOfResultsLabel(sort, activePeriod) : undefined}
               />
             </>
           )}

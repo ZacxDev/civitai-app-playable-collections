@@ -1132,6 +1132,45 @@ describe('the popularity window', () => {
     expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this year.');
   });
 
+  it('🔴 never sends a window on the MINE feed, and never claims one there', async () => {
+    // Measured live: `mode=mine&period=Month` comes back
+    // `source: 'postgres', sourceReason: 'period-ignored-outside-public-discovery'`.
+    // The viewer's own collections are NOT hidden — same rows, same order — but a
+    // ranked window answered by Postgres is indistinguishable at the consumer
+    // from ClickHouse being down. Sending it anyway would have hung a permanent,
+    // false "ranking isn't available right now" note under this tab. The task's
+    // non-goals say this tab has no popularity window, so the fix and the scope
+    // agree: the period is a PUBLIC-DISCOVERY concept.
+    // viewerUserId 11 = the seeds' curator, so `mode=mine` actually returns rows;
+    // an empty Mine grid would make every assertion below vacuous.
+    const base = createFakeApi({ viewerUserId: 11, collections: windowSeeds() });
+    const seen: Array<{ mode: string; period?: string }> = [];
+    const api: ApiClient = {
+      ...base,
+      async listCollections(params) {
+        seen.push({ mode: params.mode, period: params.period });
+        return base.listCollections(params);
+      },
+    };
+    renderApp({ api, isPrivateGranted: () => true });
+    await screen.findByTestId('collection-grid');
+    await userEvent.click(screen.getByTestId('tab-mine'));
+    // Positive control: the Mine grid really has rows, so the assertions below
+    // are about the window and not about an empty tab.
+    await waitFor(async () => expect((await gridOrder()).length).toBe(4));
+
+    await waitFor(() => expect(seen.some((s) => s.mode === 'mine')).toBe(true));
+    expect(seen.filter((s) => s.mode === 'mine').every((s) => s.period === undefined)).toBe(true);
+    // …while the PUBLIC feed still got one.
+    expect(seen.some((s) => s.mode === 'public' && s.period === 'month')).toBe(true);
+
+    // No control, no window named, no end-of-list marker — this tab is untouched.
+    expect(screen.queryByTestId('period-group')).toBeNull();
+    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed.');
+    expect(screen.queryByTestId('period-fallback')).toBeNull();
+    expect(screen.queryByTestId('grid-end')).toBeNull();
+  });
+
   it('is keyboard operable and labelled, matching the sort control (criterion 5)', async () => {
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');

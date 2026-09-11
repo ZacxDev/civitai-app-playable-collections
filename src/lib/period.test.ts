@@ -99,6 +99,14 @@ describe('sortHint', () => {
     }
   });
 
+  it('🔴 omits the period when NO window is in effect, leaving today\'s string', () => {
+    // The Mine tab. Measured live: `mode=mine&period=Month` comes back
+    // `period-ignored-outside-public-discovery`, so the window is not applied
+    // there and naming it would be a claim the viewer cannot check. Passing
+    // `undefined` must reproduce today's string byte-for-byte.
+    expect(sortHint('popular', undefined)).toBe('Sorted by most followed.');
+  });
+
   it('leaves the newest hint exactly as it was, with no period (criterion 6)', () => {
     // The app sends no period on this sort, so naming one would assert a filter
     // that is not being applied.
@@ -122,6 +130,8 @@ describe('endOfResultsLabel', () => {
     // All-time already pages the whole corpus, and newest carries no window.
     expect(endOfResultsLabel('popular', 'allTime')).toBe("That's the end of the results.");
     expect(endOfResultsLabel('newest', 'month')).toBe("That's the end of the results.");
+    // …and where no window is in effect at all (the Mine tab).
+    expect(endOfResultsLabel('popular', undefined)).toBe("That's the end of the results.");
   });
 });
 

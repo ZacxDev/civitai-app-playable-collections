@@ -19,7 +19,18 @@
 //   sort=Most Followers period=AllTime -> source=postgres   period=AllTime reason=all-time-served-from-postgres
 //   sort=Most Followers period=<absent>-> no source/period/sourceReason keys at all
 //   sort=Newest        period=Week     -> source=postgres   period=Week    reason=period-ignored-for-non-popularity-sort
+//   mode=mine          period=Month    -> source=postgres   period=Month   reason=period-ignored-outside-public-discovery
+//   mode=mine          period=AllTime  -> source=postgres   period=AllTime reason=all-time-served-from-postgres
 //   period=month (lowercase)           -> HTTP 400, Zod fieldErrors.period
+//
+// 🔴 THAT `mode=mine` ROW IS WHY THE APP SENDS NO PERIOD THERE. The window is
+// ignored outside public discovery — the viewer's own collections come back
+// complete and in the same order, so nothing is HIDDEN — but the response is
+// `source: 'postgres'` for a ranked window, which is indistinguishable at the
+// consumer from ClickHouse being down. Sending it would have put a false
+// "ranking isn't available right now" note under the Mine tab permanently. The
+// tab having no popularity window is also a stated non-goal of the task, so the
+// fix and the scope agree: the period is a PUBLIC-DISCOVERY concept.
 //
 // Two things in that table drive the code below and are easy to get wrong:
 //   1. `sourceReason` is present on a perfectly HEALTHY AllTime request. Its mere
@@ -139,9 +150,16 @@ export const NEWEST_SORT_SENTENCE = 'Sorted newest first.';
  * On the newest sort it is exactly today's string and carries no period, because
  * the app sends no period there — naming one would assert a filter that is not
  * being applied.
+ *
+ * 🔴 `period` IS NULLABLE, AND THAT IS THE WHOLE GUARD. Pass `undefined` wherever
+ * no window is in effect — the newest sort, and the Mine tab, where the server
+ * ignores the window outside public discovery. Naming a window the server is not
+ * applying is a claim the viewer has no way to check. When it is `undefined` the
+ * hint is byte-for-byte today's string, so those surfaces do not move at all.
  */
-export function sortHint(sort: 'newest' | 'popular', period: CollectionPeriod): string {
+export function sortHint(sort: 'newest' | 'popular', period: CollectionPeriod | undefined): string {
   if (sort !== 'popular') return NEWEST_SORT_SENTENCE;
+  if (period == null) return POPULAR_SORT_SENTENCE;
   return `${POPULAR_SORT_SENTENCE} ${PERIOD_SENTENCE[period]}`;
 }
 
@@ -155,8 +173,8 @@ export function sortHint(sort: 'newest' | 'popular', period: CollectionPeriod): 
  * reads as a broken loader. On a ranked window the line also names the way out
  * (widen the window), which is the actual remedy for "there is nothing more".
  */
-export function endOfResultsLabel(sort: 'newest' | 'popular', period: CollectionPeriod): string {
-  if (sort === 'popular' && isRankedWindow(period)) {
+export function endOfResultsLabel(sort: 'newest' | 'popular', period: CollectionPeriod | undefined): string {
+  if (sort === 'popular' && period != null && isRankedWindow(period)) {
     return `That's the end of ${PERIOD_LABEL[period].toLowerCase()}'s popular collections — pick a longer window for more.`;
   }
   return "That's the end of the results.";
