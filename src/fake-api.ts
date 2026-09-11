@@ -186,6 +186,11 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
    *                               (also what a host predating the param returns)
    *   - `sort` !== 'popular'   -> accepted, IGNORED, `postgres` +
    *                               `period-ignored-for-non-popularity-sort`
+   *   - `mode` === 'mine'      -> accepted, IGNORED, `postgres` +
+   *                               `period-ignored-outside-public-discovery`
+   *                               (unreachable from App, which sends no period
+   *                               there — modelled so the double cannot be MORE
+   *                               permissive than production if that changes)
    *   - `allTime`              -> `postgres` + `all-time-served-from-postgres`,
    *                               unwindowed order — a HEALTHY response
    *   - `day|week|month|year`  -> `clickhouse`, ranked by `popularity[period]`
@@ -202,6 +207,12 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
     const wire = PERIOD_WIRE[period];
     if (params.sort !== 'popular') {
       return { items: list, source: 'postgres', period: wire, sourceReason: 'period-ignored-for-non-popularity-sort' };
+    }
+    // Checked BEFORE the allTime branch only in the sense that both are
+    // "ignored"; live, `mode=mine&period=AllTime` reports the all-time reason,
+    // so the ranked-window test has to come first to reproduce that.
+    if (params.mode === 'mine' && isRankedWindow(period)) {
+      return { items: list, source: 'postgres', period: wire, sourceReason: 'period-ignored-outside-public-discovery' };
     }
     if (!isRankedWindow(period)) {
       return { items: list, source: 'postgres', period: wire, sourceReason: 'all-time-served-from-postgres' };
