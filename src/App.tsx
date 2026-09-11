@@ -376,7 +376,9 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // Month. Giving the period a persistence mechanism the sort does not have is
   // exactly the "second mechanism" the criterion forbids; the PR flags the
   // question so the operator can decide whether BOTH should persist.
-  // `period-persistence` in App.test.tsx pins the two behaving identically.
+  // App.test.tsx's "persists the window exactly as the sort persists it — i.e.
+  // not at all (criterion 3)" pins the two behaving identically, so this goes
+  // red if the period ever grows a mechanism the sort lacks.
   const [period, setPeriod] = useState<CollectionPeriod>(DEFAULT_PERIOD);
   // 🔴 THE WINDOW IS A PUBLIC-DISCOVERY CONCEPT, AND IT IS SENT IN EXACTLY ONE
   // PLACE: the public feed, on the popularity sort. Both exclusions are measured,
