@@ -339,3 +339,48 @@ describe('CoverImage — a cover is painted only if the ceiling permits its rati
     expect(document.querySelectorAll('img')).toHaveLength(1);
   });
 });
+
+describe('the end of the list is a place, not an absence', () => {
+  // 🔴 The grid used to render NOTHING once `hasMore` went false, and that was
+  // survivable only because the end was unreachable: the unwindowed popular feed
+  // pages the whole corpus. The Month default is ClickHouse-ranked and bounded —
+  // ~446 Image collections, ~18 pages at limit 24 — so the end is somewhere real
+  // viewers now arrive, and a grid that simply stops mid-scroll is
+  // indistinguishable from a broken loader.
+
+  const gridWith = (props: Partial<Parameters<typeof CollectionGrid>[0]>) =>
+    render(
+      <CollectionGrid
+        collections={[summary({ id: 1 }), summary({ id: 2 })]}
+        loading={false}
+        error={null}
+        emptyLabel="empty"
+        onOpen={vi.fn()}
+        c={c}
+        isMobile={false}
+        {...props}
+      />,
+    );
+
+  it('shows the end label once there are no more pages', () => {
+    gridWith({ hasMore: false, loadingMore: false, endLabel: 'No more for this window.' });
+    expect(screen.getByTestId('grid-end')).toHaveTextContent('No more for this window.');
+  });
+
+  it('does NOT claim the end while another page is still coming', () => {
+    gridWith({ hasMore: true, loadingMore: false, endLabel: 'No more for this window.' });
+    expect(screen.queryByTestId('grid-end')).toBeNull();
+  });
+
+  it('does NOT claim the end while a page is in flight', () => {
+    gridWith({ hasMore: false, loadingMore: true, endLabel: 'No more for this window.' });
+    expect(screen.queryByTestId('grid-end')).toBeNull();
+  });
+
+  it('stays silent for a caller that asks for no marker', () => {
+    // The `mine` tab: a short, unpaginated list whose end has always been
+    // obvious. Leaving `endLabel` undefined keeps that surface as it was.
+    gridWith({ hasMore: false, loadingMore: false });
+    expect(screen.queryByTestId('grid-end')).toBeNull();
+  });
+});

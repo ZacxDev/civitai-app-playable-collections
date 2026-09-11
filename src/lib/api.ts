@@ -25,6 +25,7 @@ import type {
   TipInput,
   TipResult,
 } from '../types.js';
+import { PERIOD_WIRE, type CollectionPeriod } from './period.js';
 
 /** Coarse, UI-actionable failure kinds mapped from HTTP status + body. */
 export type ApiErrorCode =
@@ -54,7 +55,7 @@ export class ApiError extends Error {
 
 /** The interface both the real HTTP client and the test/dev fake implement. */
 export interface ApiClient {
-  /** GET /blocks/collections?mode&query&sort&cursor&limit — scope collections:read:self */
+  /** GET /blocks/collections?mode&query&sort&period&cursor&limit — scope collections:read:self */
   listCollections(params: ListCollectionsParams): Promise<Page<CollectionSummary>>;
   /** GET /blocks/collections/[id]?cursor&limit — scope collections:read:self */
   getCollection(id: number, opts?: { cursor?: string; limit?: number }): Promise<CollectionPage>;
@@ -135,6 +136,22 @@ export const SORT_PARAM: Record<'newest' | 'popular', string> = {
   newest: 'Newest',
   popular: 'Most Followers',
 };
+
+/**
+ * The same translation for the popularity WINDOW: the app/UI/fake speak
+ * `'day'|'week'|'month'|'year'|'allTime'`, the wire speaks the server's
+ * `MetricTimeframe` enum.
+ *
+ * 🔴 The server's Zod gate is case-sensitive and rejects anything else with a
+ * 400 — measured live: `period=month` returns
+ * `Invalid option: expected one of "Day"|"Week"|"Month"|"Year"|"AllTime"`. So
+ * this map is the only place a period spelling may be written.
+ *
+ * Single-sourced from lib/period.ts so the wire spellings cannot drift between
+ * the sender and the `windowFallbackNotice` check that compares the server's
+ * echoed period back against them.
+ */
+export const PERIOD_PARAM: Record<CollectionPeriod, string> = PERIOD_WIRE;
 
 export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
   const baseUrl = opts.baseUrl ?? '';
@@ -264,6 +281,9 @@ export function createHttpApiClient(opts: HttpApiClientOptions): ApiClient {
           query: params.query,
           // Translate the friendly UI sort to the server's accepted enum value.
           sort: params.sort ? SORT_PARAM[params.sort] : undefined,
+          // Same translation for the popularity window. Omitted when the caller
+          // passes none, which is the shape a pre-`period` host also sees.
+          period: params.period ? PERIOD_PARAM[params.period] : undefined,
           cursor: params.cursor,
           limit: params.limit,
         },

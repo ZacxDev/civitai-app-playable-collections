@@ -88,10 +88,19 @@ export function createCachedApiClient(inner: ApiClient, opts: CacheOptions = {})
 
   return {
     listCollections(params: ListCollectionsParams) {
+      // 🔴 EVERY PARAM THAT CHANGES THE RESPONSE MUST BE IN THIS KEY, and
+      // `period` is the one that made that rule concrete. It changes the ORDER
+      // of the rows and nothing else — same mode, same query, same sort, same
+      // limit — so a key that omitted it would serve the PREVIOUS window's rows
+      // from cache and the period control would look like it does nothing.
+      // Worse, it would look that way INTERMITTENTLY: the entry expires after
+      // `ttlMs`, so the very same click works fine five minutes later. Pinned by
+      // the "switching period is not a cache hit" case in cache.test.ts.
       const key = JSON.stringify({
         mode: params.mode,
         query: params.query ?? '',
         sort: params.sort ?? '',
+        period: params.period ?? '',
         cursor: params.cursor ?? '',
         limit: params.limit ?? '',
       });

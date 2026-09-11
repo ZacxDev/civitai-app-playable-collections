@@ -3,6 +3,10 @@
 // one place so a Wave 1A field-name adjustment is a single-file edit that the
 // api-client + UI both pick up.
 
+import type { CollectionPeriod } from './lib/period.js';
+
+export type { CollectionPeriod };
+
 /** A minimal user reference (creator of a media item, or a collection curator). */
 export interface UserRef {
   userId: number;
@@ -67,6 +71,27 @@ export interface MediaItem {
 export interface Page<T> {
   items: T[];
   nextCursor?: string;
+  /**
+   * Which store answered this page — `'clickhouse'` for a ranked popularity
+   * window, `'postgres'` otherwise. ABSENT when the request carried no `period`,
+   * and absent on a host predating the param, which is why the fallback check in
+   * lib/period.ts requires it to be present before warning about anything.
+   *
+   * Typed as a loose `string` on purpose: the server may add a store, and a
+   * narrow union would turn a new value into a compile error in the consumer
+   * rather than into the "unknown provenance" case the code already handles.
+   */
+  source?: string;
+  /** The wire period the server actually applied (`'Day'`…`'AllTime'`). */
+  period?: string;
+  /**
+   * Why the request did not get what it asked for.
+   *
+   * 🔴 NOT a degradation flag. It is present on a perfectly healthy
+   * `period=AllTime` request (`all-time-served-from-postgres`). Read it through
+   * `windowFallbackNotice`, never as a boolean.
+   */
+  sourceReason?: string;
 }
 
 /** The collection-detail endpoint response (header + first page of items). */
@@ -88,6 +113,16 @@ export interface ListCollectionsParams {
   mode: 'public' | 'mine';
   query?: string;
   sort?: CollectionSort;
+  /**
+   * Popularity window. Translated to the server's `MetricTimeframe` spelling on
+   * the wire by `PERIOD_PARAM` (lib/api.ts), exactly as `sort` is.
+   *
+   * 🔴 Honoured ONLY for the popularity sort — the server accepts and IGNORES it
+   * on `sort=newest`, reporting `period-ignored-for-non-popularity-sort`. App
+   * therefore omits it entirely on the newest sort rather than sending something
+   * it knows will be discarded.
+   */
+  period?: CollectionPeriod;
   cursor?: string;
   limit?: number;
 }

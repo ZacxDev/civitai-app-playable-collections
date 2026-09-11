@@ -69,6 +69,53 @@ describe('listCollections', () => {
     expect(new URL(calls[1].url, 'http://h').searchParams.get('sort')).toBe('Most Followers');
   });
 
+  it('translates the friendly UI period to the server MetricTimeframe enum on the wire', async () => {
+    const { api, calls } = makeClient([
+      jsonResponse(200, { items: [] }),
+      jsonResponse(200, { items: [] }),
+      jsonResponse(200, { items: [] }),
+      jsonResponse(200, { items: [] }),
+      jsonResponse(200, { items: [] }),
+    ]);
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'day' });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'week' });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'month' });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'year' });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'allTime' });
+    const periodOf = (i: number) => new URL(calls[i].url, 'http://h').searchParams.get('period');
+    // 🔴 Capitalised, exactly. Measured live: `period=month` is rejected 400 with
+    // `Invalid option: expected one of "Day"|"Week"|"Month"|"Year"|"AllTime"`.
+    expect([0, 1, 2, 3, 4].map(periodOf)).toEqual(['Day', 'Week', 'Month', 'Year', 'AllTime']);
+  });
+
+  it('omits `period` entirely when the caller passes none', async () => {
+    // The shape a pre-`period` host also sees, and the shape this app sends on
+    // the newest sort — the server would accept and discard it there.
+    const { api, calls } = makeClient([jsonResponse(200, { items: [] })]);
+    await api.listCollections({ mode: 'public', sort: 'newest' });
+    const url = new URL(calls[0].url, 'http://h');
+    expect(url.searchParams.has('period')).toBe(false);
+    expect(url.searchParams.get('sort')).toBe('Newest');
+  });
+
+  it('passes the list provenance fields through to the caller', async () => {
+    // The consumer branches on these; a client that dropped them would make the
+    // fallback note permanently silent.
+    const { api } = makeClient([
+      jsonResponse(200, {
+        items: [],
+        source: 'postgres',
+        period: 'Month',
+        sourceReason: 'clickhouse-unavailable',
+      }),
+    ]);
+    await expect(api.listCollections({ mode: 'public', sort: 'popular', period: 'month' })).resolves.toMatchObject({
+      source: 'postgres',
+      period: 'Month',
+      sourceReason: 'clickhouse-unavailable',
+    });
+  });
+
   it('maps 403 -> forbidden', async () => {
     const { api } = makeClient([jsonResponse(403, { error: 'missing scope' })]);
     await expect(api.listCollections({ mode: 'public' })).rejects.toMatchObject({
