@@ -935,3 +935,337 @@ describe('App — bounded retry / no infinite loop', () => {
     await screen.findByTestId('collection-grid');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Popularity window (clawgate 542)
+// ---------------------------------------------------------------------------
+
+/**
+ * Four public collections with a DIFFERENT ranking in every window.
+ *
+ * 🔴 The orders below are pairwise distinct on purpose. A fixture whose windows
+ * produce the same list makes criterion 2 unprovable — the assertion would pass
+ * for the right period and the wrong one alike, and the test would be green
+ * while the app ignored the control entirely.
+ *
+ *   day     -> D C B A      week    -> B C D A      month -> B D A C
+ *   year    -> C A D B      allTime -> A B C D  (unranked, insertion order,
+ *                                       mirroring the server's Postgres path)
+ */
+const windowSeeds = () => {
+  const curator = { userId: 11, username: 'alice' };
+  const seed = (
+    id: number,
+    name: string,
+    popularity: { day: number; week: number; month: number; year: number },
+  ) => ({
+    summary: {
+      id,
+      name,
+      description: null,
+      coverImageUrl: null,
+      itemCount: 1,
+      curator,
+      isPublic: true,
+      followed: false,
+    },
+    items: [
+      {
+        mediaId: id * 10,
+        type: 'image' as const,
+        url: `https://example.invalid/i/${id}.jpg`,
+        width: 10,
+        height: 10,
+        creator: curator,
+        nsfwLevel: 1,
+      },
+    ],
+    popularity,
+  });
+  return [
+    seed(301, 'Alpha', { day: 1, week: 1, month: 2, year: 3 }),
+    seed(302, 'Bravo', { day: 2, week: 4, month: 4, year: 1 }),
+    seed(303, 'Charlie', { day: 3, week: 3, month: 1, year: 4 }),
+    seed(304, 'Delta', { day: 4, week: 2, month: 3, year: 2 }),
+  ];
+};
+
+/** The card names currently rendered in the grid, in order. */
+async function gridOrder(): Promise<string[]> {
+  const grid = await screen.findByTestId('collection-grid');
+  return within(grid)
+    .getAllByTestId('collection-card')
+    .map((el) => el.textContent ?? '')
+    .map((t) => ['Alpha', 'Bravo', 'Charlie', 'Delta'].find((n) => t.includes(n)) ?? '?');
+}
+
+describe('the popularity window', () => {
+  it('offers all five periods and defaults to This month (criterion 1)', async () => {
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+
+    const chips = ['period-day', 'period-week', 'period-month', 'period-year', 'period-alltime'];
+    for (const id of chips) expect(screen.getByTestId(id)).toBeInTheDocument();
+    expect(screen.getByTestId('period-day')).toHaveTextContent('Today');
+    expect(screen.getByTestId('period-week')).toHaveTextContent('This week');
+    expect(screen.getByTestId('period-month')).toHaveTextContent('This month');
+    expect(screen.getByTestId('period-year')).toHaveTextContent('This year');
+    expect(screen.getByTestId('period-alltime')).toHaveTextContent('All time');
+
+    // Exactly one is pressed, and it is Month.
+    expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true');
+    for (const id of chips.filter((i) => i !== 'period-month')) {
+      expect(screen.getByTestId(id)).toHaveAttribute('aria-pressed', 'false');
+    }
+  });
+
+  it('🔴 changing the window changes the ORDER of the returned rows (criterion 2)', async () => {
+    // Not "the request carried the param" — the thing a viewer sees is the
+    // order, so that is what this asserts. The five expected orders are pairwise
+    // distinct (see `windowSeeds`), so each assertion can only pass for its own
+    // period.
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+
+    // Default window: Month.
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Bravo', 'Delta', 'Alpha', 'Charlie']));
+
+    await userEvent.click(screen.getByTestId('period-day'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Delta', 'Charlie', 'Bravo', 'Alpha']));
+
+    await userEvent.click(screen.getByTestId('period-week'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Bravo', 'Charlie', 'Delta', 'Alpha']));
+
+    await userEvent.click(screen.getByTestId('period-year'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Charlie', 'Alpha', 'Delta', 'Bravo']));
+
+    // AllTime takes the server's original unranked ordering.
+    await userEvent.click(screen.getByTestId('period-alltime'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Alpha', 'Bravo', 'Charlie', 'Delta']));
+
+    // …and back, which is the case a `period`-less cache key would break: the
+    // Month rows would be served from the AllTime entry and the order would not
+    // move at all.
+    await userEvent.click(screen.getByTestId('period-month'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Bravo', 'Delta', 'Alpha', 'Charlie']));
+  });
+
+  it('sends the selected window to the API as `period`', async () => {
+    const base = createFakeApi({ collections: windowSeeds() });
+    const seen: Array<{ sort?: string; period?: string; cursor?: string }> = [];
+    const api: ApiClient = {
+      ...base,
+      async listCollections(params) {
+        if (params.mode === 'public') seen.push({ sort: params.sort, period: params.period, cursor: params.cursor });
+        return base.listCollections(params);
+      },
+    };
+    renderApp({ api });
+    await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(seen.some((s) => s.sort === 'popular' && s.period === 'month')).toBe(true));
+
+    seen.length = 0;
+    await userEvent.click(screen.getByTestId('period-week'));
+    await waitFor(() => expect(seen.some((s) => s.period === 'week')).toBe(true));
+    // A fresh page-1 fetch, not a continuation of the previous window's pages.
+    expect(seen.every((s) => s.cursor === undefined)).toBe(true);
+  });
+
+  it('names the active period in the sort hint, keeping the capture recipe literal (criterion 4)', async () => {
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+    const hint = () => screen.getByTestId('sort-hint');
+
+    // 🔴 `toHaveTextContent` is a substring match, so the first assertion in each
+    // pair is what pins the EXACT literal that talos-infra's app-capture recipe
+    // waits on (`waitForGone: "Sorted by most followed."`). Reword it and that
+    // wait does not go red — it goes vacuously green.
+    expect(hint().textContent).toContain('Sorted by most followed.');
+    expect(hint().textContent).toBe('Sorted by most followed. Popular this month.');
+
+    await userEvent.click(screen.getByTestId('period-day'));
+    expect(hint().textContent).toBe('Sorted by most followed. Popular today.');
+
+    await userEvent.click(screen.getByTestId('period-alltime'));
+    expect(hint().textContent).toBe('Sorted by most followed. Popular all time.');
+    expect(hint().textContent).toContain('Sorted by most followed.');
+  });
+
+  it('applies the window to the popular sort ONLY — Newest is unaffected (criterion 6)', async () => {
+    const base = createFakeApi({ collections: windowSeeds() });
+    const seen: Array<{ sort?: string; period?: string }> = [];
+    const api: ApiClient = {
+      ...base,
+      async listCollections(params) {
+        if (params.mode === 'public') seen.push({ sort: params.sort, period: params.period });
+        return base.listCollections(params);
+      },
+    };
+    renderApp({ api });
+    await screen.findByTestId('collection-grid');
+
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await waitFor(() => expect(seen.some((s) => s.sort === 'newest')).toBe(true));
+
+    // No period is SENT on the newest sort. The server would accept it and
+    // discard it (`period-ignored-for-non-popularity-sort`), so sending one buys
+    // a param that changes nothing and a reason string to suppress.
+    expect(seen.filter((s) => s.sort === 'newest').every((s) => s.period === undefined)).toBe(true);
+    // The control is hidden rather than disabled: a viewer cannot pick a window
+    // here, see nothing change, and have to be told why.
+    expect(screen.queryByTestId('period-group')).toBeNull();
+    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted newest first.');
+  });
+
+  it('remembers the chosen window while the control is hidden under Newest', async () => {
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+
+    await userEvent.click(screen.getByTestId('period-year'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Charlie', 'Alpha', 'Delta', 'Bravo']));
+
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    expect(screen.queryByTestId('period-group')).toBeNull();
+
+    await userEvent.click(screen.getByTestId('sort-popular'));
+    expect(screen.getByTestId('period-year')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this year.');
+  });
+
+  it('🔴 never sends a window on the MINE feed, and never claims one there', async () => {
+    // Measured live: `mode=mine&period=Month` comes back
+    // `source: 'postgres', sourceReason: 'period-ignored-outside-public-discovery'`.
+    // The viewer's own collections are NOT hidden — same rows, same order — but a
+    // ranked window answered by Postgres is indistinguishable at the consumer
+    // from ClickHouse being down. Sending it anyway would have hung a permanent,
+    // false "ranking isn't available right now" note under this tab. The task's
+    // non-goals say this tab has no popularity window, so the fix and the scope
+    // agree: the period is a PUBLIC-DISCOVERY concept.
+    // viewerUserId 11 = the seeds' curator, so `mode=mine` actually returns rows;
+    // an empty Mine grid would make every assertion below vacuous.
+    const base = createFakeApi({ viewerUserId: 11, collections: windowSeeds() });
+    const seen: Array<{ mode: string; period?: string }> = [];
+    const api: ApiClient = {
+      ...base,
+      async listCollections(params) {
+        seen.push({ mode: params.mode, period: params.period });
+        return base.listCollections(params);
+      },
+    };
+    renderApp({ api, isPrivateGranted: () => true });
+    await screen.findByTestId('collection-grid');
+    await userEvent.click(screen.getByTestId('tab-mine'));
+    // Positive control: the Mine grid really has rows, so the assertions below
+    // are about the window and not about an empty tab.
+    await waitFor(async () => expect((await gridOrder()).length).toBe(4));
+
+    await waitFor(() => expect(seen.some((s) => s.mode === 'mine')).toBe(true));
+    expect(seen.filter((s) => s.mode === 'mine').every((s) => s.period === undefined)).toBe(true);
+    // …while the PUBLIC feed still got one.
+    expect(seen.some((s) => s.mode === 'public' && s.period === 'month')).toBe(true);
+
+    // No control, no window named, no end-of-list marker — this tab is untouched.
+    expect(screen.queryByTestId('period-group')).toBeNull();
+    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed.');
+    expect(screen.queryByTestId('period-fallback')).toBeNull();
+    expect(screen.queryByTestId('grid-end')).toBeNull();
+  });
+
+  it('is keyboard operable and labelled, matching the sort control (criterion 5)', async () => {
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+
+    const group = screen.getByTestId('period-group');
+    const sortGroup = screen.getByTestId('sort-popular').closest('[role="group"]')!;
+    // Same ARIA pattern as the existing sort chips: a labelled group of
+    // `aria-pressed` toggle buttons. NOT roving tabindex — that belongs to the
+    // Discover/Mine `role="tab"` strip, where the ARIA pattern requires it; a
+    // group of toggle buttons must not take Tab away from its own members.
+    expect(group).toHaveAttribute('role', 'group');
+    expect(sortGroup).toHaveAttribute('role', 'group');
+    expect(group).toHaveAccessibleName('Popularity window');
+    expect(sortGroup).toHaveAccessibleName('Sort collections');
+
+    for (const id of ['period-day', 'period-week', 'period-month', 'period-year', 'period-alltime']) {
+      const el = screen.getByTestId(id);
+      expect(el.tagName).toBe('BUTTON');
+      // Every chip reachable by Tab, exactly like the sort chips.
+      expect(el).not.toHaveAttribute('tabindex', '-1');
+      expect(el).toHaveAttribute('aria-pressed');
+    }
+
+    // Activating by KEYBOARD (not a click) really changes the window.
+    screen.getByTestId('period-day').focus();
+    expect(screen.getByTestId('period-day')).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(screen.getByTestId('period-day')).toHaveAttribute('aria-pressed', 'true'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Delta', 'Charlie', 'Bravo', 'Alpha']));
+  });
+
+  it('persists the window exactly as the sort persists it — i.e. not at all (criterion 3)', async () => {
+    // 🔴 A RELATIONSHIP guard, not a behaviour preference. Criterion 3 asks the
+    // period to persist "in the same way the existing sort choice does"; measured,
+    // the sort does not persist at all (no localStorage key, no URL presence).
+    // This pins the two AGREEING, so it stays honest if someone later gives both
+    // a mechanism — and goes red if the period grows one the sort lacks.
+    const store = globalThis.localStorage;
+    const before = { ...store };
+    const { unmount } = renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+    await userEvent.click(screen.getByTestId('period-year'));
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await userEvent.click(screen.getByTestId('sort-popular'));
+    expect(screen.getByTestId('period-year')).toHaveAttribute('aria-pressed', 'true');
+
+    // Neither choice wrote anything.
+    expect({ ...store }).toEqual(before);
+
+    unmount();
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+    // A remount is a reload: sort is back to Popular and period back to Month.
+    expect(screen.getByTestId('sort-popular')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('🔴 says so when the server could not serve the asked-for window', async () => {
+    // ClickHouse unavailable: the server answers from Postgres in the ALL-TIME
+    // order. Presenting that as "this month" would be a lie the viewer cannot
+    // detect, so an unobtrusive note names what was actually served.
+    renderApp({ api: createFakeApi({ collections: windowSeeds(), listWindowUnavailable: true }) });
+    await screen.findByTestId('collection-grid');
+    const note = await screen.findByTestId('period-fallback');
+    expect(note).toHaveTextContent(
+      "Ranking for this month isn't available right now — showing all-time popularity instead.",
+    );
+    // The hint still describes the CONTROL's state; the note describes the serve.
+    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this month.');
+  });
+
+  it('🔴 stays silent on a healthy AllTime request, whose sourceReason is expected', async () => {
+    // Live: `period=AllTime` returns `sourceReason: 'all-time-served-from-postgres'`.
+    // A note keyed on that field's presence would fire on an ordinary request.
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+    expect(screen.queryByTestId('period-fallback')).toBeNull();
+    await userEvent.click(screen.getByTestId('period-alltime'));
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Alpha', 'Bravo', 'Charlie', 'Delta']));
+    expect(screen.queryByTestId('period-fallback')).toBeNull();
+  });
+
+  it('🔴 ends the grid gracefully instead of just stopping', async () => {
+    // The default window is ClickHouse-ranked and BOUNDED — ~446 Image
+    // collections, ~18 pages at limit 24 — where all-time pages the whole
+    // corpus. Before this the grid rendered nothing at the end of the list,
+    // which at the bottom of a scroll reads as a broken loader.
+    renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+    await screen.findByTestId('collection-grid');
+    expect(await screen.findByTestId('grid-end')).toHaveTextContent(
+      "That's the end of this month's popular collections — pick a longer window for more.",
+    );
+
+    // On all-time there is no longer window to offer, so the line stays generic.
+    await userEvent.click(screen.getByTestId('period-alltime'));
+    await waitFor(() => expect(screen.getByTestId('grid-end')).toHaveTextContent("That's the end of the results."));
+  });
+});

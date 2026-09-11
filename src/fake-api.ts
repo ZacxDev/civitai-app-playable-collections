@@ -15,6 +15,7 @@
 // `<Harness buzzBalance=… shared=…>` props in tests). So the fake models neither.
 
 import { ApiError, type ApiClient } from './lib/api.js';
+import { PERIOD_WIRE, isRankedWindow, type CollectionPeriod } from './lib/period.js';
 import type {
   CollectionPage,
   CollectionSummary,
@@ -47,11 +48,38 @@ export interface FakeApiOptions {
    * so tests unconcerned with consent see the full set.
    */
   collectionsPrivateGranted?: () => boolean;
+  /**
+   * Model the server FAILING to serve a ranked window (ClickHouse unavailable):
+   * a `period=Day|Week|Month|Year` request comes back from Postgres, in the
+   * UNWINDOWED order, reporting `source: 'postgres'` +
+   * `sourceReason: 'clickhouse-unavailable'`.
+   *
+   * This is the one branch the UI's fallback note exists for, and it cannot be
+   * produced by asking the real server nicely — so it is a fixture.
+   */
+  listWindowUnavailable?: boolean;
 }
 
 export interface SeedCollection {
   summary: CollectionSummary;
   items: MediaItem[];
+  /**
+   * Per-window follower counts the fake ranks `sort=popular` by, highest first.
+   *
+   * 🔴 THE FAKE REALLY REORDERS — recording the param would be worthless. A
+   * period selector whose only proof is "the request carried `period=Week`" is
+   * the "wire terminated at both ends and never energised" shape this app has
+   * already shipped once; the thing a viewer sees is the ORDER, so the double
+   * has to be able to produce a different one and a test has to assert on the
+   * resulting ids.
+   *
+   * 🔴 OPT-IN, AND THAT IS LOAD-BEARING: when NO seed in the set declares
+   * `popularity`, the fake keeps insertion order exactly as it always has. Every
+   * existing fixture predates this field, and the app now sends `period=Month`
+   * on every discover load — so ranking unconditionally would silently reorder
+   * the lists under ~660 tests that never opted into caring.
+   */
+  popularity?: Partial<Record<CollectionPeriod, number>>;
 }
 
 /** Extra test hooks exposed alongside the ApiClient surface. */
@@ -148,6 +176,62 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
     return { ...s.summary, followed: followed.get(s.summary.id) ?? false };
   }
 
+  /**
+   * Apply the popularity window, and report the provenance the real endpoint
+   * reports. Mirrors the LIVE contract measured 2026-09-11 (the table in
+   * lib/period.ts), because a double that is more forgiving than production is
+   * how a UI ships a branch nothing ever exercised:
+   *
+   *   - no `period`            -> no `source`/`period`/`sourceReason` keys at all
+   *                               (also what a host predating the param returns)
+   *   - `sort` !== 'popular'   -> accepted, IGNORED, `postgres` +
+   *                               `period-ignored-for-non-popularity-sort`
+   *   - `mode` === 'mine'      -> accepted, IGNORED, `postgres` +
+   *                               `period-ignored-outside-public-discovery`
+   *                               (unreachable from App, which sends no period
+   *                               there — modelled so the double cannot be MORE
+   *                               permissive than production if that changes)
+   *   - `allTime`              -> `postgres` + `all-time-served-from-postgres`,
+   *                               unwindowed order — a HEALTHY response
+   *   - `day|week|month|year`  -> `clickhouse`, ranked by `popularity[period]`
+   *   - …unless `listWindowUnavailable`, which downgrades that last case to
+   *     `postgres` + `clickhouse-unavailable` in the UNWINDOWED order
+   */
+  function rankByWindow(
+    list: SeedCollection[],
+    params: ListCollectionsParams,
+  ): { items: SeedCollection[]; source?: string; period?: string; sourceReason?: string } {
+    const period = params.period;
+    if (period == null) return { items: list };
+
+    const wire = PERIOD_WIRE[period];
+    if (params.sort !== 'popular') {
+      return { items: list, source: 'postgres', period: wire, sourceReason: 'period-ignored-for-non-popularity-sort' };
+    }
+    // Checked BEFORE the allTime branch only in the sense that both are
+    // "ignored"; live, `mode=mine&period=AllTime` reports the all-time reason,
+    // so the ranked-window test has to come first to reproduce that.
+    if (params.mode === 'mine' && isRankedWindow(period)) {
+      return { items: list, source: 'postgres', period: wire, sourceReason: 'period-ignored-outside-public-discovery' };
+    }
+    if (!isRankedWindow(period)) {
+      return { items: list, source: 'postgres', period: wire, sourceReason: 'all-time-served-from-postgres' };
+    }
+    if (opts.listWindowUnavailable) {
+      return { items: list, source: 'postgres', period: wire, sourceReason: 'clickhouse-unavailable' };
+    }
+    // Ranked. Descending by this window's follower count; ties broken by id
+    // ascending so the order is total and a test can pin it literally.
+    const declaresPopularity = list.some((s) => s.popularity != null);
+    const items = declaresPopularity
+      ? [...list].sort((a, b) => {
+          const d = (b.popularity?.[period] ?? 0) - (a.popularity?.[period] ?? 0);
+          return d !== 0 ? d : a.summary.id - b.summary.id;
+        })
+      : list;
+    return { items, source: 'clickhouse', period: wire };
+  }
+
   return {
     async listCollections(params: ListCollectionsParams): Promise<Page<CollectionSummary>> {
       let list = seeds.filter((s) => {
@@ -161,11 +245,15 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
         const q = params.query.toLowerCase();
         list = list.filter((s) => s.summary.name.toLowerCase().includes(q));
       }
-      // The fake keeps taking the friendly UI sort values ('newest'/'popular');
-      // only the real HTTP client translates to the server's enum. The server's
-      // 'popular' = "Most Followers"; the fake has no follower data, so it keeps
-      // insertion order (no test asserts the fake's popular ordering).
-      return { items: list.map(summaryFor) };
+      // The fake keeps taking the friendly UI values ('newest'/'popular',
+      // 'day'…'allTime'); only the real HTTP client translates to the server's
+      // enums.
+      //
+      // Ranking is OPT-IN: a seed set that declares no `popularity` keeps
+      // insertion order, exactly as this fake always has, so every pre-existing
+      // fixture is untouched by the period default.
+      const ranked = rankByWindow(list, params);
+      return { ...ranked, items: ranked.items.map(summaryFor) };
     },
 
     async getCollection(id: number): Promise<CollectionPage> {

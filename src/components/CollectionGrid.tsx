@@ -189,6 +189,22 @@ export interface CollectionGridProps {
   isMobile: boolean;
   /** Infinite scroll: whether another page exists to fetch. */
   hasMore?: boolean;
+  /**
+   * What to say once the list has run out of pages. Omit for no end marker.
+   *
+   * 🔴 THE GRID USED TO END BY RENDERING NOTHING, and that was survivable only
+   * because the end was unreachable. The unwindowed popular feed pages the whole
+   * corpus; the new Month default is ClickHouse-ranked and bounded — of the top
+   * 10,000 ranked collections only ~446 are `Image` type, and this grid shows
+   * Image collections only, so the feed ends at ~18 pages at `limit=24`. A grid
+   * that simply stops at the bottom of a scroll reads as a broken loader, which
+   * is the "looks like the feature is broken" failure this marker prevents.
+   *
+   * Opt-in per caller rather than automatic: the `mine` tab is a short,
+   * unpaginated list where an end banner is noise, and leaving it undefined
+   * there keeps that surface byte-identical to today.
+   */
+  endLabel?: string;
   /** Infinite scroll: a next-page fetch is in flight. */
   loadingMore?: boolean;
   /** Infinite scroll: fetch + append the next page. */
@@ -207,6 +223,7 @@ export function CollectionGrid({
   hasMore = false,
   loadingMore = false,
   onLoadMore,
+  endLabel,
 }: CollectionGridProps) {
   const register = useCoverObserver();
 
@@ -264,6 +281,15 @@ export function CollectionGrid({
       {loadingMore && (
         <div style={{ display: 'flex', justifyContent: 'center', padding: 12 }} data-testid="grid-loading-more" role="status">
           <Loader size="sm" />
+        </div>
+      )}
+      {/* End of the list: there is no next cursor and nothing is in flight. */}
+      {endLabel != null && !hasMore && !loadingMore && (
+        <div
+          style={{ display: 'flex', justifyContent: 'center', padding: 12, fontSize: 12, color: 'var(--civitai-color-text-dimmed)' }}
+          data-testid="grid-end"
+        >
+          {endLabel}
         </div>
       )}
     </CoverObserverContext.Provider>

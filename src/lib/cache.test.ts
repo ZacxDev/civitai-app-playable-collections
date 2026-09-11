@@ -65,6 +65,39 @@ describe('createCachedApiClient', () => {
     expect(listImpl).toHaveBeenCalledTimes(3);
   });
 
+  it('🔴 keys listCollections by PERIOD — switching the window is never a cache hit', async () => {
+    // The window changes the ORDER of the rows and nothing else: same mode, same
+    // query, same sort, same limit. A key that omitted `period` would therefore
+    // serve the PREVIOUS window's rows and the period control would look inert —
+    // and INTERMITTENTLY so, since the entry expires after `ttlMs` and the very
+    // same click works five minutes later.
+    const { inner, listImpl } = makeInner();
+    const api = createCachedApiClient(inner);
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'month', limit: 24 });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'week', limit: 24 });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'allTime', limit: 24 });
+    expect(listImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('still caches a REPEATED window (the period key does not defeat caching)', async () => {
+    // The positive control for the case above: if the key were made unique per
+    // call the test above would pass while caching was broken outright.
+    const { inner, listImpl } = makeInner();
+    const api = createCachedApiClient(inner);
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'month', limit: 24 });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'month', limit: 24 });
+    expect(listImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('distinguishes NO period from an explicit one', async () => {
+    // A pre-`period` request and a windowed one are different responses.
+    const { inner, listImpl } = makeInner();
+    const api = createCachedApiClient(inner);
+    await api.listCollections({ mode: 'public', sort: 'popular' });
+    await api.listCollections({ mode: 'public', sort: 'popular', period: 'month' });
+    expect(listImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('serves a repeated getCollection page from cache, keyed by id+cursor+limit', async () => {
     const { inner, getImpl } = makeInner();
     const api = createCachedApiClient(inner);
