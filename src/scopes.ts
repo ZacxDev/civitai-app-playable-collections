@@ -30,8 +30,26 @@ export function defaultHasPrivateScope(tokenScopes: readonly string[]): boolean 
 //     scope gate, before the money layer. Nothing reaches the Buzz ledger.
 //   - `buzz:read:self` withheld  → the balance read returns nothing, so the
 //     picker renders with no "You have N Buzz" line AND `validateTipSplit` skips
-//     its balance pre-check (it only compares when balance is non-null). The
-//     missing line is the visible tell of the whole failure.
+//     its balance pre-check (it only compares when balance is non-null).
+//
+// 🔴 CORRECTION (measured 2026-09-11): AN EARLIER VERSION OF THIS BLOCK CALLED THE
+// MISSING "You have N Buzz." LINE "the visible tell of the whole failure". THAT WAS
+// WRONG, AND THE EXPERIMENT THAT REFUTES IT IS ONE PRESS. Consent was granted on a
+// real account (all three scopes, `revoked_at` NULL) and the line STAYED ABSENT
+// across a full reload — so the clause's absence did not track the grant at all.
+//
+// The actual gate at that time was AUTHORSHIP, not consent: the host's
+// `blocks.getMyBuzzBalance` was gated on an author capability, so a viewer who was
+// not the app's author got nothing back however much they had consented. That is
+// why granting the scope changed nothing. civitai/civitai#4745 replaced the author
+// capability with the viewer's own `buzz:read:self` consent ("the user's own grant
+// is what authorizes this read now that the author capability no longer gates the
+// runtime"), and on the SAME account the line then read "You have 297,893 Buzz."
+//
+// So the tell is only meaningful AFTER #4745, and even now it says "this token
+// lacks the scope" — never "this viewer has not consented", because a declared-but-
+// unrequested scope produces the identical absence. Do not reason backwards from a
+// missing balance line to a missing grant.
 export const SOCIAL_TIP_SELF = 'social:tip:self';
 export const BUZZ_READ_SELF = 'buzz:read:self';
 
