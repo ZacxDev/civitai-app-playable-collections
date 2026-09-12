@@ -1387,3 +1387,123 @@ describe('the popularity window', () => {
     await waitFor(() => expect(screen.getByTestId('grid-end')).toHaveTextContent("That's the end of the results."));
   });
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 Two list loads in flight at once — the ordering the hydration gate used to
+// provide by accident, and nothing provided after it was deleted.
+// ---------------------------------------------------------------------------
+//
+// The mechanism, and it needs no unusual host: `loadDiscover` is a `useCallback`
+// whose deps include `sort` and `discoverPeriod`, and the effect that runs it
+// keys on that callback's identity. The stored browse prefs are read
+// ASYNCHRONOUSLY, so the first render fetches the DEFAULTS and the restore
+// re-fires the effect underneath the request already in flight. Whichever
+// response arrives last used to win.
+//
+// Both cases below hold the two requests open and release them in the WRONG
+// order on purpose. That is not a contrived schedule — it is what a slow first
+// request and a fast second one look like, and the seeded prefs are exactly a
+// returning viewer's reload.
+describe('🔴 a superseded list response cannot overwrite a newer one', () => {
+  /**
+   * An `ApiClient` whose `mode: 'public'` list calls are HELD OPEN. Each one is
+   * pushed onto `calls` with its params and its own resolve/reject, so a test
+   * settles them in any order it likes. Every other method is the ordinary fake.
+   */
+  function heldDiscoverApi(): {
+    api: ApiClient;
+    calls: Array<{
+      params: { sort?: string; period?: string; cursor?: string };
+      resolve: (items: CollectionSummary[]) => void;
+      reject: (err: unknown) => void;
+    }>;
+  } {
+    const base = createFakeApi({ collections: [] });
+    const calls: Array<{
+      params: { sort?: string; period?: string; cursor?: string };
+      resolve: (items: CollectionSummary[]) => void;
+      reject: (err: unknown) => void;
+    }> = [];
+    const api: ApiClient = {
+      ...base,
+      listCollections(params) {
+        if (params.mode !== 'public') return base.listCollections(params);
+        return new Promise((res, rej) => {
+          calls.push({
+            params: { sort: params.sort, period: params.period, cursor: params.cursor },
+            resolve: (items) => res({ items }),
+            reject: rej,
+          });
+        });
+      },
+    };
+    return { api, calls };
+  }
+
+  /** Render with a stored non-default record, and wait for BOTH requests to be out. */
+  async function twoInFlight() {
+    const { api, calls } = heldDiscoverApi();
+    renderApp({
+      api,
+      // A returning viewer. Both values are non-default (the defaults are
+      // popular + month), so the restore genuinely changes the callback.
+      storage: { seed: { [BROWSE_PREFS_KEY]: { sort: 'newest', period: 'year' } } },
+    });
+    // 🔴 THE PRECONDITION IS PART OF THE CLAIM. If only ONE request ever went
+    // out there would be no race to lose, and both cases below would pass
+    // vacuously — so assert the overlap itself, and assert WHICH request is
+    // which by the params that distinguish them.
+    await waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[0].params.sort).toBe('popular'); // the defaults
+    expect(calls[1].params.sort).toBe('newest'); // the restored record
+    return { calls };
+  }
+
+  const named = (id: number, name: string): CollectionSummary =>
+    sampleCollection({ id, name, curator: { userId: 5, username: 'curator' } });
+
+  it('🔴 SUCCESS ARM — the stale response does not replace the painted grid', async () => {
+    const { calls } = await twoInFlight();
+
+    // The request the viewer's restored prefs asked for lands FIRST and paints.
+    await act(async () => calls[1].resolve([named(2, 'Restored')]));
+    expect(await screen.findByText('Restored')).toBeInTheDocument();
+
+    // …and now the superseded default request finally answers. Before the fix
+    // this replaced the whole grid — the viewer read "Newest" on the sort chip
+    // while looking at the popular-this-month page.
+    await act(async () => calls[0].resolve([named(1, 'Stale')]));
+
+    expect(screen.queryByText('Stale')).toBeNull();
+    expect(screen.getByText('Restored')).toBeInTheDocument();
+    // The control and the content still agree, which is the harm in one line.
+    expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('🔴 ERROR ARM — a stale FAILURE does not wipe an already-good grid', async () => {
+    const { calls } = await twoInFlight();
+
+    await act(async () => calls[1].resolve([named(2, 'Restored')]));
+    expect(await screen.findByText('Restored')).toBeInTheDocument();
+
+    // The superseded request fails. Its `catch` sets `{...EMPTY_LIST, error}` —
+    // an unconditional whole-state replace — so before the fix a failure nobody
+    // was waiting for turned a working grid into an error + retry pane.
+    //
+    // 🔴 403, NOT 500, AND THAT IS LOAD-BEARING. `loadDiscover` wraps the call
+    // in `withBoundedRetry`, which retries a 5xx — so a 500 here is swallowed
+    // into a fresh attempt that this fake never settles, the `catch` arm is
+    // never reached, and the case passes at the PRE-CHANGE tree while proving
+    // nothing. Measured: it did exactly that on the first writing. A 403 is not
+    // retryable (`isRetryableApiError`), so it reaches the arm under test.
+    await act(async () => calls[0].reject(new ApiError('forbidden', 403, 'Stale boom')));
+
+    // The control on the paragraph above: no retry was issued, so the rejection
+    // really did land in `loadDiscover`'s `catch` rather than in a retry loop.
+    expect(calls.length).toBe(2);
+
+    expect(screen.queryByTestId('grid-error')).toBeNull();
+    expect(screen.queryByText('Stale boom')).toBeNull();
+    expect(screen.getByText('Restored')).toBeInTheDocument();
+  });
+});

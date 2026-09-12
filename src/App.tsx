@@ -417,6 +417,44 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const mineRef = useRef(mine);
   mineRef.current = mine;
 
+  /**
+   * 🔴 REQUEST-SEQUENCE COUNTERS — the only thing serialising two list loads.
+   *
+   * Every list loader below `await`s and then calls its setter UNCONDITIONALLY,
+   * on the success arm AND on the `catch` arm. Nothing stops two of them being
+   * in flight at once: each loader is a `useCallback` whose deps include `sort`
+   * (and, on discover, `discoverPeriod`), its effect keys on that callback's
+   * identity, and those values CHANGE MID-FLIGHT — the stored browse prefs are
+   * read asynchronously and applied when they land, so the first render fetches
+   * the defaults and the restore immediately re-fires the effect underneath it.
+   *
+   * Without a guard the LAST response to arrive wins rather than the newest one
+   * asked for. Measured with a stored `{sort:'newest', period:'year'}`: the
+   * `newest` page paints, then the still-pending default `popular`+`month`
+   * response replaces the grid while the sort chip still reads "Newest" — the
+   * viewer sees content contradicting the control. The error arm is worse: a
+   * failure on the SUPERSEDED request wiped an already-good grid into an
+   * error+retry state.
+   *
+   * The rule, and it is per LIST rather than per loader:
+   *   - a loader that REPLACES the list (`loadDiscover`, `loadMine`) BUMPS the
+   *     counter, which invalidates everything already in flight for that list;
+   *   - a loader that APPENDS to it (`loadMoreDiscover`, `loadMoreMine`) only
+   *     CAPTURES the current value, so a fresh replace discards its page rather
+   *     than appending yesterday's cursor onto today's list;
+   *   - both discard on resolution AND on rejection if the value moved.
+   *
+   * 🔴 This is deliberately NOT the old hydration gate. That gate serialised the
+   * loads by making the first one wait, which is the thing the previous commit
+   * removed on purpose (it cost a deadline timer, a public `hydrated` contract
+   * and two gated dependency arrays, and it made a pre-read choice overwrite a
+   * stored record). A sequence number fixes the ordering without reintroducing
+   * a wait: the grid still renders on the defaults immediately.
+   */
+  const discoverSeqRef = useRef(0);
+  const mineSeqRef = useRef(0);
+  const popularSeqRef = useRef(0);
+
   // ---- player state ----
   const [open, setOpen] = useState<OpenCollection | null>(null);
   const openRef = useRef<OpenCollection | null>(null);
@@ -485,12 +523,15 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // state with a manual retry, NEVER an unbounded loop.
   const loadDiscover = useCallback(async () => {
     if (!api) return;
+    // Claim the list: everything already in flight for it is now superseded.
+    const seq = ++discoverSeqRef.current;
     setDiscover((s) => ({ ...s, loading: true, error: null }));
     try {
       const page = await withBoundedRetry(
         () => api.listCollections({ mode: 'public', query: debouncedSearch, sort, period: discoverPeriod, limit: PAGE_LIMIT }),
         retry,
       );
+      if (seq !== discoverSeqRef.current) return;
       setDiscover({
         items: page.items,
         loading: false,
@@ -500,12 +541,21 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         notice: windowFallbackNotice(discoverPeriod, page),
       });
     } catch (err) {
+      // 🔴 THE ERROR ARM NEEDS THE SAME GUARD, AND IT IS THE WORSE ONE: without
+      // it a failure on a request nobody is waiting for replaces a good grid
+      // with an error+retry state.
+      if (seq !== discoverSeqRef.current) return;
       setDiscover({ ...EMPTY_LIST, error: errMessage(err) });
     }
   }, [api, debouncedSearch, sort, discoverPeriod, retry]);
 
   const loadMine = useCallback(async () => {
     if (!api) return;
+    // Same shape, same fix: `sort` is in this callback's deps too, so the
+    // restore re-fires this effect under an in-flight request exactly as it
+    // does for discover. (`viewer` and `hasPrivateScope` can move mid-flight as
+    // well — a sign-in or a consent grant.)
+    const seq = ++mineSeqRef.current;
     if (!viewer) {
       setMine(EMPTY_LIST);
       return;
@@ -516,6 +566,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         () => api.listCollections({ mode: 'mine', query: debouncedSearch, sort, limit: PAGE_LIMIT }),
         retry,
       );
+      if (seq !== mineSeqRef.current) return;
       setMine({
         items: page.items,
         loading: false,
@@ -526,6 +577,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         notice: null,
       });
     } catch (err) {
+      if (seq !== mineSeqRef.current) return;
       setMine({ ...EMPTY_LIST, error: errMessage(err) });
     }
   }, [api, viewer, debouncedSearch, sort, retry]);
@@ -537,9 +589,14 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     const s = discoverRef.current;
     if (!s.nextCursor || s.loadingMore) return;
     const cursor = s.nextCursor;
+    // CAPTURE, don't bump: appending is not claiming the list. A `loadDiscover`
+    // that starts after this one invalidates it, and this one must never
+    // invalidate a replace that is already under way.
+    const seq = discoverSeqRef.current;
     setDiscover((p) => ({ ...p, loadingMore: true }));
     try {
       const page = await api.listCollections({ mode: 'public', query: debouncedSearch, sort, period: discoverPeriod, cursor, limit: PAGE_LIMIT });
+      if (seq !== discoverSeqRef.current) return;
       setDiscover((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
@@ -550,6 +607,9 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         notice: windowFallbackNotice(discoverPeriod, page),
       }));
     } catch {
+      // Superseded: the replace that took the list owns `loadingMore` now, and
+      // clearing it here would let a fresh page be fetched on the OLD cursor.
+      if (seq !== discoverSeqRef.current) return;
       setDiscover((p) => ({ ...p, loadingMore: false }));
     }
   }, [api, debouncedSearch, sort, discoverPeriod]);
@@ -559,9 +619,11 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     const s = mineRef.current;
     if (!s.nextCursor || s.loadingMore) return;
     const cursor = s.nextCursor;
+    const seq = mineSeqRef.current; // capture, don't bump — see loadMoreDiscover.
     setMine((p) => ({ ...p, loadingMore: true }));
     try {
       const page = await api.listCollections({ mode: 'mine', query: debouncedSearch, sort, cursor, limit: PAGE_LIMIT });
+      if (seq !== mineSeqRef.current) return;
       setMine((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
@@ -570,11 +632,17 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         notice: null,
       }));
     } catch {
+      if (seq !== mineSeqRef.current) return;
       setMine((p) => ({ ...p, loadingMore: false }));
     }
   }, [api, viewer, debouncedSearch, sort]);
 
   const loadPopular = useCallback(async () => {
+    // `known` is in this callback's deps and changes every time EITHER list
+    // moves, so the rail's effect re-fires under its own in-flight resolve far
+    // more often than the two feeds do. Same discard rule; the rail is just
+    // cheaper to be wrong about.
+    const seq = ++popularSeqRef.current;
     try {
       const entries = await readPopular(shared, POPULAR_LIMIT);
       // Resolve each ranked entry to a full card. An id already on a loaded list
@@ -590,9 +658,11 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
           return null;
         }
       });
+      if (seq !== popularSeqRef.current) return;
       setPopular(resolved);
     } catch {
       // Popular is a nice-to-have; never block the page on it.
+      if (seq !== popularSeqRef.current) return;
       setPopular([]);
     }
   }, [shared, known, api]);
@@ -782,6 +852,16 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
 
   // Progressive detail load: fetch the next page on demand (player nears the
   // tail). Bounded by MAX_DETAIL_PAGES so a pathological collection can't loop.
+  //
+  // 🔴 NO SEQUENCE REF HERE, DELIBERATELY — it already discards a superseded
+  // response, by IDENTITY rather than by order: the functional update below
+  // bails on `prev.detail.id !== id`, so a page that arrives after the viewer
+  // opened a different collection (or left the player, making `prev` null) is
+  // dropped. Its only dep is `api`, so no restore can re-fire it either. The
+  // same is true of `openCollection` / `openById`: neither is driven by an
+  // effect whose deps move — the one effect that calls `openById` is latched
+  // at-most-once by `autoOpenedRef` — so the mechanism fixed above (a callback
+  // identity changing under an in-flight request) cannot reach them.
   const loadMoreOpen = useCallback(async () => {
     if (!api) return;
     const o = openRef.current;
