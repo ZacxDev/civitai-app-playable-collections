@@ -211,11 +211,23 @@ export function useBrowsePrefs(
    * 🔴 The at-most-once half is not belt-and-braces. This effect keys on the
    * `storage` object's identity, and that identity is stable only because
    * `useAppStorage` happens to `useMemo(…, [])` it. A second restore firing —
-   * an SDK that stopped memoising, a caller passing a fresh object, React's
-   * StrictMode double-invoking the effect — would land with the pre-read buffer
-   * already drained, and would therefore overwrite a choice the viewer had since
-   * made with the older stored value. Latching here means this hook does not
-   * depend on someone else's memoisation for its correctness.
+   * an SDK that stopped memoising, a caller passing a fresh object — would land
+   * with the pre-read buffer already drained, and would therefore overwrite a
+   * choice the viewer had since made with the older stored value. Latching here
+   * means this hook does not depend on someone else's memoisation for its
+   * correctness.
+   *
+   * 🔴 STRICTMODE IS NOT ONE OF THE ROUTES THIS REF COVERS, and an earlier
+   * revision of this comment credited it here. Measured on this hook against a
+   * store whose `get` is held open: under `<StrictMode>` the effect's second
+   * setup runs BEFORE any read has resolved, so `restoredRef` is still `false`
+   * and the second read goes out — `strictModeReads: 2` against
+   * `plainReads: 1`. What covers the double-invoke is `cancelled`: React runs an
+   * effect's cleanup before re-running it, so the FIRST read's `.then` returns
+   * early and only the second one is applied (measured by resolving the two
+   * reads with different records — the first record never reaches `prefs`).
+   * The cost is one extra `APP_STORAGE_GET`, and it is dev-only: React does not
+   * double-invoke effects in production builds.
    *
    * Stays `false` forever if the read rejects: no read, no write, no restore.
    *

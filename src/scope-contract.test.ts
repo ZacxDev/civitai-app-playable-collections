@@ -42,7 +42,8 @@
 // `apps:storage:{read,write}` and `apps:storage:shared:{read,write}`. Some sit in
 // the hook's own `.d.ts` (`useTip`, `useTipAllowance`, `useBuzzTransactions`,
 // `useBuzzAccounts`, `useDailyCompensation`, `useAppWorkflows`,
-// `useSharedStorage`); others sit in files no hook name appears next to.
+// `useSharedStorage`, `useCollectionFollow`); others sit in files no hook name
+// appears next to.
 //
 // 🔴 AN EARLIER REVISION OF THIS PARAGRAPH CLAIMED MORE THAN THAT, AND IT WAS
 // FALSE. It said "a map derived from the docs would have been blind to precisely
@@ -53,13 +54,43 @@
 // package rather than of `hooks/useAppStorage.d.ts` would have found it.
 //
 // The honest statement of why the map is hand-written is therefore weaker than
-// the one it replaces, and it is the one that survives measurement: there is SOME
-// scope evidence in the SDK's `.d.ts` files, so writing the map down is a CHOICE.
-// What the package does not give you is a hook -> scope relation — the evidence
-// is prose, in files chosen by implementation layout rather than by hook, and
-// deriving a mapping from it would mean inferring which hook reaches which
-// bridge. The per-entry citations below are what that choice buys; they are now
-// pointers to a file you can open, not a claim that nothing could be opened.
+// the one it replaces, and weaker than the FIRST correction of it too — which
+// swung the other way and said the evidence sits "in files chosen by
+// implementation layout rather than by hook". Mostly it does not. Measured over
+// the installed `0.49.0` `dist/`, the eight scope strings split three ways:
+//
+//   - FIVE sit in a `hooks/use<Name>.d.ts` whose basename IS a hook that needs
+//     them, so the relation is readable straight off the file name:
+//     `ai:write:budgeted` (`useAppWorkflows`), `buzz:read:self`
+//     (`useBuzzAccounts`, `useBuzzTransactions`, `useDailyCompensation`),
+//     `social:tip:self` (`useTip`, `useTipAllowance`), `collections:write:self`
+//     (`useCollectionFollow`), `apps:storage:shared:write`
+//     (`useSharedStorage`).
+//   - TWO — `apps:storage:read` and `apps:storage:write` — appear in no hook
+//     file at all, only in `internal/liveHost.d.ts`, so relating them to
+//     `useAppStorage` means knowing which bridge that hook calls. That is
+//     exactly the pair the undeclared-scope bug was about.
+//   - ONE — `apps:storage:shared:read` — appears in no `.d.ts` anywhere, only in
+//     `internal/liveHost.js`, so the read half of `useSharedStorage` is inferred
+//     from its write sibling.
+//
+// So most of this map COULD be read off the package; three of the eight could
+// not, and one of those three is the entry this file exists for. Writing the
+// whole map down is therefore a CHOICE, not a necessity — the per-entry
+// citations below are what that choice buys, and they are pointers to a file you
+// can open rather than a claim that nothing could be opened.
+//
+// ⚠️ That split is a MEASUREMENT of the installed `0.49.0`, and NOTHING in this
+// file pins it — the ledger tests pin all twelve `BLOCK_SCOPES` values, which is
+// a different population from the eight strings the `blocks-react` `dist/`
+// actually mentions. Re-run it on an SDK bump; see the ledger-3 block below for
+// the one-command enumeration.
+//
+// Two things the file-name reading does NOT settle, both recorded per-entry
+// below: `useBuzzBalance`'s own `.d.ts` names no scope (the mapping rests on the
+// three sibling Buzz hooks and on `scopes.ts`), and `useCollectionFollow` sits
+// in ledger 2 — its scope is readable off the SDK, and this app declares it
+// nowhere by design.
 //
 // It is hand-written, and its STALENESS IS ITSELF CHECKED:
 //   - every `use*` export of `@civitai/blocks-react` must appear in exactly one
@@ -185,8 +216,11 @@ const UNSCOPED_HOOKS: readonly string[] = [
  * 🔴 RE-MEASURED AGAINST THE INSTALLED `0.49.0` RATHER THAN ASSERTED, because
  * the paragraph above is exactly the kind of claim that rots into a list nobody
  * rechecks. Every scope-shaped literal in the whole `dist/` (`.d.ts` + `.js`,
- * 78 `.d.ts` files) is one of eight strings, and all eight already belong to a
- * hook in ledger 1 or to a scope in ledger 4 — none of them appears in, or next
+ * 78 `.d.ts` files) is one of eight strings, and every one of the eight is
+ * already accounted for elsewhere in this file: SEVEN by a hook in ledger 1
+ * (`social:tip:self` is also a ledger-4 entry, reached by a direct REST POST),
+ * and `collections:write:self` by `useCollectionFollow` in ledger 2 plus
+ * `SCOPES_NOT_USED_BY_THIS_APP`. None of the eight appears in, or next
  * to, any of the eleven names below. Two of the eleven mention the word "scope"
  * at all (`usePublishGenerationOutputs`, `useViewer`) and both only in the
  * generic failure phrase "missing scope", naming none. So this ledger CANNOT be

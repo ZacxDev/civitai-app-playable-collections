@@ -52,8 +52,15 @@ touching it — each one records the defect it exists to prevent):
   second follow implementation here.
 - **Maturity gating.** `src/lib/maturity.ts` + `src/components/Maturity.tsx`:
   anything above PG-13 stays blurred until the viewer confirms 18+ once.
-- **Scopes.** `block.manifest.json` declares six; `src/manifest.test.ts` pins the
-  exact list. `collections:write:self` was dropped in 0.2.10 and must not return.
+- **Scopes.** `block.manifest.json` declares them; `src/manifest.test.ts` pins the
+  exact list as a literal ledger, and `src/scope-contract.test.ts` pins that list
+  against what `src/` actually calls. 🔴 **No count is written here on purpose.**
+  This line used to say "six", which was true of `origin/main` and went stale the
+  moment the per-viewer `apps:storage:{read,write}` pair was declared; the README
+  carried "7 scopes" in three places while the manifest declared six. A number in
+  prose is pinned by nothing — the ledger in `manifest.test.ts` is the only thing
+  that pins the list, and it fails by name when the list moves.
+  `collections:write:self` was dropped in 0.2.10 and must not return.
 
 ## Get a shell
 
