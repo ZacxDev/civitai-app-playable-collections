@@ -7,12 +7,27 @@ import { manifest, validateManifest } from './manifest.js';
 import { RECIPIENT_PERCENT, TIP_TOTAL_MAX, type TipRecipientChoice } from './lib/tip-split.js';
 
 describe('block.manifest.json', () => {
-  it('declares the 6 required scopes (no block:settings:*, no collections:write:self)', () => {
+  it('declares the 8 required scopes (no block:settings:*, no collections:write:self)', () => {
+    // 🔴 `apps:storage:read` / `apps:storage:write` — the PER-VIEWER store — are
+    // NOT the same capability as the `apps:storage:shared:*` pair below, and the
+    // host does not treat one as satisfying the other: it compares the required
+    // scope against the token's scope set by EXACT STRING MATCH. This app needs
+    // both families and declares both: the per-viewer pair backs the saved browse
+    // preferences (`lib/browse-prefs.ts` via `useAppStorage`), the shared pair
+    // backs the cross-user Popular rail (`lib/popular.ts` via `useSharedStorage`).
+    //
+    // This literal ledger pins WHAT IS DECLARED. It cannot tell you whether the
+    // code needs it — that relationship lives in `scope-contract.test.ts`, which
+    // fails in BOTH directions (a called hook whose scope is undeclared; a
+    // declared scope no caller wants). Read them as a pair; this one alone went
+    // green over a build whose persistence was rejected by the host on every call.
     expect(manifest.scopes).toEqual([
       'collections:read:self',
       'collections:read:private',
       'social:tip:self',
       'buzz:read:self',
+      'apps:storage:read',
+      'apps:storage:write',
       'apps:storage:shared:read',
       'apps:storage:shared:write',
     ]);
@@ -38,9 +53,12 @@ describe('block.manifest.json', () => {
 
   it('passes defineBlock once augmented to the full runtime shape', () => {
     const validated = validateManifest();
-    // All 7 scopes validate directly now (incl. the 4-segment shared-storage
-    // ones and the consent-gated private read) — no exemption needed.
+    // Every declared scope validates directly (incl. the 4-segment shared-storage
+    // ones and the consent-gated private read) — no exemption needed. The count
+    // is deliberately not restated here; it rots on every scope change and the
+    // ledger above is the place that owns it.
     expect(validated.scopes).toEqual(manifest.scopes);
+    expect(validated.scopes).toContain('apps:storage:read');
     expect(validated.scopes).toContain('apps:storage:shared:read');
     expect(validated.scopes).toContain('collections:read:private');
   });

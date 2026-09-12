@@ -168,6 +168,16 @@ watched failing before they are trusted. `src/manifest.test.ts`'s version
 lockstep and `src/toolchain-lockstep.test.ts` are the pattern to copy — both
 explain, in the file, the incident they exist to prevent.
 
+🔴 **Adding a scoped SDK hook means adding its manifest scope**, and
+`src/scope-contract.test.ts` is what enforces it — in both directions: a hook
+called in `src/` whose scope is undeclared (which ships a feature the host
+refuses on every call, silently, because both storage call sites swallow the
+rejection), and a declared scope with no caller (a capability a moderator and
+every viewer are shown for nothing). `manifest.test.ts` alone cannot see either:
+it pins the declared list against a literal, so it stayed green over a build
+whose persistence never worked in production. If an SDK bump adds a hook or a
+scope, that file fails by name until the new one is classified.
+
 ## Release protocol
 
 - `block.manifest.json` and `package.json` versions move **together**.

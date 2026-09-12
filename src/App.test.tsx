@@ -35,8 +35,8 @@ function renderApp(
      * DOES NOT WORK. `unmount()` + a second `renderApp()` looks like a reload but
      * is not one here: the SDK transport is a module singleton, `<Harness>`
      * installs its mock host in an effect, and the second mount's host is never
-     * reached — measured, a storage read on mount 2 is dropped and only the
-     * hydrate deadline ends it. A remount therefore always falls back to the
+     * reached — measured, a storage read on mount 2 is simply dropped and never
+     * answered. A remount therefore always falls back to the
      * defaults and CANNOT distinguish "restored" from "never stored". A fresh
      * mount against a host whose store already holds the record is exactly what
      * the app sees after a real reload, and it exercises the real bridge.

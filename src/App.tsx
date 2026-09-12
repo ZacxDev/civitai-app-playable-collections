@@ -378,13 +378,15 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // iframe has an opaque origin, so the SDK's web-storage shim is in-memory and
   // SESSION-SCOPED. A localStorage key would have tested green and persisted
   // nothing in production.
+  //
+  // 🔴 THE FIRST RENDER DOES NOT WAIT FOR THE STORED RECORD. The grid paints on
+  // the defaults and swaps when the read lands, which costs a viewer with a
+  // NON-default stored record one extra list request. The alternative — holding
+  // the first fetch until prefs resolve — needed a deadline timer, a `hydrated`
+  // flag, a race guard and two gated effect dependency arrays, and it put a
+  // viewer's stored record one slow host away from being overwritten.
   const appStorage = useAppStorage();
-  const {
-    prefs: browsePrefs,
-    hydrated: prefsHydrated,
-    setSort,
-    setPeriod,
-  } = useBrowsePrefs(appStorage, { enabled: ready });
+  const { prefs: browsePrefs, setSort, setPeriod } = useBrowsePrefs(appStorage, { enabled: ready });
   const { sort, period } = browsePrefs;
   // 🔴 THE WINDOW IS A PUBLIC-DISCOVERY CONCEPT, AND IT IS SENT IN EXACTLY ONE
   // PLACE: the public feed, on the popularity sort. Both exclusions are measured,
@@ -597,26 +599,17 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
 
   // ---- effects ---- (all gated on `canFetch`: don't fetch until the host
   // origin + token are established, or the loop's root cause returns)
-  //
-  // 🔴 ALSO GATED ON `prefsHydrated`. The restored sort/window arrive one host
-  // round-trip after mount, and they are INPUTS to these fetches. Firing before
-  // they land costs a wasted request AND shows a page of Popular/Month before
-  // swapping it for whatever the viewer actually chose last time. The grid holds
-  // its existing loading skeleton for that round-trip instead. `prefsHydrated`
-  // is guaranteed to flip — `useBrowsePrefs` arms its own short deadline rather
-  // than inheriting the transport's 30 s request timeout — so a host that never
-  // answers costs a beat, not a hung page.
   useEffect(() => {
-    if (!ready || !canFetch || !prefsHydrated) return;
+    if (!ready || !canFetch) return;
     void loadDiscover();
-  }, [ready, canFetch, prefsHydrated, loadDiscover]);
+  }, [ready, canFetch, loadDiscover]);
 
   useEffect(() => {
-    if (!ready || !canFetch || !prefsHydrated) return;
+    if (!ready || !canFetch) return;
     // Reload when the private scope is granted (re-mint) so the viewer's private
     // collections appear without a manual refresh.
     if (tab === 'mine') void loadMine();
-  }, [ready, canFetch, prefsHydrated, tab, loadMine, hasPrivateScope]);
+  }, [ready, canFetch, tab, loadMine, hasPrivateScope]);
 
   // Recompute the popular rail whenever the known-collections map changes.
   useEffect(() => {

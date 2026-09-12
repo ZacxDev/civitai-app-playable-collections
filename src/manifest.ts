@@ -9,7 +9,7 @@
 //
 // NOTE: `@civitai/app-sdk@0.17.0` relaxed `BLOCK_SCOPE_PATTERN` to accept 4
 // segments and added `apps:storage:shared:*` + `collections:*` to `BLOCK_SCOPES`
-// — so all 7 of our scopes now validate directly. The earlier
+// — so every scope we declare now validates directly. The earlier
 // `KNOWN_INCOMING_SCOPES` strip-before-validate workaround is gone.
 
 import { defineBlock } from '@civitai/app-sdk/blocks';

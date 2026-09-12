@@ -28,42 +28,58 @@ function fakeStore(value: unknown = null): BrowsePrefsStore & { writes: Array<{ 
   };
 }
 
+/**
+ * A store whose `get` is held open until the returned `release` is called, and
+ * which records its writes. This is the slow host: the app is already
+ * interactive while the read is still in flight.
+ */
+function heldStore(): BrowsePrefsStore & {
+  writes: Array<{ key: string; value: unknown }>;
+  release: (value: unknown) => void;
+  reject: (err: unknown) => void;
+} {
+  const writes: Array<{ key: string; value: unknown }> = [];
+  let release!: (value: unknown) => void;
+  let reject!: (err: unknown) => void;
+  const held = new Promise((res, rej) => {
+    release = res;
+    reject = rej;
+  });
+  return {
+    writes,
+    release,
+    reject,
+    get: () => held as never,
+    set: async (key, v) => {
+      writes.push({ key, value: v });
+      return { ok: true };
+    },
+  };
+}
+
 describe('useBrowsePrefs — restore', () => {
   it('🔴 restores BOTH fields from a store that already holds a record', async () => {
     // The reload case. Both fixture values are non-default.
     const store = fakeStore({ sort: 'newest', period: 'year' });
     const { result } = renderHook(() => useBrowsePrefs(store));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
-    expect(result.current.prefs).toEqual({ sort: 'newest', period: 'year' });
+    await waitFor(() => expect(result.current.prefs).toEqual({ sort: 'newest', period: 'year' }));
   });
 
-  it('starts on the defaults before the read resolves', () => {
-    const { result } = renderHook(() => useBrowsePrefs(fakeStore({ sort: 'newest', period: 'year' })));
-    expect(result.current.hydrated).toBe(false);
+  it('renders on the defaults immediately, without waiting for the read', () => {
+    // 🔴 The whole point of deleting the hydration gate: the very first render
+    // is usable. Synchronous assertion — no `waitFor`, no flushed microtask.
+    const { result } = renderHook(() => useBrowsePrefs(heldStore()));
     expect(result.current.prefs).toEqual(DEFAULT_BROWSE_PREFS);
   });
 
   it('lands on the defaults when the key is unset', async () => {
-    const { result } = renderHook(() => useBrowsePrefs(fakeStore(null)));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
-    expect(result.current.prefs).toEqual(DEFAULT_BROWSE_PREFS);
-  });
-});
-
-describe('useBrowsePrefs — the app must never hang on storage', () => {
-  it('🔴 hydrates on the DEADLINE when the store never settles', async () => {
-    // The failsafe that matters: the transport's own request timeout is 30 s, so
-    // without this the grid would sit on a skeleton for half a minute whenever
-    // the host does not answer. A store whose promise never settles is exactly
-    // that host.
-    const store: BrowsePrefsStore = { get: () => new Promise(() => {}), set: async () => ({ ok: true }) };
-    const { result } = renderHook(() => useBrowsePrefs(store, { deadlineMs: 10 }));
-    expect(result.current.hydrated).toBe(false);
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    const store = fakeStore(null);
+    const { result } = renderHook(() => useBrowsePrefs(store));
+    await waitFor(() => expect(store.writes).toEqual([]));
     expect(result.current.prefs).toEqual(DEFAULT_BROWSE_PREFS);
   });
 
-  it('🔴 hydrates when the read REJECTS (anonymous viewer, host down)', async () => {
+  it('🔴 stays on the defaults when the read REJECTS (anonymous viewer, host down)', async () => {
     const store: BrowsePrefsStore = {
       get: async () => {
         throw new Error('anonymous');
@@ -71,7 +87,9 @@ describe('useBrowsePrefs — the app must never hang on storage', () => {
       set: async () => ({ ok: true }),
     };
     const { result } = renderHook(() => useBrowsePrefs(store));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(result.current.prefs).toEqual(DEFAULT_BROWSE_PREFS);
   });
 
@@ -84,7 +102,9 @@ describe('useBrowsePrefs — the app must never hang on storage', () => {
       },
     };
     const { result } = renderHook(() => useBrowsePrefs(store));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await act(async () => {
+      await Promise.resolve();
+    });
     act(() => result.current.setPeriod('day'));
     await waitFor(() => expect(result.current.prefs.period).toBe('day'));
   });
@@ -94,15 +114,101 @@ describe('useBrowsePrefs — the app must never hang on storage', () => {
     // is never answered, and then costs the transport's full timeout.
     const get = vi.fn(async () => null);
     const store: BrowsePrefsStore = { get, set: async () => ({ ok: true }) };
-    const { result, rerender } = renderHook(({ on }: { on: boolean }) => useBrowsePrefs(store, { enabled: on }), {
+    const { rerender } = renderHook(({ on }: { on: boolean }) => useBrowsePrefs(store, { enabled: on }), {
       initialProps: { on: false },
     });
     expect(get).not.toHaveBeenCalled();
-    expect(result.current.hydrated).toBe(false);
 
     rerender({ on: true });
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
-    expect(get).toHaveBeenCalledWith(BROWSE_PREFS_KEY);
+    await waitFor(() => expect(get).toHaveBeenCalledWith(BROWSE_PREFS_KEY));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 🔴 THE DATA-LOSS CLASS — a write must never be built out of state we have not
+// read. These are the regression tests for the bug the hydration gate hid.
+// ---------------------------------------------------------------------------
+describe('useBrowsePrefs — a write is only ever laid over a record that was READ', () => {
+  it('🔴 a chip pressed BEFORE the read resolves does not destroy the stored other field', async () => {
+    // The bug, exactly: stored `{sort:'newest', period:'year'}`, a slow host, and
+    // one press of a period chip. The pre-fix build wrote
+    // `{sort:'popular', period:'day'}` immediately — built from the DEFAULTS,
+    // because that is all it had — and the viewer's stored sort was gone for
+    // good.
+    const store = heldStore();
+    const { result } = renderHook(() => useBrowsePrefs(store));
+
+    act(() => result.current.setPeriod('day'));
+    // The choice is live on screen straight away...
+    expect(result.current.prefs.period).toBe('day');
+    // ...but NOTHING has been written, because there is nothing to lay it over.
+    expect(store.writes).toEqual([]);
+
+    await act(async () => {
+      store.release({ sort: 'newest', period: 'year' });
+      await Promise.resolve();
+    });
+
+    // The stored sort survived; the pressed window won. Both halves matter.
+    expect(result.current.prefs).toEqual({ sort: 'newest', period: 'day' });
+    await waitFor(() => expect(store.writes.length).toBe(1));
+    expect(store.writes[0]).toEqual({ key: BROWSE_PREFS_KEY, value: { sort: 'newest', period: 'day' } });
+  });
+
+  it('🔴 buffers EVERY pre-read choice and replays them all over the stored record', async () => {
+    // The mirror field, plus accumulation: two presses before the read lands
+    // must both survive, and the untouched stored field must still come back.
+    const store = heldStore();
+    const { result } = renderHook(() => useBrowsePrefs(store));
+
+    act(() => result.current.setSort('newest'));
+    act(() => result.current.setPeriod('week'));
+    expect(store.writes).toEqual([]);
+
+    await act(async () => {
+      // A stored record whose every field the viewer has since overridden except
+      // none — both are overridden here, so the assertion below is about the
+      // REPLAY winning, not about the read winning.
+      store.release({ sort: 'popular', period: 'year' });
+      await Promise.resolve();
+    });
+
+    expect(result.current.prefs).toEqual({ sort: 'newest', period: 'week' });
+    await waitFor(() => expect(store.writes.length).toBe(1));
+    expect(store.writes[0].value).toEqual({ sort: 'newest', period: 'week' });
+  });
+
+  it('🔴 writes NOTHING at all when the read REJECTS — the stored record is unknown', async () => {
+    // Conservative by construction: a failed read means we never learned what is
+    // stored, so any write could destroy it. The choice stays session-local.
+    const store = heldStore();
+    const { result } = renderHook(() => useBrowsePrefs(store));
+
+    await act(async () => {
+      store.reject(new Error('host down'));
+      await Promise.resolve();
+    });
+
+    act(() => result.current.setPeriod('day'));
+    act(() => result.current.setSort('newest'));
+    // Both choices are live in the UI...
+    expect(result.current.prefs).toEqual({ sort: 'newest', period: 'day' });
+    // ...and neither was written.
+    await waitFor(() => expect(store.writes).toEqual([]));
+  });
+
+  it('🔴 a read that never settles writes nothing either', async () => {
+    // The third arm of the same rule, and also RED at the pre-change tree: there
+    // the write went out immediately as `{sort:'popular', period:'day'}` — the
+    // DEFAULT sort — with the real read still in flight.
+    const store = heldStore();
+    const { result } = renderHook(() => useBrowsePrefs(store));
+    act(() => result.current.setPeriod('day'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.prefs.period).toBe('day');
+    expect(store.writes).toEqual([]);
   });
 });
 
@@ -110,7 +216,9 @@ describe('useBrowsePrefs — one mechanism for both controls', () => {
   it('🔴 writes the WHOLE record under ONE key when only the window changes', async () => {
     const store = fakeStore(null);
     const { result } = renderHook(() => useBrowsePrefs(store));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     act(() => result.current.setPeriod('year'));
     await waitFor(() => expect(store.writes.length).toBe(1));
@@ -120,7 +228,9 @@ describe('useBrowsePrefs — one mechanism for both controls', () => {
   it('🔴 writes the WHOLE record under the SAME key when only the sort changes', async () => {
     const store = fakeStore(null);
     const { result } = renderHook(() => useBrowsePrefs(store));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     act(() => result.current.setSort('newest'));
     await waitFor(() => expect(store.writes.length).toBe(1));
@@ -130,7 +240,9 @@ describe('useBrowsePrefs — one mechanism for both controls', () => {
   it('🔴 each write carries exactly the two fields — a ledger, not a sample', async () => {
     const store = fakeStore(null);
     const { result } = renderHook(() => useBrowsePrefs(store));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
+    await act(async () => {
+      await Promise.resolve();
+    });
 
     act(() => result.current.setPeriod('day'));
     act(() => result.current.setSort('newest'));
@@ -142,27 +254,5 @@ describe('useBrowsePrefs — one mechanism for both controls', () => {
     // The second write kept the window chosen by the first — the two controls
     // accumulate into one record rather than overwriting each other.
     expect(store.writes[1].value).toEqual({ sort: 'newest', period: 'day' });
-  });
-
-  it("🔴 a late read does not overwrite a choice the viewer has already made", async () => {
-    // Past the deadline the app is interactive on the defaults. A reply landing
-    // after the viewer pressed a chip must not yank the grid out from under
-    // them — and their press is the newer truth, already persisted.
-    let release!: (v: unknown) => void;
-    const store: BrowsePrefsStore = {
-      get: () => new Promise((res) => { release = res; }) as never,
-      set: async () => ({ ok: true }),
-    };
-    const { result } = renderHook(() => useBrowsePrefs(store, { deadlineMs: 10 }));
-    await waitFor(() => expect(result.current.hydrated).toBe(true));
-
-    act(() => result.current.setPeriod('day'));
-    await waitFor(() => expect(result.current.prefs.period).toBe('day'));
-
-    await act(async () => {
-      release({ sort: 'newest', period: 'year' });
-      await Promise.resolve();
-    });
-    expect(result.current.prefs).toEqual({ sort: 'popular', period: 'day' });
   });
 });

@@ -137,58 +137,59 @@ export interface BrowsePrefsStore {
   set<T = unknown>(key: string, value: T): Promise<unknown>;
 }
 
-/**
- * How long the first list load waits for the stored prefs before giving up and
- * rendering the defaults.
- *
- * 🔴 THIS DEADLINE IS LOAD-BEARING, NOT A TUNING KNOB. The transport's default
- * request timeout is 30_000 ms (`DEFAULT_REQUEST_TIMEOUT_MS`), and `App` holds
- * the grid on its loading skeleton until prefs resolve so a viewer with a stored
- * window is not shown a page of the wrong one first. Without a deadline of our
- * own, a host that never answers `APP_STORAGE_GET` — an older deployment, a
- * dropped message — would hold every viewer on a skeleton for half a minute.
- * Better to render the defaults quickly and correct them when the reply lands.
- *
- * The value is a UX bound, not a latency estimate: the reply is a same-document
- * postMessage round-trip and lands in well under a millisecond on a healthy
- * host, so this is ~1000x headroom. It must stay COMFORTABLY UNDER A SECOND —
- * past that a viewer reads the skeleton as a hang, which is a worse outcome than
- * briefly showing the default window. Raising it trades a real, common cost (an
- * unresponsive host stalls every visit) for an imperceptible one (a slow reply
- * corrects the grid a beat late).
- */
-export const HYDRATE_DEADLINE_MS = 500;
-
 export interface UseBrowsePrefs {
   prefs: BrowsePrefs;
-  /**
-   * Has the restore attempt finished (or timed out)?
-   *
-   * `App` gates its first list fetch on this so a stored window costs one
-   * request, not two — and never shows a page of Popular/Month before swapping
-   * it for the viewer's actual choice.
-   */
-  hydrated: boolean;
   setSort: (sort: CollectionSort) => void;
   setPeriod: (period: CollectionPeriod) => void;
 }
 
 /**
- * The browse prefs, restored on mount and persisted on every change.
+ * The browse prefs: the app renders on the defaults IMMEDIATELY, and the stored
+ * record is applied when it arrives.
  *
- * Both setters funnel through one write of the whole record, so the two controls
- * cannot drift apart in what they persist.
+ * 🔴 NOTHING WAITS ON THE READ, AND THAT IS THE DESIGN. An earlier revision held
+ * the first list fetch until the read resolved, behind a deadline timer, a
+ * `hydrated` flag on this hook's public surface, a race-guard ref, and two
+ * effect dependency arrays in `App`. All of it existed to serve one wait that
+ * was never asked for. Rendering on the defaults and correcting them on arrival
+ * costs at most one extra list request for a viewer with a NON-default stored
+ * record, and removes every one of those moving parts.
  *
- * 🔴 A LATE REPLY IS APPLIED ONLY IF THE VIEWER HAS NOT CHOSEN SINCE. Past the
- * deadline the app is already interactive on the defaults; a reply that lands
- * after the viewer has pressed a chip must not yank the grid out from under
- * them. Their press has already been persisted, so it is also the newer truth.
+ * ---------------------------------------------------------------------------
+ * 🔴 WHY A WRITE CANNOT HAPPEN BEFORE THE FIRST READ RESOLVES
+ * ---------------------------------------------------------------------------
+ * The chips are interactive from the first paint, so a viewer can press one
+ * while the read is still in flight. A naive write then builds the next record
+ * out of whatever this hook currently holds — the DEFAULTS — and stores it,
+ * DESTROYING the field the viewer never touched. Concretely, with
+ * `{sort: 'newest', period: 'year'}` stored and a slow host, one press of a
+ * period chip used to write `{sort: 'popular', period: 'day'}`: the stored sort
+ * is gone, permanently, and the reply that would have revealed it is discarded a
+ * moment later.
+ *
+ * So this hook holds ONE invariant, and every other rule here follows from it:
+ *
+ *   🔴 A RECORD IS ONLY EVER WRITTEN ON TOP OF A RECORD THAT WAS ACTUALLY READ.
+ *
+ * Before the read resolves, a choice updates the UI and is BUFFERED (`pending`)
+ * rather than written. When the read lands, the buffer is replayed ON TOP of the
+ * stored record — so the viewer's press wins on the field they touched and the
+ * stored value survives on the field they did not — and that merged record is
+ * what gets written.
+ *
+ * If the read REJECTS (host down, transport timeout) the stored record's content
+ * is never learned, so writing at all could destroy it: this hook then keeps the
+ * choice session-local and writes nothing, for the rest of the mount. That is
+ * deliberately the conservative branch. It costs little in practice — the
+ * ordinary anonymous case RESOLVES to `null` rather than rejecting, and a host
+ * that cannot answer `APP_STORAGE_GET` is not going to service an
+ * `APP_STORAGE_SET` either — and it buys "a transient read failure can never
+ * silently eat a viewer's stored preference".
  */
 export function useBrowsePrefs(
   storage: BrowsePrefsStore,
-  opts: { deadlineMs?: number; enabled?: boolean } = {},
+  opts: { enabled?: boolean } = {},
 ): UseBrowsePrefs {
-  const deadlineMs = opts.deadlineMs ?? HYDRATE_DEADLINE_MS;
   // 🔴 `enabled` IS THE HOST-READINESS GATE, AND IT IS NOT OPTIONAL IN PRACTICE.
   // App storage is a postMessage round-trip, and the host is not listening until
   // `BLOCK_INIT` has landed (`useBlockContext().ready`). A read posted before
@@ -197,47 +198,63 @@ export function useBrowsePrefs(
   // signal it already gates every other fetch on.
   const enabled = opts.enabled ?? true;
   const [prefs, setPrefs] = useState<BrowsePrefs>(() => ({ ...DEFAULT_BROWSE_PREFS }));
-  const [hydrated, setHydrated] = useState(false);
-  /** The viewer has pressed a chip; their choice outranks any pending read. */
-  const chosenRef = useRef(false);
   /** Mirrors `prefs` so a setter can build the next record without a stale closure. */
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
+  /**
+   * Have we read a record we may safely overwrite?
+   *
+   * `false` until the read RESOLVES. Stays `false` forever if it rejects — see
+   * the invariant in this hook's doc: no read, no write.
+   */
+  const readyToWriteRef = useRef(false);
+  /** Choices made before the read resolved, replayed on top of what it returns. */
+  const pendingRef = useRef<Partial<BrowsePrefs>>({});
 
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) setHydrated(true);
-    }, deadlineMs);
 
     void storage
       .get(BROWSE_PREFS_KEY)
       .then((raw) => {
         if (cancelled) return;
-        if (!chosenRef.current) setPrefs(coerceBrowsePrefs(raw));
+        // The stored record, with any choice the viewer already made laid over
+        // the top: their press is the newer truth on the field they touched, and
+        // the stored value is the only truth on the field they did not.
+        const pending = pendingRef.current;
+        const merged: BrowsePrefs = { ...coerceBrowsePrefs(raw), ...pending };
+        pendingRef.current = {};
+        readyToWriteRef.current = true;
+        prefsRef.current = merged;
+        setPrefs(merged);
+        // Flush a buffered choice now that it can be merged rather than guessed.
+        if (Object.keys(pending).length > 0) {
+          void storage.set(BROWSE_PREFS_KEY, merged).catch(() => {});
+        }
       })
       .catch(() => {
         // An anonymous viewer, a host that predates app storage, a timed-out
         // request. None of them is worth a message: the defaults are a complete,
-        // working browse surface.
-      })
-      .finally(() => {
-        if (!cancelled) setHydrated(true);
+        // working browse surface — and `readyToWriteRef` stays false, so nothing
+        // is written over a record we never saw.
       });
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
     };
-  }, [storage, deadlineMs, enabled]);
+  }, [storage, enabled]);
 
   const persist = useCallback(
     (patch: Partial<BrowsePrefs>) => {
-      chosenRef.current = true;
       const next: BrowsePrefs = { ...prefsRef.current, ...patch };
       prefsRef.current = next;
       setPrefs(next);
+      if (!readyToWriteRef.current) {
+        // Buffer, do not write. See the invariant above.
+        pendingRef.current = { ...pendingRef.current, ...patch };
+        return;
+      }
       // Best effort. A rejected write (anonymous viewer, quota, host down) leaves
       // the choice live for this session and simply does not outlive it.
       void storage.set(BROWSE_PREFS_KEY, next).catch(() => {});
@@ -248,5 +265,5 @@ export function useBrowsePrefs(
   const setSort = useCallback((sort: CollectionSort) => persist({ sort }), [persist]);
   const setPeriod = useCallback((period: CollectionPeriod) => persist({ period }), [persist]);
 
-  return { prefs, hydrated, setSort, setPeriod };
+  return { prefs, setSort, setPeriod };
 }
