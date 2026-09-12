@@ -6,6 +6,7 @@ import { Harness } from '@civitai/blocks-react/testing';
 import type { ViewerInfo } from '@civitai/app-sdk/blocks';
 
 import { App } from './App.js';
+import { BROWSE_PREFS_KEY } from './lib/browse-prefs.js';
 import { CollectionGrid } from './components/CollectionGrid.js';
 import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi } from './fake-api.js';
@@ -26,6 +27,21 @@ function renderApp(
     buzzBalance?: { blue: number; green: number; yellow: number };
     /** Seed the mock host's SHARED store (the apps:storage:shared:* bridge). */
     shared?: { seed?: Array<{ value: { title: string; body?: string; data?: unknown }; authorUserId?: number; voters?: number[] }> };
+    /**
+     * Seed the mock host's PER-VIEWER app store (the `APP_STORAGE_*` bridge) —
+     * the durable side of `lib/browse-prefs.ts`.
+     *
+     * 🔴 SEEDING THIS IS HOW A RELOAD IS SIMULATED, AND THE OBVIOUS ALTERNATIVE
+     * DOES NOT WORK. `unmount()` + a second `renderApp()` looks like a reload but
+     * is not one here: the SDK transport is a module singleton, `<Harness>`
+     * installs its mock host in an effect, and the second mount's host is never
+     * reached — measured, a storage read on mount 2 is simply dropped and never
+     * answered. A remount therefore always falls back to the
+     * defaults and CANNOT distinguish "restored" from "never stored". A fresh
+     * mount against a host whose store already holds the record is exactly what
+     * the app sees after a real reload, and it exercises the real bridge.
+     */
+    storage?: { seed?: Record<string, unknown> };
     /** Analytics sink (Feature #10). */
     onEvent?: (e: { type: string; [k: string]: unknown }) => void;
   } = {},
@@ -38,6 +54,7 @@ function renderApp(
       onOutbound={opts.onOutbound}
       buzzBalance={opts.buzzBalance}
       shared={opts.shared}
+      storage={opts.storage}
     >
       {/* The Harness token carries no `social:tip:self`, so without this the T5 consent
           gate short-circuits every tip case in this file into a REQUEST_CONSENT. These
@@ -1202,28 +1219,129 @@ describe('the popularity window', () => {
     await waitFor(async () => expect(await gridOrder()).toEqual(['Delta', 'Charlie', 'Bravo', 'Alpha']));
   });
 
-  it('persists the window exactly as the sort persists it — i.e. not at all (criterion 3)', async () => {
-    // 🔴 A RELATIONSHIP guard, not a behaviour preference. Criterion 3 asks the
-    // period to persist "in the same way the existing sort choice does"; measured,
-    // the sort does not persist at all (no localStorage key, no URL presence).
-    // This pins the two AGREEING, so it stays honest if someone later gives both
-    // a mechanism — and goes red if the period grows one the sort lacks.
-    const store = globalThis.localStorage;
-    const before = { ...store };
-    const { unmount } = renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
+  it('🔴 persists the window and the sort through ONE mechanism (relationship guard)', async () => {
+    // 🔴 A RELATIONSHIP guard, not a behaviour preference — and this is its
+    // SECOND pointing. It used to pin the two controls agreeing by both
+    // persisting NOTHING ("…i.e. not at all"), which was true when the window
+    // shipped: `sort` was a plain `useState`, so the window was built to match.
+    // The operator has since decided BOTH must survive a reload, so the
+    // invariant is unchanged — "these two persist the same way" — while the way
+    // they persist is not.
+    //
+    // 🔴 THE OLD GUARD WENT GREEN OVER THIS CHANGE, WHICH IS WHY IT COULD NOT
+    // STAY. It asserted against `globalThis.localStorage` and a remount, and the
+    // real mechanism is neither: the record goes to the HOST's per-viewer app
+    // store, and a remount in this harness cannot reach the host at all (see
+    // `renderApp`'s `storage` doc). Both of its checks therefore still passed
+    // over a change that gave both controls persistence — a guard reading as
+    // coverage while providing none.
+    //
+    // What it pins now, and each part fails on its own:
+    //   1. ONE key — every write lands on the same storage key, so there is no
+    //      room for a second, per-control mechanism.
+    //   2. ONE record carrying BOTH fields — touching the window alone still
+    //      writes the sort, and vice versa.
+    //   3. An exact FIELD LEDGER — the record is `{period, sort}` and nothing
+    //      else, so it fails if a control grows a persisted field the other
+    //      lacks, AND if one is dropped.
+    const writes: Array<{ key: string; value: unknown }> = [];
+    renderApp({
+      api: createFakeApi({ collections: windowSeeds() }),
+      onOutbound: (msg) => {
+        if (msg.type === 'APP_STORAGE_SET') writes.push(msg.payload as { key: string; value: unknown });
+      },
+    });
     await screen.findByTestId('collection-grid');
+
+    // Touch ONLY the window. The record must still carry the sort.
     await userEvent.click(screen.getByTestId('period-year'));
+    await waitFor(() => expect(writes.length).toBe(1));
+    expect(writes[0].value).toEqual({ sort: 'popular', period: 'year' });
+
+    // Now touch ONLY the sort. The record must still carry the window — and the
+    // window it carries is the one just chosen, not the default.
     await userEvent.click(screen.getByTestId('sort-newest'));
+    await waitFor(() => expect(writes.length).toBe(2));
+    expect(writes[1].value).toEqual({ sort: 'newest', period: 'year' });
+
+    // 1. One key for both controls.
+    expect(new Set(writes.map((w) => w.key))).toEqual(new Set([BROWSE_PREFS_KEY]));
+    // 3. The exact field ledger — grows or shrinks and this fails.
+    for (const w of writes) {
+      expect(Object.keys(w.value as object).sort()).toEqual(['period', 'sort']);
+    }
+  });
+
+  it('🔴 restores BOTH the sort and the window a returning viewer chose', async () => {
+    // The requirement, behaviourally. Both fixture values are NON-default and
+    // differ from each other's default, so neither assertion can pass by
+    // coincidence: the defaults are Popular + This month, the fixture is Newest
+    // + This year.
+    renderApp({
+      api: createFakeApi({ collections: windowSeeds() }),
+      storage: { seed: { [BROWSE_PREFS_KEY]: { sort: 'newest', period: 'year' } } },
+    });
+    await screen.findByTestId('collection-grid');
+
+    // The sort came back as Newest, not the Popular default.
+    await waitFor(() => expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true'));
+    expect(screen.getByTestId('sort-popular')).toHaveAttribute('aria-pressed', 'false');
+    // The window control is hidden on the newest sort BY DESIGN (the server
+    // ignores a window there), so the restored window is not yet on screen.
+    expect(screen.queryByTestId('period-group')).toBeNull();
+
+    // Reveal it: the restored window survived under the hidden control, and it
+    // is This year rather than the This month default.
     await userEvent.click(screen.getByTestId('sort-popular'));
-    expect(screen.getByTestId('period-year')).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(screen.getByTestId('period-year')).toHaveAttribute('aria-pressed', 'true'));
+    expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'false');
 
-    // Neither choice wrote anything.
-    expect({ ...store }).toEqual(before);
+    // And it is the window actually IN EFFECT, not just a pressed chip: the
+    // year ranking orders the seeds differently from every other window.
+    await waitFor(async () => expect(await gridOrder()).toEqual(['Charlie', 'Alpha', 'Delta', 'Bravo']));
+    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this year.');
+  });
 
-    unmount();
+  it('falls back to the defaults on a first visit, with nothing stored', async () => {
+    // ⚠️ AN INVARIANT GUARD, NOT REGRESSION COVERAGE — measured GREEN at
+    // origin/main, because a build that persists nothing also shows the
+    // defaults on a first visit. It pins the thing persistence is most likely to
+    // break later (a restore path that fires on an empty store), not a bug this
+    // change fixed.
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
-    // A remount is a reload: sort is back to Popular and period back to Month.
+    expect(screen.getByTestId('sort-popular')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this month.');
+  });
+
+  it('🔴 degrades a corrupt stored record PER FIELD instead of breaking the UI', async () => {
+    // The key outlives the app: a record written by a future version can carry a
+    // window this build has never heard of. Rejecting the whole record would
+    // throw away a perfectly good sort, so each field degrades on its own — here
+    // the sort is valid and kept (Newest, non-default) while the unknown window
+    // falls back to the default.
+    renderApp({
+      api: createFakeApi({ collections: windowSeeds() }),
+      storage: { seed: { [BROWSE_PREFS_KEY]: { sort: 'newest', period: 'fortnight' } } },
+    });
+    await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true'));
+    await userEvent.click(screen.getByTestId('sort-popular'));
+    await waitFor(() => expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true'));
+  });
+
+  it('🔴 renders normally when the stored record is not an object at all', async () => {
+    // A wholesale-garbage value must not take the grid down.
+    // ⚠️ ALSO AN INVARIANT GUARD — measured GREEN at origin/main, which ignores
+    // the store entirely and so cannot be broken by its contents. Its value is
+    // forward-looking: it is the case a future `JSON.parse`-shaped restore would
+    // throw on.
+    renderApp({
+      api: createFakeApi({ collections: windowSeeds() }),
+      storage: { seed: { [BROWSE_PREFS_KEY]: 'not-a-record' } },
+    });
+    await screen.findByTestId('collection-grid');
     expect(screen.getByTestId('sort-popular')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true');
   });
@@ -1267,5 +1385,125 @@ describe('the popularity window', () => {
     // On all-time there is no longer window to offer, so the line stays generic.
     await userEvent.click(screen.getByTestId('period-alltime'));
     await waitFor(() => expect(screen.getByTestId('grid-end')).toHaveTextContent("That's the end of the results."));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 🔴 Two list loads in flight at once — the ordering the hydration gate used to
+// provide by accident, and nothing provided after it was deleted.
+// ---------------------------------------------------------------------------
+//
+// The mechanism, and it needs no unusual host: `loadDiscover` is a `useCallback`
+// whose deps include `sort` and `discoverPeriod`, and the effect that runs it
+// keys on that callback's identity. The stored browse prefs are read
+// ASYNCHRONOUSLY, so the first render fetches the DEFAULTS and the restore
+// re-fires the effect underneath the request already in flight. Whichever
+// response arrives last used to win.
+//
+// Both cases below hold the two requests open and release them in the WRONG
+// order on purpose. That is not a contrived schedule — it is what a slow first
+// request and a fast second one look like, and the seeded prefs are exactly a
+// returning viewer's reload.
+describe('🔴 a superseded list response cannot overwrite a newer one', () => {
+  /**
+   * An `ApiClient` whose `mode: 'public'` list calls are HELD OPEN. Each one is
+   * pushed onto `calls` with its params and its own resolve/reject, so a test
+   * settles them in any order it likes. Every other method is the ordinary fake.
+   */
+  function heldDiscoverApi(): {
+    api: ApiClient;
+    calls: Array<{
+      params: { sort?: string; period?: string; cursor?: string };
+      resolve: (items: CollectionSummary[]) => void;
+      reject: (err: unknown) => void;
+    }>;
+  } {
+    const base = createFakeApi({ collections: [] });
+    const calls: Array<{
+      params: { sort?: string; period?: string; cursor?: string };
+      resolve: (items: CollectionSummary[]) => void;
+      reject: (err: unknown) => void;
+    }> = [];
+    const api: ApiClient = {
+      ...base,
+      listCollections(params) {
+        if (params.mode !== 'public') return base.listCollections(params);
+        return new Promise((res, rej) => {
+          calls.push({
+            params: { sort: params.sort, period: params.period, cursor: params.cursor },
+            resolve: (items) => res({ items }),
+            reject: rej,
+          });
+        });
+      },
+    };
+    return { api, calls };
+  }
+
+  /** Render with a stored non-default record, and wait for BOTH requests to be out. */
+  async function twoInFlight() {
+    const { api, calls } = heldDiscoverApi();
+    renderApp({
+      api,
+      // A returning viewer. Both values are non-default (the defaults are
+      // popular + month), so the restore genuinely changes the callback.
+      storage: { seed: { [BROWSE_PREFS_KEY]: { sort: 'newest', period: 'year' } } },
+    });
+    // 🔴 THE PRECONDITION IS PART OF THE CLAIM. If only ONE request ever went
+    // out there would be no race to lose, and both cases below would pass
+    // vacuously — so assert the overlap itself, and assert WHICH request is
+    // which by the params that distinguish them.
+    await waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[0].params.sort).toBe('popular'); // the defaults
+    expect(calls[1].params.sort).toBe('newest'); // the restored record
+    return { calls };
+  }
+
+  const named = (id: number, name: string): CollectionSummary =>
+    sampleCollection({ id, name, curator: { userId: 5, username: 'curator' } });
+
+  it('🔴 SUCCESS ARM — the stale response does not replace the painted grid', async () => {
+    const { calls } = await twoInFlight();
+
+    // The request the viewer's restored prefs asked for lands FIRST and paints.
+    await act(async () => calls[1].resolve([named(2, 'Restored')]));
+    expect(await screen.findByText('Restored')).toBeInTheDocument();
+
+    // …and now the superseded default request finally answers. Before the fix
+    // this replaced the whole grid — the viewer read "Newest" on the sort chip
+    // while looking at the popular-this-month page.
+    await act(async () => calls[0].resolve([named(1, 'Stale')]));
+
+    expect(screen.queryByText('Stale')).toBeNull();
+    expect(screen.getByText('Restored')).toBeInTheDocument();
+    // The control and the content still agree, which is the harm in one line.
+    expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('🔴 ERROR ARM — a stale FAILURE does not wipe an already-good grid', async () => {
+    const { calls } = await twoInFlight();
+
+    await act(async () => calls[1].resolve([named(2, 'Restored')]));
+    expect(await screen.findByText('Restored')).toBeInTheDocument();
+
+    // The superseded request fails. Its `catch` sets `{...EMPTY_LIST, error}` —
+    // an unconditional whole-state replace — so before the fix a failure nobody
+    // was waiting for turned a working grid into an error + retry pane.
+    //
+    // 🔴 403, NOT 500, AND THAT IS LOAD-BEARING. `loadDiscover` wraps the call
+    // in `withBoundedRetry`, which retries a 5xx — so a 500 here is swallowed
+    // into a fresh attempt that this fake never settles, the `catch` arm is
+    // never reached, and the case passes at the PRE-CHANGE tree while proving
+    // nothing. Measured: it did exactly that on the first writing. A 403 is not
+    // retryable (`isRetryableApiError`), so it reaches the arm under test.
+    await act(async () => calls[0].reject(new ApiError('forbidden', 403, 'Stale boom')));
+
+    // The control on the paragraph above: no retry was issued, so the rejection
+    // really did land in `loadDiscover`'s `catch` rather than in a retry loop.
+    expect(calls.length).toBe(2);
+
+    expect(screen.queryByTestId('grid-error')).toBeNull();
+    expect(screen.queryByText('Stale boom')).toBeNull();
+    expect(screen.getByText('Restored')).toBeInTheDocument();
   });
 });

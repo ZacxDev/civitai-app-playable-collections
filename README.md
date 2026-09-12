@@ -32,7 +32,7 @@ Mirrors the `civitai-block-prompt-library` page-app template:
 ## Layout
 
 ```
-block.manifest.json     Page-app manifest: 7 scopes (settings are device-local, not manifest)
+block.manifest.json     Page-app manifest: the declared scopes (settings are device-local, not manifest)
 src/
   App.tsx               Top-level: discover/mine tabs, popular rail, player, optimistic follow/tip
   types.ts              Domain types mirroring the Wave 1A endpoint shapes
@@ -98,9 +98,9 @@ resolved camelCase `PlayerSettings`.
 
 ## Scopes & the API host origin
 
-All **7 scopes** are first-class in `@civitai/app-sdk@0.17.0` (the `BLOCK_SCOPES`
-enum + the relaxed `BLOCK_SCOPE_PATTERN` that now accepts the 4-segment
-`apps:storage:shared:*`), so `defineBlock` validates the manifest directly — the
+Every scope the manifest declares is first-class in `@civitai/app-sdk@0.17.0`
+(the `BLOCK_SCOPES` enum + the relaxed `BLOCK_SCOPE_PATTERN` that now accepts the
+4-segment `apps:storage:shared:*`), so `defineBlock` validates the manifest directly — the
 earlier `KNOWN_INCOMING_SCOPES` strip-before-validate workaround is gone.
 
 **API host origin (the run-page loop fix):** the block-token-gated API lives on
@@ -122,7 +122,8 @@ cross-origin. Fetching same-origin returned the block's SPA `index.html` → a
 
 ## Private collections & the consent gate
 
-The app requests **7 scopes**. `collections:read:private` is **consent-gated**
+The scopes the app requests are the `scopes` array in `block.manifest.json`.
+`collections:read:private` is **consent-gated**
 (like `ai:write:budgeted`): the block-token mint withholds it until the viewer
 grants it through the host's consent UI, and the server omits the viewer's
 private collections / 404s private detail until the scope is on the token.

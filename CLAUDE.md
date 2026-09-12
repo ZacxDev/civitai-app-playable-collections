@@ -52,8 +52,15 @@ touching it — each one records the defect it exists to prevent):
   second follow implementation here.
 - **Maturity gating.** `src/lib/maturity.ts` + `src/components/Maturity.tsx`:
   anything above PG-13 stays blurred until the viewer confirms 18+ once.
-- **Scopes.** `block.manifest.json` declares six; `src/manifest.test.ts` pins the
-  exact list. `collections:write:self` was dropped in 0.2.10 and must not return.
+- **Scopes.** `block.manifest.json` declares them; `src/manifest.test.ts` pins the
+  exact list as a literal ledger, and `src/scope-contract.test.ts` pins that list
+  against what `src/` actually calls. 🔴 **No count is written here on purpose.**
+  This line used to say "six", which was true of `origin/main` and went stale the
+  moment the per-viewer `apps:storage:{read,write}` pair was declared; the README
+  carried "7 scopes" in three places while the manifest declared six. A number in
+  prose is pinned by nothing — the ledger in `manifest.test.ts` is the only thing
+  that pins the list, and it fails by name when the list moves.
+  `collections:write:self` was dropped in 0.2.10 and must not return.
 
 ## Get a shell
 
@@ -167,6 +174,16 @@ New guards should pin a *relationship* that cannot rot on a routine bump, and be
 watched failing before they are trusted. `src/manifest.test.ts`'s version
 lockstep and `src/toolchain-lockstep.test.ts` are the pattern to copy — both
 explain, in the file, the incident they exist to prevent.
+
+🔴 **Adding a scoped SDK hook means adding its manifest scope**, and
+`src/scope-contract.test.ts` is what enforces it — in both directions: a hook
+called in `src/` whose scope is undeclared (which ships a feature the host
+refuses on every call, silently, because both storage call sites swallow the
+rejection), and a declared scope with no caller (a capability a moderator and
+every viewer are shown for nothing). `manifest.test.ts` alone cannot see either:
+it pins the declared list against a literal, so it stayed green over a build
+whose persistence never worked in production. If an SDK bump adds a hook or a
+scope, that file fails by name until the new one is classified.
 
 ## Release protocol
 
