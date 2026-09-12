@@ -379,7 +379,12 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // SESSION-SCOPED. A localStorage key would have tested green and persisted
   // nothing in production.
   const appStorage = useAppStorage();
-  const { prefs: browsePrefs, hydrated: prefsHydrated, setSort, setPeriod } = useBrowsePrefs(appStorage);
+  const {
+    prefs: browsePrefs,
+    hydrated: prefsHydrated,
+    setSort,
+    setPeriod,
+  } = useBrowsePrefs(appStorage, { enabled: ready });
   const { sort, period } = browsePrefs;
   // 🔴 THE WINDOW IS A PUBLIC-DISCOVERY CONCEPT, AND IT IS SENT IN EXACTLY ONE
   // PLACE: the public feed, on the popularity sort. Both exclusions are measured,

@@ -148,8 +148,16 @@ export interface BrowsePrefsStore {
  * own, a host that never answers `APP_STORAGE_GET` — an older deployment, a
  * dropped message — would hold every viewer on a skeleton for half a minute.
  * Better to render the defaults quickly and correct them when the reply lands.
+ *
+ * The value is a UX bound, not a latency estimate: the reply is a same-document
+ * postMessage round-trip and lands in well under a millisecond on a healthy
+ * host, so this is ~1000x headroom. It must stay COMFORTABLY UNDER A SECOND —
+ * past that a viewer reads the skeleton as a hang, which is a worse outcome than
+ * briefly showing the default window. Raising it trades a real, common cost (an
+ * unresponsive host stalls every visit) for an imperceptible one (a slow reply
+ * corrects the grid a beat late).
  */
-export const HYDRATE_DEADLINE_MS = 1_200;
+export const HYDRATE_DEADLINE_MS = 500;
 
 export interface UseBrowsePrefs {
   prefs: BrowsePrefs;
@@ -178,9 +186,16 @@ export interface UseBrowsePrefs {
  */
 export function useBrowsePrefs(
   storage: BrowsePrefsStore,
-  opts: { deadlineMs?: number } = {},
+  opts: { deadlineMs?: number; enabled?: boolean } = {},
 ): UseBrowsePrefs {
   const deadlineMs = opts.deadlineMs ?? HYDRATE_DEADLINE_MS;
+  // 🔴 `enabled` IS THE HOST-READINESS GATE, AND IT IS NOT OPTIONAL IN PRACTICE.
+  // App storage is a postMessage round-trip, and the host is not listening until
+  // `BLOCK_INIT` has landed (`useBlockContext().ready`). A read posted before
+  // that is not queued — it is simply never answered, and then costs the
+  // transport's full 30 s timeout. `App` therefore passes `ready` here, the same
+  // signal it already gates every other fetch on.
+  const enabled = opts.enabled ?? true;
   const [prefs, setPrefs] = useState<BrowsePrefs>(() => ({ ...DEFAULT_BROWSE_PREFS }));
   const [hydrated, setHydrated] = useState(false);
   /** The viewer has pressed a chip; their choice outranks any pending read. */
@@ -190,6 +205,7 @@ export function useBrowsePrefs(
   prefsRef.current = prefs;
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       if (!cancelled) setHydrated(true);
@@ -214,7 +230,7 @@ export function useBrowsePrefs(
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [storage, deadlineMs]);
+  }, [storage, deadlineMs, enabled]);
 
   const persist = useCallback(
     (patch: Partial<BrowsePrefs>) => {
