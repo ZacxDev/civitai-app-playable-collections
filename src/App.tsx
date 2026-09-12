@@ -33,6 +33,7 @@ import type { CSSProperties } from 'react';
 import { nextIndex, rovingAction } from './lib/roving.js';
 
 import {
+  useAppStorage,
   useBlockContext,
   useBlockResize,
   useBlockToken,
@@ -61,14 +62,13 @@ import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.j
 import { usePlayerSettings } from './settings.js';
 import {
   COLLECTION_PERIODS,
-  DEFAULT_PERIOD,
   PERIOD_LABEL,
   PERIOD_TESTID,
   endOfResultsLabel,
   sortHint,
   windowFallbackNotice,
-  type CollectionPeriod,
 } from './lib/period.js';
+import { useBrowsePrefs } from './lib/browse-prefs.js';
 import { useDebouncedValue } from './lib/use-debounced-value.js';
 import { useServerTipAllowance } from './lib/tip-allowance.js';
 import { buildShareUrl, decodeDeepLink, encodeDeepLink } from './lib/deep-link.js';
@@ -87,7 +87,6 @@ import { paintTheme } from './bootTheme.js';
 import { useIsMobile } from './useMediaQuery.js';
 import type {
   CollectionDetail,
-  CollectionSort,
   CollectionSummary,
   MediaItem,
 } from './types.js';
@@ -361,25 +360,27 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // loaders below read `debouncedSearch`, so they're re-created (and the browse
   // effects re-run) ~300 ms after typing stops, not on each keystroke.
   const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
-  // Default the discovery sort to popular (feedback #3). On the wire this becomes
-  // the deployed server's `Most Followers` (CollectionSort.MostContributors) via
-  // SORT_PARAM in lib/api.ts — no dependency on any undeployed server enum.
-  const [sort, setSort] = useState<CollectionSort>('popular');
-  // The popularity WINDOW, defaulting to Month (criterion 1).
+  // ---- the two persisted discovery controls ----
   //
-  // 🔴 NOT PERSISTED — DELIBERATELY, AND MATCHING `sort` ABOVE. Criterion 3 asks
-  // that the choice persist "in the same way the existing sort choice does", and
-  // measured: the sort choice does not persist AT ALL. It is a plain `useState`
-  // with no localStorage entry (`settings.ts` has keys for `secondsPerImage` and
-  // `videoLoopCount` and nothing else) and no URL presence (`deep-link.ts`
-  // encodes `c`/`mode`/`i` only). So a reload returns to Popular, and now also to
-  // Month. Giving the period a persistence mechanism the sort does not have is
-  // exactly the "second mechanism" the criterion forbids; the PR flags the
-  // question so the operator can decide whether BOTH should persist.
-  // App.test.tsx's "persists the window exactly as the sort persists it — i.e.
-  // not at all (criterion 3)" pins the two behaving identically, so this goes
-  // red if the period ever grows a mechanism the sort lacks.
-  const [period, setPeriod] = useState<CollectionPeriod>(DEFAULT_PERIOD);
+  // The sort defaults to Popular (feedback #3) and the window to Month
+  // (criterion 1). On the wire the sort becomes the deployed server's
+  // `Most Followers` (CollectionSort.MostContributors) via SORT_PARAM in
+  // lib/api.ts — no dependency on any undeployed server enum.
+  //
+  // 🔴 BOTH PERSIST, THROUGH ONE MECHANISM, BY DESIGN. They used to be two plain
+  // `useState`s that agreed by both persisting NOTHING, with a comment here
+  // asking the operator to decide whether both should survive a reload. They
+  // should. `lib/browse-prefs.ts` writes them as a single record to a single
+  // app-storage key, so there is no way to give one a mechanism the other lacks
+  // — which is the drift `App.test.tsx`'s relationship guard exists to catch.
+  //
+  // 🔴 It is NOT localStorage, and the reason is in `lib/browse-prefs.ts`: this
+  // iframe has an opaque origin, so the SDK's web-storage shim is in-memory and
+  // SESSION-SCOPED. A localStorage key would have tested green and persisted
+  // nothing in production.
+  const appStorage = useAppStorage();
+  const { prefs: browsePrefs, hydrated: prefsHydrated, setSort, setPeriod } = useBrowsePrefs(appStorage);
+  const { sort, period } = browsePrefs;
   // 🔴 THE WINDOW IS A PUBLIC-DISCOVERY CONCEPT, AND IT IS SENT IN EXACTLY ONE
   // PLACE: the public feed, on the popularity sort. Both exclusions are measured,
   // not assumed — the server reports a distinct reason for each:
@@ -591,17 +592,26 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
 
   // ---- effects ---- (all gated on `canFetch`: don't fetch until the host
   // origin + token are established, or the loop's root cause returns)
+  //
+  // 🔴 ALSO GATED ON `prefsHydrated`. The restored sort/window arrive one host
+  // round-trip after mount, and they are INPUTS to these fetches. Firing before
+  // they land costs a wasted request AND shows a page of Popular/Month before
+  // swapping it for whatever the viewer actually chose last time. The grid holds
+  // its existing loading skeleton for that round-trip instead. `prefsHydrated`
+  // is guaranteed to flip — `useBrowsePrefs` arms its own short deadline rather
+  // than inheriting the transport's 30 s request timeout — so a host that never
+  // answers costs a beat, not a hung page.
   useEffect(() => {
-    if (!ready || !canFetch) return;
+    if (!ready || !canFetch || !prefsHydrated) return;
     void loadDiscover();
-  }, [ready, canFetch, loadDiscover]);
+  }, [ready, canFetch, prefsHydrated, loadDiscover]);
 
   useEffect(() => {
-    if (!ready || !canFetch) return;
+    if (!ready || !canFetch || !prefsHydrated) return;
     // Reload when the private scope is granted (re-mint) so the viewer's private
     // collections appear without a manual refresh.
     if (tab === 'mine') void loadMine();
-  }, [ready, canFetch, tab, loadMine, hasPrivateScope]);
+  }, [ready, canFetch, prefsHydrated, tab, loadMine, hasPrivateScope]);
 
   // Recompute the popular rail whenever the known-collections map changes.
   useEffect(() => {

@@ -1,0 +1,236 @@
+// The discovery browse preferences — the SORT and the popularity WINDOW —
+// persisted so they survive a reload.
+//
+// ---------------------------------------------------------------------------
+// 🔴 WHY THIS IS NOT `localStorage`, AND WHY THE OBVIOUS CHOICE IS THE WRONG ONE
+// ---------------------------------------------------------------------------
+// This block runs in an iframe the platform sandboxes as `allow-scripts
+// allow-forms`, deliberately WITHOUT `allow-same-origin` (`block.manifest.json`
+// -> `iframe.sandbox`; the manifest validator BANS `allow-same-origin`). The
+// document therefore has an OPAQUE ORIGIN, and there is no origin to key web
+// storage against — reading the `localStorage` property itself throws:
+//
+//   SecurityError: Failed to read the 'localStorage' property from 'Window':
+//   The document is sandboxed and lacks the 'allow-same-origin' flag.
+//
+// `@civitai/blocks-react` imports `@civitai/app-sdk/blocks`, which installs a
+// spec-shaped IN-MEMORY `Storage` over the unusable global so no dependency can
+// take the app down. That shim is what makes `settings.ts` and `view-modes.ts`
+// safe — but read its own contract (`@civitai/app-sdk/dist/safe-storage`, sdk
+// 0.39.0):
+//
+//   "The fallback is session-scoped — nothing survives a reload — which is the
+//    honest semantic at an opaque origin. [...] the durable per-user store is
+//    the platform's app-storage API."
+//
+// So a `localStorage` key here would read and write perfectly, pass every jsdom
+// test, and PERSIST NOTHING IN PRODUCTION. It is the exact shape of a vacuous
+// green: the mechanism under test is the shim, not the platform. That is why
+// this module talks to the host's app-storage bridge instead.
+//
+// A URL query param was rejected for a different reason: the block's own URL is
+// not the one the viewer sees. The address bar belongs to the HOST page
+// (`civitai.com/apps/run/playable-collections`), so an iframe-internal param
+// buys no shareability, and a host-page reload re-creates the iframe from its
+// original `src` — taking any `history.replaceState` state with it. (The
+// existing `lib/deep-link.ts` hash lives under the same constraint; widening it
+// was not an option for state that must outlive a reload.)
+//
+// ---------------------------------------------------------------------------
+// 🔴 WHAT THIS CANNOT DO: ANONYMOUS VIEWERS
+// ---------------------------------------------------------------------------
+// App storage is keyed per (block instance, VIEWER). For an anonymous viewer the
+// host resolves `get` to `null` and REJECTS `set`. There is no fourth option —
+// the sandbox denies web storage and the platform has no anon-keyed store — so a
+// signed-out viewer always lands on the defaults. Both calls here are
+// best-effort and neither surfaces an error, because "your sort did not stick"
+// is not something to interrupt a signed-out browse with.
+//
+// ---------------------------------------------------------------------------
+// 🔴 ONE MECHANISM, ONE KEY, ONE RECORD — THE POINT OF THIS FILE
+// ---------------------------------------------------------------------------
+// `sort` and `period` are persisted TOGETHER, as one JSON record under one key,
+// through one setter path. That is deliberate and it is the invariant
+// `App.test.tsx`'s relationship guard pins: before this module the two controls
+// agreed by both being un-persisted `useState`, and a comment in `App.tsx` asked
+// the operator to decide whether both should persist. They should, and giving
+// one a mechanism the other lacks is the drift the guard exists to catch. With a
+// single record there is no way to persist one without the other — the guard
+// checks the record's field set so it fails if that ever stops being true.
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { DEFAULT_PERIOD, isCollectionPeriod, type CollectionPeriod } from './period.js';
+import type { CollectionSort } from '../types.js';
+
+/**
+ * The sort a first visit lands on (feedback #3 — Popular, not Newest).
+ *
+ * Lives here rather than inline in `App.tsx` so the two defaults this module
+ * restores to sit side by side with each other: a first visit and a failed read
+ * must land on the SAME pair, and that is easier to keep true when one object
+ * declares both.
+ */
+export const DEFAULT_SORT: CollectionSort = 'popular';
+
+/** Is this one of the two known sorts? Narrows an unknown string. */
+export function isCollectionSort(value: unknown): value is CollectionSort {
+  return value === 'newest' || value === 'popular';
+}
+
+/** The discovery controls that survive a reload. */
+export interface BrowsePrefs {
+  sort: CollectionSort;
+  period: CollectionPeriod;
+}
+
+/**
+ * The app-storage key holding the record.
+ *
+ * Namespaced like the (session-scoped) web-storage keys in `settings.ts` so the
+ * two families read the same at a glance, even though they reach different
+ * stores. App storage is per-app already, so the prefix is for humans.
+ */
+export const BROWSE_PREFS_KEY = 'playable-collections:browse-prefs';
+
+/** What a first visit — and any unreadable record — falls back to. */
+export const DEFAULT_BROWSE_PREFS: BrowsePrefs = {
+  sort: DEFAULT_SORT,
+  period: DEFAULT_PERIOD,
+};
+
+/**
+ * Narrow an arbitrary host value to a `BrowsePrefs`, PER FIELD.
+ *
+ * 🔴 Per-field, not all-or-nothing, and that is the whole robustness story. The
+ * host stores arbitrary JSON and this key outlives the app: a record written by
+ * a future version may carry a period this build has never heard of, or a field
+ * that has since been renamed. Rejecting the whole record on one bad field would
+ * throw away a perfectly good sort; keeping a bad field would put an unknown
+ * string into a wire param. So each field is validated against its own enum and
+ * independently degrades to its default.
+ *
+ * Never throws. `null`/`undefined` (unset key, anonymous viewer), a string, an
+ * array, and a record of garbage all yield exactly `DEFAULT_BROWSE_PREFS`.
+ */
+export function coerceBrowsePrefs(raw: unknown): BrowsePrefs {
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ...DEFAULT_BROWSE_PREFS };
+  }
+  const rec = raw as Record<string, unknown>;
+  return {
+    sort: isCollectionSort(rec.sort) ? rec.sort : DEFAULT_SORT,
+    period: isCollectionPeriod(rec.period) ? rec.period : DEFAULT_PERIOD,
+  };
+}
+
+/**
+ * The slice of the host's app-storage bridge this module needs.
+ *
+ * Structural on purpose: `useAppStorage()` from `@civitai/blocks-react`
+ * satisfies it, and so does a three-line fake. Depending on the SHAPE rather
+ * than the hook keeps this module testable in the pure-logic (`node`) project,
+ * which has no host and no DOM.
+ */
+export interface BrowsePrefsStore {
+  get<T = unknown>(key: string): Promise<T | null>;
+  set<T = unknown>(key: string, value: T): Promise<unknown>;
+}
+
+/**
+ * How long the first list load waits for the stored prefs before giving up and
+ * rendering the defaults.
+ *
+ * 🔴 THIS DEADLINE IS LOAD-BEARING, NOT A TUNING KNOB. The transport's default
+ * request timeout is 30_000 ms (`DEFAULT_REQUEST_TIMEOUT_MS`), and `App` holds
+ * the grid on its loading skeleton until prefs resolve so a viewer with a stored
+ * window is not shown a page of the wrong one first. Without a deadline of our
+ * own, a host that never answers `APP_STORAGE_GET` — an older deployment, a
+ * dropped message — would hold every viewer on a skeleton for half a minute.
+ * Better to render the defaults quickly and correct them when the reply lands.
+ */
+export const HYDRATE_DEADLINE_MS = 1_200;
+
+export interface UseBrowsePrefs {
+  prefs: BrowsePrefs;
+  /**
+   * Has the restore attempt finished (or timed out)?
+   *
+   * `App` gates its first list fetch on this so a stored window costs one
+   * request, not two — and never shows a page of Popular/Month before swapping
+   * it for the viewer's actual choice.
+   */
+  hydrated: boolean;
+  setSort: (sort: CollectionSort) => void;
+  setPeriod: (period: CollectionPeriod) => void;
+}
+
+/**
+ * The browse prefs, restored on mount and persisted on every change.
+ *
+ * Both setters funnel through one write of the whole record, so the two controls
+ * cannot drift apart in what they persist.
+ *
+ * 🔴 A LATE REPLY IS APPLIED ONLY IF THE VIEWER HAS NOT CHOSEN SINCE. Past the
+ * deadline the app is already interactive on the defaults; a reply that lands
+ * after the viewer has pressed a chip must not yank the grid out from under
+ * them. Their press has already been persisted, so it is also the newer truth.
+ */
+export function useBrowsePrefs(
+  storage: BrowsePrefsStore,
+  opts: { deadlineMs?: number } = {},
+): UseBrowsePrefs {
+  const deadlineMs = opts.deadlineMs ?? HYDRATE_DEADLINE_MS;
+  const [prefs, setPrefs] = useState<BrowsePrefs>(() => ({ ...DEFAULT_BROWSE_PREFS }));
+  const [hydrated, setHydrated] = useState(false);
+  /** The viewer has pressed a chip; their choice outranks any pending read. */
+  const chosenRef = useRef(false);
+  /** Mirrors `prefs` so a setter can build the next record without a stale closure. */
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) setHydrated(true);
+    }, deadlineMs);
+
+    void storage
+      .get(BROWSE_PREFS_KEY)
+      .then((raw) => {
+        if (cancelled) return;
+        if (!chosenRef.current) setPrefs(coerceBrowsePrefs(raw));
+      })
+      .catch(() => {
+        // An anonymous viewer, a host that predates app storage, a timed-out
+        // request. None of them is worth a message: the defaults are a complete,
+        // working browse surface.
+      })
+      .finally(() => {
+        if (!cancelled) setHydrated(true);
+      });
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [storage, deadlineMs]);
+
+  const persist = useCallback(
+    (patch: Partial<BrowsePrefs>) => {
+      chosenRef.current = true;
+      const next: BrowsePrefs = { ...prefsRef.current, ...patch };
+      prefsRef.current = next;
+      setPrefs(next);
+      // Best effort. A rejected write (anonymous viewer, quota, host down) leaves
+      // the choice live for this session and simply does not outlive it.
+      void storage.set(BROWSE_PREFS_KEY, next).catch(() => {});
+    },
+    [storage],
+  );
+
+  const setSort = useCallback((sort: CollectionSort) => persist({ sort }), [persist]);
+  const setPeriod = useCallback((period: CollectionPeriod) => persist({ period }), [persist]);
+
+  return { prefs, hydrated, setSort, setPeriod };
+}
