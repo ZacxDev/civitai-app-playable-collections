@@ -202,30 +202,42 @@ export function useBrowsePrefs(
   const prefsRef = useRef(prefs);
   prefsRef.current = prefs;
   /**
-   * Have we read a record we may safely overwrite?
+   * Has a stored record been read?
    *
-   * `false` until the read RESOLVES. Stays `false` forever if it rejects — see
-   * the invariant in this hook's doc: no read, no write.
+   * Two jobs, and they are the same condition: it licenses a WRITE (see the
+   * invariant above — a record we never read is a record we must not overwrite),
+   * and it makes the restore happen AT MOST ONCE.
+   *
+   * 🔴 The at-most-once half is not belt-and-braces. This effect keys on the
+   * `storage` object's identity, and that identity is stable only because
+   * `useAppStorage` happens to `useMemo(…, [])` it. A second restore firing —
+   * an SDK that stopped memoising, a caller passing a fresh object, React's
+   * StrictMode double-invoking the effect — would land with the pre-read buffer
+   * already drained, and would therefore overwrite a choice the viewer had since
+   * made with the older stored value. Latching here means this hook does not
+   * depend on someone else's memoisation for its correctness.
+   *
+   * Stays `false` forever if the read rejects: no read, no write, no restore.
    */
-  const readyToWriteRef = useRef(false);
+  const restoredRef = useRef(false);
   /** Choices made before the read resolved, replayed on top of what it returns. */
   const pendingRef = useRef<Partial<BrowsePrefs>>({});
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || restoredRef.current) return;
     let cancelled = false;
 
     void storage
       .get(BROWSE_PREFS_KEY)
       .then((raw) => {
-        if (cancelled) return;
+        if (cancelled || restoredRef.current) return;
         // The stored record, with any choice the viewer already made laid over
         // the top: their press is the newer truth on the field they touched, and
         // the stored value is the only truth on the field they did not.
         const pending = pendingRef.current;
         const merged: BrowsePrefs = { ...coerceBrowsePrefs(raw), ...pending };
         pendingRef.current = {};
-        readyToWriteRef.current = true;
+        restoredRef.current = true;
         prefsRef.current = merged;
         setPrefs(merged);
         // Flush a buffered choice now that it can be merged rather than guessed.
@@ -236,7 +248,7 @@ export function useBrowsePrefs(
       .catch(() => {
         // An anonymous viewer, a host that predates app storage, a timed-out
         // request. None of them is worth a message: the defaults are a complete,
-        // working browse surface — and `readyToWriteRef` stays false, so nothing
+        // working browse surface — and `restoredRef` stays false, so nothing
         // is written over a record we never saw.
       });
 
@@ -250,7 +262,7 @@ export function useBrowsePrefs(
       const next: BrowsePrefs = { ...prefsRef.current, ...patch };
       prefsRef.current = next;
       setPrefs(next);
-      if (!readyToWriteRef.current) {
+      if (!restoredRef.current) {
         // Buffer, do not write. See the invariant above.
         pendingRef.current = { ...pendingRef.current, ...patch };
         return;

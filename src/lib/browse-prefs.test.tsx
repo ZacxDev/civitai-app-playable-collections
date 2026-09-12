@@ -197,6 +197,32 @@ describe('useBrowsePrefs — a write is only ever laid over a record that was RE
     await waitFor(() => expect(store.writes).toEqual([]));
   });
 
+  it('🔴 restores AT MOST ONCE — a second read cannot overwrite a later choice', async () => {
+    // ⚠️ AN INVARIANT GUARD, NOT REGRESSION COVERAGE — measured GREEN at the
+    // pre-change tree, which held a `chosenRef` that covered this case by a
+    // different route. It is here because that ref is gone and the property has
+    // to be pinned by something: the restore effect keys on the `storage`
+    // object's identity, which is stable only because `useAppStorage` memoises
+    // it. If a store identity ever changes — a caller, an SDK change,
+    // StrictMode — a second restore must not land on top of the viewer.
+    const first = fakeStore({ sort: 'newest', period: 'year' });
+    const second = fakeStore({ sort: 'popular', period: 'allTime' });
+    const { result, rerender } = renderHook(
+      ({ store }: { store: BrowsePrefsStore }) => useBrowsePrefs(store),
+      { initialProps: { store: first as BrowsePrefsStore } },
+    );
+    await waitFor(() => expect(result.current.prefs).toEqual({ sort: 'newest', period: 'year' }));
+
+    act(() => result.current.setPeriod('day'));
+    rerender({ store: second as BrowsePrefsStore });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The second store's record never landed, and the viewer's choice stands.
+    expect(result.current.prefs).toEqual({ sort: 'newest', period: 'day' });
+  });
+
   it('🔴 a read that never settles writes nothing either', async () => {
     // The third arm of the same rule, and also RED at the pre-change tree: there
     // the write went out immediately as `{sort:'popular', period:'day'}` — the
