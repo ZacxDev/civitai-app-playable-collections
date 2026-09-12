@@ -218,6 +218,23 @@ export function useBrowsePrefs(
    * depend on someone else's memoisation for its correctness.
    *
    * Stays `false` forever if the read rejects: no read, no write, no restore.
+   *
+   * 🔴 IT IS CHECKED IN EXACTLY ONE PLACE, AND THAT IS A CORRECTION. It used to
+   * be checked twice — at the top of the effect AND again in the `.then` — and
+   * the second one was redundant, not belt-and-braces. An adversarial mutation
+   * sweep measured each site SURVIVING alone against a fully green suite, with
+   * only the both-sites mutant killed: a guard pair that reads as pinned and is
+   * not, where a maintainer simplifying either one away sees green.
+   *
+   * Why the `.then` one could go rather than this one: a read can only land
+   * while it belongs to the CURRENT effect instance, because React runs an
+   * effect's cleanup before re-running it and that cleanup sets `cancelled`. So
+   * a `.then` that gets past `cancelled` is necessarily from the effect that is
+   * live right now — and this check is what stopped that effect from starting
+   * after a restore in the first place. `cancelled` covers the overlap case
+   * (`browse-prefs.test.tsx` pins it with two reads genuinely in flight at once);
+   * this ref covers the after-the-fact case, and additionally spares the host a
+   * round-trip nobody would have used. Each is now pinned by its own test.
    */
   const restoredRef = useRef(false);
   /** Choices made before the read resolved, replayed on top of what it returns. */
@@ -230,7 +247,7 @@ export function useBrowsePrefs(
     void storage
       .get(BROWSE_PREFS_KEY)
       .then((raw) => {
-        if (cancelled || restoredRef.current) return;
+        if (cancelled) return;
         // The stored record, with any choice the viewer already made laid over
         // the top: their press is the newer truth on the field they touched, and
         // the stored value is the only truth on the field they did not.

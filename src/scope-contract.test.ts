@@ -33,15 +33,35 @@
 // SDK's own `BLOCK_SCOPES`, so a renamed or retired scope string is a type error
 // here rather than a literal that quietly stops matching.
 //
-// The HOOK -> SCOPE mapping is not derivable: `@civitai/blocks-react` ships no
-// machine-readable scope metadata, and its JSDoc names a scope for only some
-// hooks. Measured against the installed `0.49.0`: `useTip`, `useTipAllowance`,
-// `useBuzzTransactions`, `useBuzzAccounts`, `useDailyCompensation`,
-// `useAppWorkflows` and `useSharedStorage` each name theirs; `useAppStorage` —
-// the hook this whole file exists because of — names NONE. So a map derived from
-// the docs would have been blind to precisely the defect it is here to catch.
+// The HOOK -> SCOPE mapping is not derivable AS A MAPPING: `@civitai/blocks-react`
+// ships no machine-readable scope metadata — no exported table, nothing but
+// prose in the JSDoc — and the prose that exists is not attached to one hook per
+// scope. Complete enumeration of every scope-shaped literal in the installed
+// `0.49.0` `dist/` (`.d.ts` + `.js`): eight strings, `ai:write:budgeted`,
+// `buzz:read:self`, `social:tip:self`, `collections:write:self`,
+// `apps:storage:{read,write}` and `apps:storage:shared:{read,write}`. Some sit in
+// the hook's own `.d.ts` (`useTip`, `useTipAllowance`, `useBuzzTransactions`,
+// `useBuzzAccounts`, `useDailyCompensation`, `useAppWorkflows`,
+// `useSharedStorage`); others sit in files no hook name appears next to.
 //
-// It is therefore hand-written, and its STALENESS IS ITSELF CHECKED:
+// 🔴 AN EARLIER REVISION OF THIS PARAGRAPH CLAIMED MORE THAN THAT, AND IT WAS
+// FALSE. It said "a map derived from the docs would have been blind to precisely
+// the defect it is here to catch" — i.e. that the SDK documents no scope for the
+// per-viewer app store. It does: `dist/internal/liveHost.d.ts:48` reads "Reads
+// need the `apps:storage:read` scope, writes `apps:storage:write`", which is
+// exactly the pair the undeclared-scope bug was about. A scan of the whole
+// package rather than of `hooks/useAppStorage.d.ts` would have found it.
+//
+// The honest statement of why the map is hand-written is therefore weaker than
+// the one it replaces, and it is the one that survives measurement: there is SOME
+// scope evidence in the SDK's `.d.ts` files, so writing the map down is a CHOICE.
+// What the package does not give you is a hook -> scope relation — the evidence
+// is prose, in files chosen by implementation layout rather than by hook, and
+// deriving a mapping from it would mean inferring which hook reaches which
+// bridge. The per-entry citations below are what that choice buys; they are now
+// pointers to a file you can open, not a claim that nothing could be opened.
+//
+// It is hand-written, and its STALENESS IS ITSELF CHECKED:
 //   - every `use*` export of `@civitai/blocks-react` must appear in exactly one
 //     of the three buckets below, so a hook added by an SDK bump fails this file
 //     by name instead of arriving unclassified;
@@ -80,11 +100,14 @@ const SRC_DIR = fileURLToPath(new URL('.', import.meta.url));
  * package's own JSDoc names that scope for that hook.
  */
 const HOOK_REQUIRED_SCOPES: Readonly<Record<string, readonly BlockScope[]>> = {
-  // 🔴 NO d.ts EVIDENCE — `useAppStorage`'s typings name no scope at all. The
-  // mapping rests on (a) the host refusing the call without these, measured on
-  // the live app, and (b) `BLOCK_SCOPES`' own comment on the pair: "apps:storage:*
-  // — the per-app KV datastore (W4) … the server gates them by presence in the
-  // block's approved scope set". This is the entry the whole file exists for.
+  // d.ts, but NOT this hook's: `hooks/useAppStorage.d.ts` contains the word
+  // "scope" zero times, while `internal/liveHost.d.ts:48` — the bridge it calls
+  // — says "Reads need the `apps:storage:read` scope, writes
+  // `apps:storage:write`". Corroborated by (a) the host refusing the call
+  // without these, measured on the live app, and (b) `BLOCK_SCOPES`' own comment
+  // on the pair: "apps:storage:* — the per-app KV datastore (W4) … the server
+  // gates them by presence in the block's approved scope set". This is the entry
+  // the whole file exists for.
   useAppStorage: [BLOCK_SCOPES.APPS_STORAGE_READ, BLOCK_SCOPES.APPS_STORAGE_WRITE],
   // d.ts: "Gated by the same `apps:storage:shared:write` scope as `append`".
   // The list/get side is the matching shared READ.
@@ -95,8 +118,13 @@ const HOOK_REQUIRED_SCOPES: Readonly<Record<string, readonly BlockScope[]>> = {
   // d.ts: "(scope `social:tip:self` — the SAME scope the app already holds to
   // tip, so no manifest change)".
   useTipAllowance: [BLOCK_SCOPES.SOCIAL_TIP_SELF],
-  // d.ts names `buzz:read:self` as the scope whose absence is an error; `scopes.ts`
-  // in this repo records the same thing from the live app (civitai/civitai#4745).
+  // 🔴 NO d.ts EVIDENCE FOR THIS ONE. An earlier revision cited "d.ts names
+  // `buzz:read:self`" and that string is NOT in `hooks/useBuzzBalance.d.ts` — it
+  // says only "a host-reported error (anon / banned viewer / missing scope /
+  // host failure)", naming no scope. The mapping itself is unchanged and still
+  // right; it rests on `scopes.ts` in this repo, which records it from the live
+  // app (civitai/civitai#4745), and on the three sibling Buzz hooks whose own
+  // typings DO name `buzz:read:self` for the same host bridge.
   useBuzzBalance: [BLOCK_SCOPES.BUZZ_READ_SELF],
   // d.ts: "reads via its `blocks.getMyBuzzTransactions` mutation (scope `buzz:read:self`)".
   useBuzzTransactions: [BLOCK_SCOPES.BUZZ_READ_SELF],
@@ -153,6 +181,18 @@ const UNSCOPED_HOOKS: readonly string[] = [
  * settle it. Guessing here would read as knowledge, so instead: calling one of
  * these from `src/` FAILS this file, with instructions to establish its scope
  * (and move it into ledger 1 or 2) first.
+ *
+ * 🔴 RE-MEASURED AGAINST THE INSTALLED `0.49.0` RATHER THAN ASSERTED, because
+ * the paragraph above is exactly the kind of claim that rots into a list nobody
+ * rechecks. Every scope-shaped literal in the whole `dist/` (`.d.ts` + `.js`,
+ * 78 `.d.ts` files) is one of eight strings, and all eight already belong to a
+ * hook in ledger 1 or to a scope in ledger 4 — none of them appears in, or next
+ * to, any of the eleven names below. Two of the eleven mention the word "scope"
+ * at all (`usePublishGenerationOutputs`, `useViewer`) and both only in the
+ * generic failure phrase "missing scope", naming none. So this ledger CANNOT be
+ * mechanically reduced from the installed package today; it stays at eleven on
+ * evidence rather than on inertia. Re-run the enumeration on an SDK bump — it is
+ * one command over `node_modules/@civitai/blocks-react/dist`.
  *
  * `useBlockSettings` is in here for a different reason worth stating: the scope
  * it would need (`block:settings:read`/`:write`) is not a member of the SDK's

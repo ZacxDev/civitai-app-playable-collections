@@ -282,3 +282,84 @@ describe('useBrowsePrefs — one mechanism for both controls', () => {
     expect(store.writes[1].value).toEqual({ sort: 'newest', period: 'day' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 THE AT-MOST-ONCE LATCH, PINNED CLAUSE BY CLAUSE
+// ---------------------------------------------------------------------------
+//
+// The restore is protected by TWO independent mechanisms and they cover
+// different windows. An adversarial sweep found the suite could not tell them
+// apart — each survived being mutated away on its own, and only removing both
+// at once turned anything red, which is a guard pair that reads as pinned and is
+// not. The hook now checks `restoredRef` in one place; these two cases pin that
+// place and the `cancelled` flag SEPARATELY, so simplifying either one away goes
+// red on its own test.
+describe('useBrowsePrefs — the at-most-once latch, one case per mechanism', () => {
+  it('🔴 `restoredRef` — no SECOND read is issued once a record has been restored', () => {
+    // Mechanism 1: the effect-entry latch. A changed `storage` identity re-runs
+    // the effect; after a restore it must not reach the host at all. Counting
+    // reads is the point — a check on the resulting prefs cannot distinguish
+    // "never asked" from "asked and discarded the answer", and only one of those
+    // costs a postMessage round-trip on every identity change.
+    let reads = 0;
+    const mk = (value: unknown): BrowsePrefsStore => ({
+      get: async () => {
+        reads += 1;
+        return value as never;
+      },
+      set: async () => ({ ok: true }),
+    });
+    const first = mk({ sort: 'newest', period: 'year' });
+    const second = mk({ sort: 'popular', period: 'allTime' });
+
+    return (async () => {
+      const { result, rerender } = renderHook(
+        ({ store }: { store: BrowsePrefsStore }) => useBrowsePrefs(store),
+        { initialProps: { store: first } },
+      );
+      await waitFor(() => expect(result.current.prefs).toEqual({ sort: 'newest', period: 'year' }));
+      expect(reads).toBe(1); // positive control: the counter moves at all.
+
+      rerender({ store: second });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      // The second store was never asked, and the restored record still stands.
+      expect(reads).toBe(1);
+      expect(result.current.prefs).toEqual({ sort: 'newest', period: 'year' });
+    })();
+  });
+
+  it('🔴 `cancelled` — a read still in flight from an EARLIER store cannot land', async () => {
+    // Mechanism 2: the per-effect cancellation flag, and the only case where two
+    // reads are genuinely in flight at the same time. The first store is still
+    // holding its read open when the identity changes, so `restoredRef` is still
+    // false and the effect-entry latch above lets the second read through; the
+    // second answers and restores. When the FIRST finally answers — with a
+    // different record — its cleanup has already cancelled it.
+    const first = heldStore();
+    const second = heldStore();
+    const { result, rerender } = renderHook(
+      ({ store }: { store: BrowsePrefsStore }) => useBrowsePrefs(store),
+      { initialProps: { store: first as BrowsePrefsStore } },
+    );
+
+    rerender({ store: second as BrowsePrefsStore });
+    await act(async () => {
+      second.release({ sort: 'newest', period: 'year' });
+      await Promise.resolve();
+    });
+    expect(result.current.prefs).toEqual({ sort: 'newest', period: 'year' });
+
+    // The viewer moves on, and only THEN does the abandoned read answer.
+    act(() => result.current.setPeriod('day'));
+    await act(async () => {
+      first.release({ sort: 'popular', period: 'allTime' });
+      await Promise.resolve();
+    });
+
+    // The stale record did not land on top of either the restore or the choice.
+    expect(result.current.prefs).toEqual({ sort: 'newest', period: 'day' });
+  });
+});
