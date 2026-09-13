@@ -1507,3 +1507,374 @@ describe('🔴 a superseded list response cannot overwrite a newer one', () => {
     expect(screen.getByText('Restored')).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 THE CONVERSE OF THE RULE ABOVE — an APPEND that starts AFTER a replace.
+// ---------------------------------------------------------------------------
+//
+// The stated rule is "a replace BUMPS, an append only CAPTURES, so an append can
+// never invalidate an in-flight replace". That direction holds. The direction it
+// does NOT cover is an append that begins once the replace has ALREADY bumped:
+// it captures the new value, so its `seq !== ref.current` guard passes when it
+// resolves, and a page fetched from the OLD list's cursor is merged onto the
+// FRESH list while `nextCursor` is overwritten with the old chain's cursor.
+//
+// It needs no unusual host, and no unusual schedule. `CollectionGrid` only shows
+// the skeleton at `collections.length === 0`, so during a replace the PREVIOUS
+// grid — and its `InfiniteScrollSentinel`, whose `active = hasMore &&
+// !loadingMore` is still true — stays mounted and observed. A viewer who re-sorts
+// and is still near the bottom of the old list fires it.
+//
+// ⚠️ PRE-EXISTING. The scenario below fails identically at `62f5d93`, at
+// `508e0b5` and at `b9ca5cb` (origin/main) — it is not a regression from the
+// browse-prefs persistence work, it is the half of the sequence rule that was
+// never written.
+describe('🔴 an append issued under a superseded cursor cannot land on the new list', () => {
+  /**
+   * An `ApiClient` whose `mode: 'public'` list calls are HELD OPEN, resolving to
+   * a FULL page (`items` + `nextCursor`) rather than items alone — the cursor is
+   * half of what is under test here, so a fake that cannot serve one would make
+   * the second assertion unwritable.
+   */
+  function heldPagedApi(): {
+    api: ApiClient;
+    calls: Array<{
+      params: { sort?: string; period?: string; cursor?: string };
+      resolve: (page: { items: CollectionSummary[]; nextCursor?: string }) => void;
+      reject: (err: unknown) => void;
+    }>;
+  } {
+    const base = createFakeApi({ collections: [] });
+    const calls: Array<{
+      params: { sort?: string; period?: string; cursor?: string };
+      resolve: (page: { items: CollectionSummary[]; nextCursor?: string }) => void;
+      reject: (err: unknown) => void;
+    }> = [];
+    const api: ApiClient = {
+      ...base,
+      listCollections(params) {
+        if (params.mode !== 'public') return base.listCollections(params);
+        return new Promise((res, rej) => {
+          calls.push({
+            params: { sort: params.sort, period: params.period, cursor: params.cursor },
+            resolve: res,
+            reject: rej,
+          });
+        });
+      },
+    };
+    return { api, calls };
+  }
+
+  const named = (id: number, name: string): CollectionSummary =>
+    sampleCollection({ id, name, curator: { userId: 5, username: 'curator' } });
+
+  /**
+   * Drive the exact repro, asserting every PRECONDITION on the way through so
+   * neither case below can pass vacuously:
+   *
+   *   1. the initial `popular` page lands and paints, WITH a next page;
+   *   2. the viewer picks Newest — the replace goes out and bumps the counter;
+   *   3. the still-mounted sentinel fires UNDER that in-flight replace, issuing
+   *      an append from the OLD chain's cursor (the tell: `CURSOR_POPULAR`
+   *      carried on a `sort=newest` request);
+   *   4. the replace resolves and repaints the grid;
+   *   5. the append resolves LAST, which is when the damage lands.
+   */
+  async function appendUnderReplace() {
+    const { api, calls } = heldPagedApi();
+    renderApp({ api });
+
+    // 1 ── the first page of the default (popular) chain.
+    await waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0].params.sort).toBe('popular');
+    expect(calls[0].params.cursor).toBeUndefined();
+    await act(async () => calls[0].resolve({ items: [named(1, 'Popular One')], nextCursor: 'CURSOR_POPULAR' }));
+    expect(await screen.findByText('Popular One')).toBeInTheDocument();
+    // A next page exists, so the sentinel is mounted and observed. Without this
+    // there is no append to race and steps 3–5 are unreachable.
+    expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
+
+    // 2 ── re-sort. This is the REPLACE, and it bumps the counter.
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[1].params.sort).toBe('newest');
+    expect(calls[1].params.cursor).toBeUndefined();
+
+    // 3 ── the old grid is STILL on screen under the in-flight replace, so its
+    //      sentinel is still live. Scroll it into view.
+    expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(3));
+    // 🔴 THE TELL, and it is the precondition that makes the whole case real: an
+    // append asking for the POPULAR chain's next page while the sort control
+    // already reads Newest. The request itself is not the defect — discarding
+    // its RESULT is
+    // the fix — but if this cursor were ever `undefined` the case would be
+    // testing something else entirely.
+    expect(calls[2].params.cursor).toBe('CURSOR_POPULAR');
+    expect(calls[2].params.sort).toBe('newest');
+
+    // 4 ── the replace lands: a fresh list on a fresh cursor.
+    await act(async () => calls[1].resolve({ items: [named(2, 'Newest One')], nextCursor: 'CURSOR_NEWEST' }));
+    expect(await screen.findByText('Newest One')).toBeInTheDocument();
+
+    // 5 ── …and only now does the superseded append answer.
+    await act(async () =>
+      calls[2].resolve({ items: [named(3, 'Stale Page Two')], nextCursor: 'CURSOR_POPULAR_2' }),
+    );
+
+    return { calls };
+  }
+
+  it('🔴 (a) the stale page does not land on the re-sorted grid', async () => {
+    await appendUnderReplace();
+
+    // The rows came from the popular chain's page 2. They are not part of the
+    // newest ordering at any position, so the viewer reads "Newest" on the chip
+    // while looking at a list half of which was ranked by followers.
+    expect(screen.queryByText('Stale Page Two')).toBeNull();
+    expect(screen.getByText('Newest One')).toBeInTheDocument();
+    expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  // ── The cases the guard must NOT break. A discard rule is one bad predicate
+  //    away from being a regression dressed as a fix, and each of these fails on
+  //    its own against a different wrong shape of it.
+
+  it('an ordinary append, with no replace anywhere near it, still lands', async () => {
+    // ⚠️ AN INVARIANT GUARD, NOT REGRESSION COVERAGE — measured GREEN at
+    // `b9ca5cb`, because the tree this fixes appends everything unconditionally.
+    // It is the positive control for the whole describe: if this went red the
+    // guard would be rejecting every page, and the two cases above would be
+    // passing for the most boring possible wrong reason.
+    const { api, calls } = heldPagedApi();
+    renderApp({ api });
+
+    await waitFor(() => expect(calls.length).toBe(1));
+    await act(async () => calls[0].resolve({ items: [named(1, 'Page One')], nextCursor: 'C1' }));
+    expect(await screen.findByText('Page One')).toBeInTheDocument();
+
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[1].params.cursor).toBe('C1');
+    await act(async () => calls[1].resolve({ items: [named(2, 'Page Two')], nextCursor: 'C2' }));
+
+    expect(await screen.findByText('Page Two')).toBeInTheDocument();
+    expect(screen.getByText('Page One')).toBeInTheDocument();
+  });
+
+  it('two appends in a row — the second is not dropped, and the tail keeps moving', async () => {
+    // ⚠️ ALSO AN INVARIANT GUARD — measured GREEN at `b9ca5cb`. It pins the
+    // thing a discard rule is most likely to break: a second page arriving on a
+    // cursor the FIRST page moved, which is the ordinary scroll and must not be
+    // mistaken for a superseded one.
+    const { api, calls } = heldPagedApi();
+    renderApp({ api });
+
+    await waitFor(() => expect(calls.length).toBe(1));
+    await act(async () => calls[0].resolve({ items: [named(1, 'Page One')], nextCursor: 'C1' }));
+    expect(await screen.findByText('Page One')).toBeInTheDocument();
+
+    // First append.
+    //
+    // ⚠️ ONE fire per append on purpose. Two fires inside a single `act` issue
+    // TWO appends, because `loadMoreDiscover`'s `loadingMore` gate reads the
+    // render-assigned `discoverRef` and the second fire happens before React has
+    // committed the first one's `loadingMore: true`. That is a real, separate,
+    // PRE-EXISTING double-fetch: measured at `b9ca5cb` with an isolated control,
+    // two fires produced 3 requests (1 initial + 2 appends), the same count this
+    // tree produces. It is out of this change's scope, and asserting it either
+    // way here would pin a behaviour this PR neither introduced nor fixed.
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(2));
+    await act(async () => calls[1].resolve({ items: [named(2, 'Page Two')], nextCursor: 'C2' }));
+    expect(await screen.findByText('Page Two')).toBeInTheDocument();
+
+    // Second append, immediately after. It must go out on the cursor the FIRST
+    // append returned, and it must land.
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(3));
+    expect(calls[2].params.cursor).toBe('C2');
+    await act(async () => calls[2].resolve({ items: [named(3, 'Page Three')], nextCursor: undefined }));
+
+    expect(await screen.findByText('Page Three')).toBeInTheDocument();
+    expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(3);
+    // No cursor left → no sentinel, so the guard has not wedged the list open.
+    expect(screen.queryByTestId('grid-sentinel')).toBeNull();
+  });
+
+  it('🔴 an append STILL cannot invalidate a replace that is under way (the original direction)', async () => {
+    // The rule this fix extends, pinned so the fix cannot be made by inverting
+    // it. Same overlap as the cases above, resolved the OTHER way round: the
+    // append answers FIRST, and the replace — issued before it — must still win.
+    //
+    // This is the case that fails if the append is made to BUMP the request
+    // counter: the replace's own `seq !== discoverSeqRef.current` guard would
+    // then discard it, and re-sorting the grid would silently do nothing.
+    //
+    // ⚠️ AN INVARIANT GUARD TOO — measured GREEN at `b9ca5cb`, where the rule it
+    // pins already held. Its value is forward-looking: it is the regression the
+    // obvious wrong fix for the cases above would introduce.
+    const { api, calls } = heldPagedApi();
+    renderApp({ api });
+
+    await waitFor(() => expect(calls.length).toBe(1));
+    await act(async () => calls[0].resolve({ items: [named(1, 'Popular One')], nextCursor: 'CURSOR_POPULAR' }));
+    expect(await screen.findByText('Popular One')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await waitFor(() => expect(calls.length).toBe(2));
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(3));
+    expect(calls[2].params.cursor).toBe('CURSOR_POPULAR');
+
+    // The append answers first — no replace has LANDED yet, so it appends to the
+    // list that is still on screen. Nothing is lost either way; the list it is
+    // appending to is about to be thrown out.
+    await act(async () => calls[2].resolve({ items: [named(3, 'Popular Two')], nextCursor: 'CURSOR_POPULAR_2' }));
+
+    // …and now the replace lands and takes the list, exactly as before.
+    await act(async () => calls[1].resolve({ items: [named(2, 'Newest One')], nextCursor: 'CURSOR_NEWEST' }));
+
+    expect(await screen.findByText('Newest One')).toBeInTheDocument();
+    expect(screen.queryByText('Popular One')).toBeNull();
+    expect(screen.queryByText('Popular Two')).toBeNull();
+  });
+
+  it('🔴 a superseded append that FAILS cannot cancel the in-flight append that replaced it', async () => {
+    // The ERROR arm of the same guard, and it needs its own case: a mutation
+    // that deletes the generation check from `loadMoreDiscover`'s `catch`
+    // SURVIVES every other test in this file. What it breaks is narrower than
+    // the success arm but the same shape — the superseded append's `catch`
+    // clears `loadingMore`, which belongs to a DIFFERENT generation's append
+    // that is still out. The list then advertises itself as idle while a page is
+    // in flight, and the next sentinel intersection re-fetches the cursor that
+    // page is already fetching.
+    const { api, calls } = heldPagedApi();
+    renderApp({ api });
+
+    await waitFor(() => expect(calls.length).toBe(1));
+    await act(async () => calls[0].resolve({ items: [named(1, 'Popular One')], nextCursor: 'CURSOR_POPULAR' }));
+    expect(await screen.findByText('Popular One')).toBeInTheDocument();
+
+    // Append A goes out under the in-flight replace, exactly as above.
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await waitFor(() => expect(calls.length).toBe(2));
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(3));
+    expect(calls[2].params.cursor).toBe('CURSOR_POPULAR');
+
+    // The replace lands, so the list — and `loadingMore` — now belong to it.
+    await act(async () => calls[1].resolve({ items: [named(2, 'Newest One')], nextCursor: 'CURSOR_NEWEST' }));
+    expect(await screen.findByText('Newest One')).toBeInTheDocument();
+
+    // Append B goes out on the NEW chain and is still in flight.
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(4));
+    expect(calls[3].params.cursor).toBe('CURSOR_NEWEST');
+    expect(screen.getByTestId('grid-loading-more')).toBeInTheDocument();
+
+    // …and only now does the superseded append A fail.
+    await act(async () => calls[2].reject(new ApiError('forbidden', 403, 'Stale boom')));
+
+    // B is still out, so the list must still say so. (`grid-loading-more` is
+    // rendered from `loadingMore` alone, so this reads the flag directly.)
+    expect(screen.getByTestId('grid-loading-more')).toBeInTheDocument();
+    // …and the failure must not have taken the grid down with it, either.
+    expect(screen.queryByTestId('grid-error')).toBeNull();
+    expect(screen.getByText('Newest One')).toBeInTheDocument();
+
+    // The consequence in one line: with `loadingMore` wrongly cleared the
+    // sentinel re-activates and re-fetches the cursor B is already fetching.
+    await act(async () => {
+      flushIntersections(true);
+    });
+    expect(calls.length).toBe(4);
+
+    // B still lands normally afterwards — the guard discards A, not B.
+    await act(async () => calls[3].resolve({ items: [named(3, 'Newest Two')], nextCursor: undefined }));
+    expect(await screen.findByText('Newest Two')).toBeInTheDocument();
+  });
+
+  it('🔴 the MINE feed carries the same defect, and the same fix (second copy)', async () => {
+    // `loadMoreMine` is a near-duplicate of `loadMoreDiscover` and `sort` is in
+    // BOTH loaders' dependency arrays, so the identical race is reachable on the
+    // other tab. A predicate open-coded at two sites is wrong at both until each
+    // is pinned — this is the second pin.
+    const base = createFakeApi({ collections: [] });
+    const calls: Array<{
+      params: { sort?: string; cursor?: string };
+      resolve: (page: { items: CollectionSummary[]; nextCursor?: string }) => void;
+    }> = [];
+    const api: ApiClient = {
+      ...base,
+      listCollections(params) {
+        if (params.mode !== 'mine') return base.listCollections(params);
+        return new Promise((res) => {
+          calls.push({ params: { sort: params.sort, cursor: params.cursor }, resolve: res });
+        });
+      },
+    };
+    renderApp({ api, isPrivateGranted: () => true });
+    await userEvent.click(await screen.findByTestId('tab-mine'));
+
+    await waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0].params.sort).toBe('popular');
+    await act(async () => calls[0].resolve({ items: [named(1, 'Mine Popular')], nextCursor: 'MINE_POPULAR' }));
+    expect(await screen.findByText('Mine Popular')).toBeInTheDocument();
+    expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[1].params.cursor).toBeUndefined();
+
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(3));
+    expect(calls[2].params.cursor).toBe('MINE_POPULAR');
+
+    await act(async () => calls[1].resolve({ items: [named(2, 'Mine Newest')], nextCursor: 'MINE_NEWEST' }));
+    expect(await screen.findByText('Mine Newest')).toBeInTheDocument();
+    await act(async () => calls[2].resolve({ items: [named(3, 'Mine Stale')], nextCursor: 'MINE_POPULAR_2' }));
+
+    expect(screen.queryByText('Mine Stale')).toBeNull();
+    expect(screen.getByText('Mine Newest')).toBeInTheDocument();
+
+    // …and the tail is the new chain's, not the abandoned one's.
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(4));
+    expect(calls[3].params.cursor).toBe('MINE_NEWEST');
+  });
+
+  it('🔴 (b) the stale page does not overwrite `nextCursor` with the old chain', async () => {
+    // The second half of the damage, and the more durable one: even with the
+    // rows discarded, an overwritten cursor means EVERY later page comes from
+    // the abandoned chain. `nextCursor` is not rendered, so the only honest way
+    // to read it is to ask for another page and see which cursor goes out.
+    const { calls } = await appendUnderReplace();
+
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(4));
+    expect(calls[3].params.cursor).toBe('CURSOR_NEWEST');
+  });
+});
