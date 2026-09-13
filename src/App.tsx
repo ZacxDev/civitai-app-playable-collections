@@ -444,6 +444,16 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
    *     than appending yesterday's cursor onto today's list;
    *   - both discard on resolution AND on rejection if the value moved.
    *
+   * 🔴 THAT RULE ONLY COVERS ONE DIRECTION, AND THE CONVERSE NEEDS A SECOND
+   * COUNTER — see `discoverAppliedRef` below. The request counter is bumped when
+   * a replace is ISSUED, so an append that STARTS after that bump captures the
+   * new value and its guard passes however late it answers: a page fetched from
+   * the abandoned list's cursor merges onto the fresh list, and `nextCursor` is
+   * overwritten with the abandoned chain's cursor so every later page comes from
+   * it too. Reachable with no unusual host — `CollectionGrid` only shows the
+   * skeleton at `collections.length === 0`, so the previous grid and its still-
+   * active `InfiniteScrollSentinel` stay mounted throughout a replace.
+   *
    * 🔴 This is deliberately NOT the old hydration gate. That gate serialised the
    * loads by making the first one wait, which is the thing the previous commit
    * removed on purpose (it cost a deadline timer, a public `hydrated` contract
@@ -454,6 +464,37 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const discoverSeqRef = useRef(0);
   const mineSeqRef = useRef(0);
   const popularSeqRef = useRef(0);
+
+  /**
+   * 🔴 APPLIED-REPLACE GENERATIONS — the counter an APPEND is validated against.
+   *
+   * The sequence refs above count replaces that were ISSUED. These count
+   * replaces that were APPLIED: every arm of `loadDiscover`/`loadMine` that
+   * actually writes a whole new list — the success arm, the error arm (which
+   * destroys the list just as thoroughly) and the signed-out `setMine`
+   * short-circuit — bumps its list's generation immediately before the write.
+   *
+   * An append captures the generation it was launched into and discards its page
+   * if a replace has landed since. That is the exact invalidation the request
+   * counter cannot express: by the time an append launches, the replace that
+   * supersedes it has ALREADY bumped the request counter, so the append captures
+   * the same value the replace holds and the two become indistinguishable.
+   *
+   * 🔴 Deliberately a COUNTER rather than a comparison of the cursor the page was
+   * fetched under. A cursor is an opaque server token and the two chains are not
+   * guaranteed to draw from disjoint token spaces — an id- or offset-shaped
+   * cursor can repeat across sorts and windows (this repo's own paginated test
+   * fixture uses `'1'`), and a collision there would let exactly the page under
+   * test through. A generation cannot collide.
+   *
+   * 🔴 And deliberately a REF read at resolution time rather than the rendered
+   * `discoverRef`/`mineRef`. Those are assigned during render, so an append whose
+   * continuation runs before React commits the replace's render would read the
+   * pre-replace list and pass — the same defect, moved into a scheduling window
+   * instead of removed. A ref bumped at the write itself has no such window.
+   */
+  const discoverAppliedRef = useRef(0);
+  const mineAppliedRef = useRef(0);
 
   // ---- player state ----
   const [open, setOpen] = useState<OpenCollection | null>(null);
@@ -532,6 +573,9 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         retry,
       );
       if (seq !== discoverSeqRef.current) return;
+      // A replace is landing: invalidate every append launched into the list
+      // this one is about to throw away.
+      discoverAppliedRef.current++;
       setDiscover({
         items: page.items,
         loading: false,
@@ -545,6 +589,9 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
       // it a failure on a request nobody is waiting for replaces a good grid
       // with an error+retry state.
       if (seq !== discoverSeqRef.current) return;
+      // The error arm replaces the list too — an append that resurrected rows
+      // over an error+retry pane would be the same defect wearing a hat.
+      discoverAppliedRef.current++;
       setDiscover({ ...EMPTY_LIST, error: errMessage(err) });
     }
   }, [api, debouncedSearch, sort, discoverPeriod, retry]);
@@ -557,6 +604,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     // well — a sign-in or a consent grant.)
     const seq = ++mineSeqRef.current;
     if (!viewer) {
+      mineAppliedRef.current++;
       setMine(EMPTY_LIST);
       return;
     }
@@ -567,6 +615,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         retry,
       );
       if (seq !== mineSeqRef.current) return;
+      mineAppliedRef.current++;
       setMine({
         items: page.items,
         loading: false,
@@ -578,6 +627,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
       });
     } catch (err) {
       if (seq !== mineSeqRef.current) return;
+      mineAppliedRef.current++;
       setMine({ ...EMPTY_LIST, error: errMessage(err) });
     }
   }, [api, viewer, debouncedSearch, sort, retry]);
@@ -593,10 +643,14 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     // that starts after this one invalidates it, and this one must never
     // invalidate a replace that is already under way.
     const seq = discoverSeqRef.current;
+    // …and capture the APPLIED generation as well, which is the half `seq`
+    // cannot see: a replace issued BEFORE this append has already bumped `seq`,
+    // so `seq` alone still matches when that replace lands underneath us.
+    const gen = discoverAppliedRef.current;
     setDiscover((p) => ({ ...p, loadingMore: true }));
     try {
       const page = await api.listCollections({ mode: 'public', query: debouncedSearch, sort, period: discoverPeriod, cursor, limit: PAGE_LIMIT });
-      if (seq !== discoverSeqRef.current) return;
+      if (seq !== discoverSeqRef.current || gen !== discoverAppliedRef.current) return;
       setDiscover((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
@@ -608,8 +662,10 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
       }));
     } catch {
       // Superseded: the replace that took the list owns `loadingMore` now, and
-      // clearing it here would let a fresh page be fetched on the OLD cursor.
-      if (seq !== discoverSeqRef.current) return;
+      // clearing it here would let a fresh page be fetched on the OLD cursor —
+      // or, once a replace has LANDED, cancel the in-flight append of the list
+      // that replaced us.
+      if (seq !== discoverSeqRef.current || gen !== discoverAppliedRef.current) return;
       setDiscover((p) => ({ ...p, loadingMore: false }));
     }
   }, [api, debouncedSearch, sort, discoverPeriod]);
@@ -620,10 +676,11 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     if (!s.nextCursor || s.loadingMore) return;
     const cursor = s.nextCursor;
     const seq = mineSeqRef.current; // capture, don't bump — see loadMoreDiscover.
+    const gen = mineAppliedRef.current; // …and the applied generation, same reason.
     setMine((p) => ({ ...p, loadingMore: true }));
     try {
       const page = await api.listCollections({ mode: 'mine', query: debouncedSearch, sort, cursor, limit: PAGE_LIMIT });
-      if (seq !== mineSeqRef.current) return;
+      if (seq !== mineSeqRef.current || gen !== mineAppliedRef.current) return;
       setMine((p) => ({
         ...p,
         items: mergeSummaries(p.items, page.items),
@@ -632,7 +689,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         notice: null,
       }));
     } catch {
-      if (seq !== mineSeqRef.current) return;
+      if (seq !== mineSeqRef.current || gen !== mineAppliedRef.current) return;
       setMine((p) => ({ ...p, loadingMore: false }));
     }
   }, [api, viewer, debouncedSearch, sort]);
