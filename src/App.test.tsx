@@ -1811,6 +1811,47 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
     expect(await screen.findByText('Newest Two')).toBeInTheDocument();
   });
 
+  it('🔴 a stale append cannot repopulate a list a FAILED replace destroyed', async () => {
+    // The replace's ERROR arm is a replace too — it wipes items and cursor both.
+    // A stale append landing on top of it puts rows from the abandoned chain
+    // BEHIND the error pane, where nothing shows them… until the viewer presses
+    // Try again, at which point `loadDiscover` clears `error` and the grid paints
+    // those rows instead of a loading skeleton. So the harm is deferred, not
+    // absent, and it is what this case reads.
+    const { api, calls } = heldPagedApi();
+    renderApp({ api });
+
+    await waitFor(() => expect(calls.length).toBe(1));
+    await act(async () => calls[0].resolve({ items: [named(1, 'Popular One')], nextCursor: 'CURSOR_POPULAR' }));
+    expect(await screen.findByText('Popular One')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await waitFor(() => expect(calls.length).toBe(2));
+    await act(async () => {
+      flushIntersections(true);
+    });
+    await waitFor(() => expect(calls.length).toBe(3));
+    expect(calls[2].params.cursor).toBe('CURSOR_POPULAR');
+
+    // The replace FAILS. 403, not 500 — `loadDiscover` wraps the call in
+    // `withBoundedRetry`, which would swallow a 5xx into a fresh attempt this
+    // fake never settles, so the `catch` arm under test would never be reached.
+    await act(async () => calls[1].reject(new ApiError('forbidden', 403, 'Sort boom')));
+    expect(await screen.findByTestId('grid-error')).toHaveTextContent('Sort boom');
+    // The control on that paragraph: no retry was issued, so the rejection
+    // really landed in the arm under test rather than in a retry loop.
+    expect(calls.length).toBe(3);
+
+    // …and now the superseded append answers into the wreckage.
+    await act(async () => calls[2].resolve({ items: [named(3, 'Stale Page Two')], nextCursor: 'CURSOR_POPULAR_2' }));
+
+    // Press Try again. The list must be EMPTY under the cleared error — a
+    // skeleton, not rows from a chain the viewer has already navigated away from.
+    await userEvent.click(screen.getByTestId('grid-retry'));
+    expect(screen.getByTestId('grid-loading')).toBeInTheDocument();
+    expect(screen.queryByText('Stale Page Two')).toBeNull();
+  });
+
   it('🔴 the MINE feed carries the same defect, and the same fix (second copy)', async () => {
     // `loadMoreMine` is a near-duplicate of `loadMoreDiscover` and `sort` is in
     // BOTH loaders' dependency arrays, so the identical race is reachable on the
