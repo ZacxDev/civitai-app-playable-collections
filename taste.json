@@ -115,6 +115,56 @@
       "what": "the third way this skin could ship inert -- main.tsx simply not importing it",
       "chose": "a guard that reads main.tsx with COMMENTED LINES STRIPPED",
       "because": "the audit commented out `import './skin.css'` and the full suite stayed green at 436/436, both tiers: the app would have shipped with every surface reverted to platform blue-grey, no console error. Every other guard reads CSS off disk and jsdom applies no CSS, so the one line that makes the skin reach a browser was unpinned -- while the commit title asserted 'the two ways a skin ships inert'. 🔴 The FIRST version of the new guard searched the file for the string './skin.css' and therefore PASSED its own mutant, because `// import './skin.css';` still contains the word: a guard on a WORD, walkable by rewording. It now strips line comments and is killed by both the comment-out and the delete shape."
+    },
+    {
+      "what": "whether to adopt upstream `TipButton` for the tip control",
+      "chose": "NOT adopted -- the app keeps its own amount picker built on upstream's `useTip`/`useTipAllowance` contract, pinned by `tip-contract.test.ts` in both directions",
+      "because": "`TipButton` takes a FIXED `amount` prop and owns its own two-step confirm, with no picker at all. `block.manifest.json`'s store description promises tips are sent 'with the amount and the split picked and confirmed by you first', so adopting it verbatim would have deleted the picker and FALSIFIED THE LISTING. The card's criterion 4 asked for the literal hook call and its own non-goal forbade leaving the app's ApiClient; the non-goal was ruled binding, because `useTip()` raw-fetches and takes no injection seam, so calling it would bypass the fake every test and the dev harness depend on and lose the ApiError taxonomy the UX branches on."
+    },
+    {
+      "what": "where the tip cap applies on a SPLIT",
+      "chose": "cap the TOTAL, not each leg -- `TIP_TOTAL_MAX` bounds the sum, and every leg that exists clamps UP to `TIP_MIN`",
+      "because": "upstream's `TIP_MAX_PER_TIP` is per TRANSFER, so a two-leg split at the per-leg cap would send 2x the intended maximum. The clamp-up half matters too: a percentage applied to a small total can round a leg to nothing, and a zero-Buzz leg is a transfer that should not exist -- below `2 x TIP_MIN` no two-way split exists at all and the plan comes back empty."
+    },
+    {
+      "what": "which component owns the tip plan and its idempotency keys",
+      "chose": "`App`, not `Player`",
+      "because": "four ordinary viewer actions unmount a Player (mode switch, lightbox open/close, leaving the collection, exiting the viewer). Holding the plan there meant a dismiss destroyed it along with its keys, so a retry after a PARTIAL failure paid a leg twice under a fresh key the server could not collapse. Hoisting it to App is what makes the retry idempotent across every one of those transitions."
+    },
+    {
+      "what": "the app-local maturity age gate",
+      "chose": "deleted in favour of the platform ceiling",
+      "because": "a second gate in the block could only ever disagree with the platform's, and a block-local answer that is MORE permissive than the platform is the failure that matters. One source of truth, owned by the host."
+    },
+    {
+      "what": "how unrated covers are treated",
+      "chose": "unrated-permitted, mirroring the server",
+      "because": "the block must not be stricter than the surface it is embedded in; diverging would hide content the site itself shows, which reads to the viewer as the block being broken rather than cautious."
+    },
+    {
+      "what": "which ceiling gates a cover (0.2.13)",
+      "chose": "the VIEWER ceiling, not the DOMAIN ceiling",
+      "because": "the domain ceiling describes where the block is embedded, not who is looking at it. Gating on the domain shows a viewer content their own settings exclude, and hides content they have explicitly allowed."
+    },
+    {
+      "what": "whether `useViewerCeiling()` should adopt the SDK's `isLevelAllowed`",
+      "chose": "kept as a raw bitmask",
+      "because": "`isLevelAllowed` treats unrated as not-allowed, which would hide EVERY unrated cover -- directly contradicting the unrated-permitted decision above. The SDK helper is the right shape for a different question than the one this block asks."
+    },
+    {
+      "what": "the conflict between 'one follow component in all three views' and 'a server refusal renders as itself'",
+      "chose": "one component wins -- upstream `FollowButton` everywhere, and the weaker property is what is pinned: a refusal produces a viewer-facing sentence, never a bare code string, with role=alert, and the optimistic flip reverts",
+      "because": "`FollowButton` renders its own fixed sentence for every rejection that is not declined/sign-in-required, so the two criteria could not both hold. Consequence accepted deliberately and recorded rather than hidden: the app's ambiguous-outcome read-cache drop is GONE, because upstream exposes no failure callback -- exposure is a stale `followed` flag for the cache TTL after an ambiguous write. No money, no writes. The proper fix is an upstream prop, NOT a second follow implementation here."
+    },
+    {
+      "what": "how an append is made safe against an in-flight list REPLACE (#43, 0.2.19)",
+      "chose": "a second per-list counter (`discoverAppliedRef`/`mineAppliedRef`) counting replaces APPLIED rather than issued -- every whole-list write bumps it, every append captures it at launch and discards if it moved, on the success AND catch arms",
+      "because": "the original rule (a replace bumps its sequence, an append only captures) held in the direction it was written and failed in the CONVERSE: an append starting after a replace had already bumped captured the same new value, so its guard passed and stale rows landed on the fresh list with the old chain's cursor. Two alternatives were rejected with reasons -- re-reading `nextCursor` after the await compares an opaque server token whose chains are not guaranteed disjoint (this repo's own fixture uses '1', so a collision lets the page through) and reads a render-assigned ref; and bumping on append would let an append invalidate an in-flight replace, making a re-sort silently do nothing, which is pinned by a test that is green at base and would go red under that shape."
+    },
+    {
+      "what": "the `|| plan != null` clause in the tip confirm's re-entrance gate, which SURVIVES every mutation",
+      "chose": "kept deliberately, and recorded here so nobody deletes it as uncovered",
+      "because": "the Send button carries `disabled={busy || Boolean(error) || plan != null}` and is swapped for Retry once a leg has failed, so `confirm` is unreachable with a plan in hand. No test can kill the mutant because nothing can reach it. It is defence in depth on the money path, not dead code -- a survived mutant here is the expected result, not a coverage gap."
     }
   ],
   "deferred": [
