@@ -163,6 +163,12 @@ const HOOK_REQUIRED_SCOPES: Readonly<Record<string, readonly BlockScope[]>> = {
   useBuzzAccounts: [BLOCK_SCOPES.BUZZ_READ_SELF],
   // d.ts: "reads via its `blocks.getMyDailyCompensation` mutation (scope `buzz:read:self`)".
   useDailyCompensation: [BLOCK_SCOPES.BUZZ_READ_SELF],
+  // d.ts: "🔴 REQUIRES THE `posts:write:self` SCOPE, which is SENSITIVE".
+  // Arrived with the 0.51.0 bump. This app calls it nowhere and declares the
+  // scope nowhere, so it costs no manifest change — it is classified here rather
+  // than in ledger 3 because the installed package DOES name its scope, which is
+  // the only thing that ledger's membership test asks.
+  useCreatePostFromApp: [BLOCK_SCOPES.POSTS_WRITE_SELF],
   // d.ts: "FORCES the per-app tag filter (scope `ai:write:budgeted`, same trust
   // boundary as submit)".
   useAppWorkflows: [BLOCK_SCOPES.AI_WRITE_BUDGETED],
@@ -213,20 +219,32 @@ const UNSCOPED_HOOKS: readonly string[] = [
  * these from `src/` FAILS this file, with instructions to establish its scope
  * (and move it into ledger 1 or 2) first.
  *
- * 🔴 RE-MEASURED AGAINST THE INSTALLED `0.49.0` RATHER THAN ASSERTED, because
+ * 🔴 RE-MEASURED AGAINST THE INSTALLED `0.51.0` RATHER THAN ASSERTED, because
  * the paragraph above is exactly the kind of claim that rots into a list nobody
- * rechecks. Every scope-shaped literal in the whole `dist/` (`.d.ts` + `.js`,
- * 78 `.d.ts` files) is one of eight strings, and every one of the eight is
- * already accounted for elsewhere in this file: SEVEN by a hook in ledger 1
+ * rechecks. The enumeration was re-run on the 0.49.0 -> 0.51.0 bump, by the
+ * method below, and it moved: `dist/` now has 79 `.d.ts` files, and NINE of
+ * `BLOCK_SCOPES`' thirteen strings appear in it rather than eight. The ninth is
+ * `posts:write:self`, which arrived with `useCreatePostFromApp` — and it is not
+ * a new unknown, because the hook's own `hooks/useCreatePostFromApp.d.ts:97`
+ * names it outright ("🔴 REQUIRES THE `posts:write:self` SCOPE"), so it is
+ * classified in ledger 1 above. The other eight are unchanged and still
+ * accounted for elsewhere in this file: SEVEN by a hook in ledger 1
  * (`social:tip:self` is also a ledger-4 entry, reached by a direct REST POST),
  * and `collections:write:self` by `useCollectionFollow` in ledger 2 plus
- * `SCOPES_NOT_USED_BY_THIS_APP`. None of the eight appears in, or next
+ * `SCOPES_NOT_USED_BY_THIS_APP`. None of the nine appears in, or next
  * to, any of the eleven names below. Two of the eleven mention the word "scope"
  * at all (`usePublishGenerationOutputs`, `useViewer`) and both only in the
  * generic failure phrase "missing scope", naming none. So this ledger CANNOT be
  * mechanically reduced from the installed package today; it stays at eleven on
- * evidence rather than on inertia. Re-run the enumeration on an SDK bump — it is
- * one command over `node_modules/@civitai/blocks-react/dist`.
+ * evidence rather than on inertia.
+ *
+ * 🔴 RE-RUN THE ENUMERATION ON AN SDK BUMP, AND DO NOT HAND-ROLL THE REGEX. The
+ * obvious "grep the dist for scope-shaped literals" under-counts: a pattern
+ * anchored on quotes missed `social:tip:self`, `collections:write:self` and
+ * `posts:write:self` entirely and reported 2 where the answer is 9. Enumerate
+ * the BOUNDED vocabulary instead — take `BLOCK_SCOPES`' own values from
+ * `@civitai/app-sdk/dist/blocks/scopes.js` and grep the dist for each one, which
+ * is complete by construction and cannot silently return a short list.
  *
  * `useBlockSettings` is in here for a different reason worth stating: the scope
  * it would need (`block:settings:read`/`:write`) is not a member of the SDK's
