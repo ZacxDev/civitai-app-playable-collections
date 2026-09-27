@@ -30,9 +30,13 @@ packages:
 #     so the omission could not fail locally while the pinned pnpm 11 refuses
 #     the install outright.
 #     🔴 THE CLOCK, NOT A CONDITION ON US: 0.8.0 was published
-#     2026-09-27T02:03:55Z, so pnpm 11's 24h `minimumReleaseAge` clears it at
-#     2026-09-28T02:03:55Z and this entry is inert from that moment. Delete it
-#     then. An EXACT version on purpose — a bare `@civitai/sdk` would exempt
+#     2026-09-27T02:04:53Z — read from `npm view @civitai/sdk time --json`, which
+#     is the only authority on it; an earlier revision of this comment guessed
+#     02:03:55Z and was 58s early. pnpm 11's 24h `minimumReleaseAge` therefore
+#     clears it at 2026-09-28T02:04:53Z, and this entry is inert from that
+#     moment — delete it then, not before: until it passes, dropping the entry
+#     makes `pnpm install` fail outright under the pinned pnpm 11.
+#     An EXACT version on purpose — a bare `@civitai/sdk` would exempt
 #     every future release, including one cut by a compromised token.
 # All resolve straight from the npm registry — no `link:`/`overrides`.
 minimumReleaseAgeExclude:
