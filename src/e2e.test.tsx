@@ -8,6 +8,8 @@ import type { ViewerInfo } from '@civitai/app-sdk/blocks';
 import { App } from './App.js';
 import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi, type FakeApi } from './fake-api.js';
+import { createRestFake } from './dev-rest.js';
+import { configureSdkRuntime } from './lib/sdk-runtime.js';
 import type { TipResult } from './types.js';
 
 async function openNeon(
@@ -399,6 +401,16 @@ describe('popular rail (shared play-counts)', () => {
     // different vote counts — proves `readPopular` ranks by count, not insertion
     // order, and resolves each entry's collectionId back to a known card.
     const api = createFakeApi({ viewerUserId: 99 });
+    // The SHARED store is REST after the port, so the seed has to reach a `fetch`
+    // fake as well as the mock host — see the note in App.test.tsx's renderApp.
+    const sharedSeed = [
+      { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
+      { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
+      { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
+    ];
+    configureSdkRuntime({
+      fetch: createRestFake({ viewerUserId: 99, shared: { seed: sharedSeed } }),
+    });
     render(
       <Harness
         viewer={{ id: 99, username: 'me' }}

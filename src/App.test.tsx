@@ -10,6 +10,8 @@ import { BROWSE_PREFS_KEY } from './lib/browse-prefs.js';
 import { CollectionGrid } from './components/CollectionGrid.js';
 import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi } from './fake-api.js';
+import { createRestFake } from './dev-rest.js';
+import { configureSdkRuntime } from './lib/sdk-runtime.js';
 import { palette } from './theme.js';
 import type { CollectionSummary, MediaItem } from './types.js';
 import { flushIntersections, setViewport } from './test-setup.js';
@@ -44,8 +46,38 @@ function renderApp(
     storage?: { seed?: Record<string, unknown> };
     /** Analytics sink (Feature #10). */
     onEvent?: (e: { type: string; [k: string]: unknown }) => void;
+    /**
+     * Observe the REST calls the app makes for storage / shared storage / Buzz.
+     *
+     * 🔴 THIS REPLACES `onOutbound` FOR THOSE THREE FAMILIES. `onOutbound` watches
+     * postMessages, and after the port these three are HTTP — so a guard written
+     * against `APP_STORAGE_SET` sees nothing, which is how the browse-prefs
+     * relationship guard failed loudly during the port rather than going quietly
+     * vacuous. `onOutbound` is still right for everything that IS still a message.
+     */
+    onRestRequest?: (call: { path: string; method: string; body: Record<string, unknown> }) => void;
   } = {},
 ) {
+  // 🔴 THE THREE SEEDS BELOW NOW HAVE TWO AUDIENCES, AND THAT IS THE PORT'S ONE
+  // UNAVOIDABLE TEST CHANGE. `buzzBalance`/`shared`/`storage` were mock-HOST
+  // scenarios, because those three were postMessage conversations. After the port
+  // they are HTTP, so the same seeds are also handed to a `fetch` fake — and the
+  // fake is what actually answers them. The Harness props are left in place
+  // deliberately: they still drive the bridge, so a test that asserts an outbound
+  // message keeps working, and removing them would have made this diff a rewrite
+  // of every case rather than a re-route of one helper.
+  //
+  // The viewer id is threaded through so `viewerVoted` and default row authorship
+  // agree with whoever the Harness calls the viewer.
+  configureSdkRuntime({
+    fetch: createRestFake({
+      viewerUserId: (opts.viewer === undefined ? { id: 99 } : opts.viewer)?.id ?? 99,
+      storage: opts.storage,
+      shared: opts.shared,
+      buzz: opts.buzzBalance,
+      onRequest: opts.onRestRequest,
+    }),
+  });
   return render(
     <Harness
       viewer={opts.viewer === undefined ? { id: 99, username: 'me' } : opts.viewer}
@@ -1244,11 +1276,20 @@ describe('the popularity window', () => {
     //   3. An exact FIELD LEDGER — the record is `{period, sort}` and nothing
     //      else, so it fails if a control grows a persisted field the other
     //      lacks, AND if one is dropped.
+    //   🔴 4. RE-POINTED BY THE PORT, AND ITS THIRD POINTING. It watched the
+    //      `APP_STORAGE_SET` postMessage; app storage is `POST
+    //      blocks/app-storage/set` now, so that observation saw nothing. Note WHICH
+    //      way it broke: it went RED, not green — the assertion is `writes.length`
+    //      is 1, and zero writes fails it. A guard that had asserted "no more than
+    //      one key" would have passed on an empty set and reported coverage it no
+    //      longer had. The invariant is unchanged; only where it is observed moved.
     const writes: Array<{ key: string; value: unknown }> = [];
     renderApp({
       api: createFakeApi({ collections: windowSeeds() }),
-      onOutbound: (msg) => {
-        if (msg.type === 'APP_STORAGE_SET') writes.push(msg.payload as { key: string; value: unknown });
+      onRestRequest: (call) => {
+        if (call.path === 'blocks/app-storage/set') {
+          writes.push(call.body as { key: string; value: unknown });
+        }
       },
     });
     await screen.findByTestId('collection-grid');

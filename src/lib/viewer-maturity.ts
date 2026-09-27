@@ -27,7 +27,9 @@
 // is refused) lives in ./maturity.js beside the SQL it mirrors. Putting any of it
 // here would give the app two places to disagree with the platform from.
 
-import { useDomainMaturity } from '@civitai/blocks-react';
+import { effectiveBrowsingCeiling } from '@civitai/app-sdk/blocks';
+
+import { useBrowsingLevels } from './sdk-runtime.js';
 
 /**
  * The browsing-level ceiling bitmask this viewer may see, or `undefined` when the
@@ -43,5 +45,23 @@ import { useDomainMaturity } from '@civitai/blocks-react';
  * as it did before 0.49.0.
  */
 export function useViewerCeiling(): number | undefined {
-  return useDomainMaturity().effectiveBrowsingLevel;
+  const { max, effective } = useBrowsingLevels();
+  // 🔴 THE INTERSECTION IS RE-APPLIED HERE, AND DROPPING IT WOULD HAVE WIDENED WHAT
+  // THIS APP SHOWS. `useDomainMaturity` did this for us and the SDK does NOT: its
+  // snapshot passes the host's `effectiveBrowsingLevel` straight through from
+  // `BLOCK_INIT` (`@civitai/sdk` dist/core/transport.js). The bridge hook's own
+  // comment says why it re-derived rather than trusted — "so the never-wider
+  // property holds even against a host that ships a wrong value" — and
+  // `effectiveBrowsingCeiling` additionally refuses junk (it maps `(31, -1)` to
+  // `3`, SFW). Reading the raw field would have made this module trust a number it
+  // previously verified, on the one axis where being wrong means showing mature
+  // media to a viewer who asked not to see any.
+  //
+  // 🔴 AND THE `undefined` ARM IS PRESERVED EXACTLY. `effectiveBrowsingCeiling`
+  // always returns a NUMBER, so calling it unconditionally would turn "the host told
+  // us nothing" into a concrete ceiling — the opposite of this function's documented
+  // contract, where `undefined` means UNKNOWN and every consumer must fail closed to
+  // SFW. So the domain ceiling's absence still short-circuits, which is precisely
+  // what the bridge hook did.
+  return max === undefined ? undefined : effectiveBrowsingCeiling(max, effective);
 }

@@ -19,15 +19,31 @@
 // The functions take only the SHARED-store slice they use so they're pure +
 // unit-testable with a fake store (see popular.test.ts).
 
-import type { SharedAppendValue, SharedListItem, UseSharedStorage } from '@civitai/blocks-react';
+// Types come from `@civitai/sdk` now, not the bridge package: `SharedValue` is the
+// contributed `{ title, body?, data? }` and `SharedItem` is one listed row. Both are
+// field-for-field the shapes the bridge declared, so nothing below changes — but the
+// import is what actually moves this module off `@civitai/blocks-react`.
+import type { SharedItem } from '@civitai/sdk';
+
+import type { SharedStorageFacade } from './sdk-runtime.js';
+
+/**
+ * Alias kept so the rest of this file (and its tests) read unchanged.
+ *
+ * `SharedAppendValue` is deliberately NOT aliased any more: it named the shape of a
+ * row we READ, and the port's whole correction is that a read row's value is
+ * `unknown`. Keeping the alias would have let that assumption back in by the side
+ * door — see `entryCollectionId`.
+ */
+type SharedListItem = SharedItem;
 
 import type { CollectionPage, CollectionSummary, PopularEntry } from '../types.js';
 
 /** The SHARED-store surface the popularity helpers need (subset of the hook). */
-export type SharedStore = Pick<UseSharedStorage, 'list' | 'append' | 'vote'>;
+export type SharedStore = Pick<SharedStorageFacade, 'list' | 'append' | 'vote'>;
 
 /** Read-only slice — `readPopular` only lists. */
-export type SharedReadStore = Pick<UseSharedStorage, 'list'>;
+export type SharedReadStore = Pick<SharedStorageFacade, 'list'>;
 
 /**
  * How many SHARED entries to pull when ranking. The store's `list()` is
@@ -39,9 +55,21 @@ const LIST_LIMIT = 200;
 /** Host title cap is generous; keep our synthesized title short + safe. */
 const MAX_TITLE = 120;
 
-/** Pull the app-owned `collectionId` back out of an entry's opaque `data` blob. */
-export function entryCollectionId(value: SharedAppendValue): number | null {
-  const data = value?.data;
+/**
+ * Pull the app-owned `collectionId` back out of an entry's opaque `data` blob.
+ *
+ * 🔴 THE PARAMETER IS `unknown`, AND THE PORT IS WHY — THIS IS A TIGHTENING, NOT A
+ * LOOSENING. The bridge declared a listed row's `value` as the same
+ * `{ title, body?, data? }` shape an append sends; `@civitai/sdk` declares it
+ * `unknown`, with the reason in its own docblock: the row "was written by some OTHER
+ * viewer's copy of this app — possibly an older version, possibly a newer one — so
+ * its shape is a fact about the data, not a promise this client can make". That is
+ * right, and this function was already written as if it were — every field access
+ * below is guarded. So the signature now says what the body always did, and the
+ * compiler stops anyone reaching for `value.title` on a row we did not write.
+ */
+export function entryCollectionId(value: unknown): number | null {
+  const data = value && typeof value === 'object' ? (value as { data?: unknown }).data : undefined;
   if (data && typeof data === 'object' && 'collectionId' in data) {
     const id = (data as { collectionId?: unknown }).collectionId;
     if (typeof id === 'number' && Number.isFinite(id)) return id;

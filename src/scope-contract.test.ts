@@ -327,10 +327,25 @@ function sourceFiles(dir = SRC_DIR, prefix = ''): string[] {
 }
 
 /**
- * Which `@civitai/blocks-react` names each non-test source file imports AS
- * VALUES — `import type` statements and inline `type` specifiers are excluded,
- * because a type reference reaches no host bridge and costs no scope.
- * (`lib/popular.ts` imports `UseSharedStorage` exactly that way.)
+ * Which SCOPED-CAPABILITY names each non-test source file imports AS VALUES —
+ * `import type` statements and inline `type` specifiers are excluded, because a
+ * type reference reaches no platform surface and costs no scope.
+ *
+ * 🔴 TWO MODULES ARE SCANNED, NOT ONE, AND THE SECOND IS WHY THIS FILE SURVIVED
+ * THE PORT. The nine runtime hooks used to come from `@civitai/blocks-react`;
+ * they now come from this app's own `lib/sdk-runtime.ts`, which re-expresses them
+ * on `@civitai/sdk`. Scanning only the package would have found ZERO scoped hooks
+ * and made every verdict below vacuous — and it would have done so while still
+ * reading as a scope contract. THE SCOPES DID NOT MOVE: `apps:storage:read`,
+ * `apps:storage:shared:write` and `buzz:read:self` gate the REST routes exactly as
+ * they gated the bridge messages, by the same exact-string comparison against the
+ * block token's scope set. So the relationship this file pins is unchanged; only
+ * the module the capability arrives through is new, and both are named here.
+ *
+ * 🔴 IT WENT RED RATHER THAN QUIET, which is the only reason this was a repair and
+ * not a silent hole: the positive control below asserts the scanner FINDS
+ * `useAppStorage` in `App.tsx`, so a scanner that stopped seeing it fails by name.
+ * A contract test without that control would have passed the port untouched.
  *
  * 🔴 AN IMPORT IS TREATED AS A CALL, and that is sound HERE rather than in
  * general: `tsconfig.json` sets `noUnusedLocals: true`, so a value import that
@@ -339,7 +354,10 @@ function sourceFiles(dir = SRC_DIR, prefix = ''): string[] {
  */
 function scanValueImports(): Map<string, string[]> {
   const byHook = new Map<string, string[]>();
-  const importRe = /import\s+(type\s+)?\{([^}]*)\}\s*from\s*'@civitai\/blocks-react'/g;
+  // Either the bridge package, or the app's own runtime module by any relative
+  // spelling a file inside `src/` can reach it by.
+  const importRe =
+    /import\s+(type\s+)?\{([^}]*)\}\s*from\s*'(?:@civitai\/blocks-react|\.{1,2}(?:\/lib)?\/sdk-runtime\.js)'/g;
   for (const rel of sourceFiles()) {
     const text = readFileSync(join(SRC_DIR, rel), 'utf8');
     for (const match of text.matchAll(importRe)) {
@@ -391,11 +409,18 @@ describe('the scanner itself', () => {
   });
 
   it('NEGATIVE CONTROL — a TYPE-only import is not a call', () => {
-    // `lib/popular.ts` imports `UseSharedStorage`, `SharedListItem` and
-    // `SharedAppendValue` as types. None reaches a host bridge.
-    expect(readSource('lib/popular.ts')).toContain("import type {");
-    expect(imported.has('UseSharedStorage')).toBe(false);
-    expect(imported.has('SharedListItem')).toBe(false);
+    // `lib/popular.ts` imports its row/value types and the runtime module's
+    // `SharedStorageFacade` as TYPES. None reaches a platform surface.
+    //
+    // ⚠ RE-POINTED BY THE PORT: this used to name `UseSharedStorage` and
+    // `SharedAppendValue`, which that file imported from the bridge package. It now
+    // imports `SharedItem` from `@civitai/sdk` and `SharedStorageFacade` from the
+    // runtime module — and the second is the one that matters here, because it comes
+    // from a module this scanner DOES scan, so a type specifier leaking into the
+    // value set would now be a live false positive rather than an impossible one.
+    expect(readSource('lib/popular.ts')).toContain('import type {');
+    expect(imported.has('SharedStorageFacade')).toBe(false);
+    expect(imported.has('SharedItem')).toBe(false);
   });
 });
 

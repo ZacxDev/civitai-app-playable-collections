@@ -31,6 +31,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 
+import { getTransport } from '@civitai/blocks-react';
 import { initialize } from '@civitai/sdk';
 import type {
   AppClient,
@@ -75,26 +76,32 @@ export interface SdkRuntimeOptions {
 
 let options: SdkRuntimeOptions = {};
 let transportSingleton: BlockTransport | null = null;
+let bridgeWrapped: unknown = null;
 let appPromise: Promise<AppClient> | null = null;
 
 /**
- * Set the runtime's options. Call it BEFORE the first render that reads any hook
- * below — `src/main.tsx` in production, the harness in dev, a test's setup.
+ * Set the runtime's options — the transport, the `fetch` the REST clients use, and
+ * the site base URL. `src/main.tsx` calls it for the dev harness; production needs
+ * no call at all, because every default is already right there.
  *
- * 🔴 IT DOES NOT RE-INITIALISE. Calling it after the app has been built is a
- * silent no-op for anything already resolved, so it throws instead: a test that
- * swapped `fetch` half way through would otherwise get the PREVIOUS fetch and
- * read the failure as a bug in the code under test.
+ * 🔴 IT DISCARDS ANY AppClient BUILT UNDER THE PREVIOUS OPTIONS, and that is the
+ * whole contract. The first version of this function THREW when called after the
+ * client existed, on the reasoning that a mid-flight `fetch` swap would otherwise
+ * be silently ignored. That reasoning was right about the hazard and wrong about
+ * the remedy: the hazard is a STALE CLIENT, and dropping the client removes it,
+ * whereas refusing merely reports it — and it refused a legitimate case this
+ * repo's own suite contains (a test that renders the app twice, with different
+ * props, inside one test). So the client is dropped instead. The next `app()` is
+ * built from the options just installed.
+ *
+ * It is NOT a full reset: `resetSdkRuntime` is still what tests use between cases,
+ * because that also clears options back to the defaults.
  */
 export function configureSdkRuntime(next: SdkRuntimeOptions): void {
-  if (appPromise !== null) {
-    throw new Error(
-      'configureSdkRuntime: the SDK app is already being initialised. Call this ' +
-        'before the first render, or call resetSdkRuntime() first (tests).',
-    );
-  }
   options = next;
   transportSingleton = next.transport ?? null;
+  bridgeWrapped = null;
+  appPromise = null;
 }
 
 /**
@@ -105,12 +112,35 @@ export function configureSdkRuntime(next: SdkRuntimeOptions): void {
 export function resetSdkRuntime(): void {
   options = {};
   transportSingleton = null;
+  bridgeWrapped = null;
   appPromise = null;
 }
 
-/** The one transport, created on first use. */
+/**
+ * The one transport.
+ *
+ * 🔴 THE CACHE IS KEYED ON THE BRIDGE TRANSPORT'S IDENTITY, AND THAT IS NOT
+ * DEFENSIVE POLISH — IT IS REQUIRED BY THIS REPO'S TEST SETUP. The bridge's
+ * transport is a process-wide singleton that `resetTransport()` NULLS, so the next
+ * `getTransport()` returns a brand-new object; `src/test-setup.ts` calls
+ * `resetHarnessTransport()` in a global `beforeEach`, i.e. before EVERY dom test.
+ * A plain `??=` would therefore wrap the first test's transport and keep wrapping
+ * it after it had been disposed — every later test reading a dead snapshot. The
+ * AppClient is bound to the transport too (its session and host both close over
+ * it), so a swap must drop that as well.
+ *
+ * An explicitly configured transport is never re-derived: a test that passed one
+ * owns it, and silently replacing it with the singleton would be worse than any
+ * staleness this guards against.
+ */
 function transport(): BlockTransport {
-  transportSingleton ??= createSdkTransportAdapter() as BlockTransport;
+  if (options.transport) return options.transport;
+  const bridge = getTransport();
+  if (transportSingleton === null || bridge !== bridgeWrapped) {
+    bridgeWrapped = bridge;
+    transportSingleton = createSdkTransportAdapter(bridge) as BlockTransport;
+    appPromise = null;
+  }
   return transportSingleton;
 }
 

@@ -266,7 +266,6 @@ describe('group 2: host-mediated bindings', () => {
     const observed: Element[] = [];
     const disconnect = vi.fn();
     class RO {
-      constructor(private readonly cb: () => void) {}
       observe(el: Element) {
         observed.push(el);
       }
@@ -568,24 +567,92 @@ describe('group 3: REST bindings — the wire, not a stub', () => {
 // ---------------------------------------------------------------------------
 
 describe('configureSdkRuntime', () => {
-  it('REFUSES a reconfigure once the app is being initialised', async () => {
+  /**
+   * 🔴 A RECONFIGURE MUST TAKE EFFECT, AND THIS IS THE ASSERTION THAT REPLACED A
+   * WEAKER ONE. This test used to assert that a second `configureSdkRuntime` THREW,
+   * because a swapped `fetch` would otherwise be silently ignored. The refusal was
+   * the wrong remedy — it also rejected a legitimate case in this repo's suite (a
+   * test rendering the app twice with different props) — so the function now drops
+   * the AppClient instead. That turns an error message into a testable behaviour:
+   * the SECOND fetch is the one that gets used.
+   */
+  it('a reconfigure DROPS the client, so the new fetch is the one that answers', async () => {
     const t = fakeTransport();
-    const f = fakeFetch({ 'blocks/buzz': { blue: 0, green: 0, yellow: 0 } });
-    configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
+    const first = fakeFetch({ 'blocks/buzz': { blue: 0, green: 0, yellow: 1 } });
+    configureSdkRuntime({ transport: t.transport as never, fetch: first.impl });
 
     function Balance() {
-      useBuzzBalance();
-      return null;
+      const { balance } = useBuzzBalance();
+      return <span data-testid="b">{balance?.yellow ?? -1}</span>;
     }
-    render(<Balance />);
-    await waitFor(() => expect(f.calls.length).toBeGreaterThan(0));
+    const one = render(<Balance />);
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('1'));
+    one.unmount();
 
-    // 🔴 WHY THIS THROWS RATHER THAN NO-OPS. A test that swapped `fetch` half way
-    // through would otherwise keep getting the FIRST one and read the resulting
-    // failure as a bug in the code under test. Refusing names the mistake.
-    expect(() => configureSdkRuntime({ transport: t.transport as never })).toThrow(
-      /already being initialised/,
+    const second = fakeFetch({ 'blocks/buzz': { blue: 0, green: 0, yellow: 2 } });
+    configureSdkRuntime({ transport: t.transport as never, fetch: second.impl });
+
+    render(<Balance />);
+    // Reads 2 only if the client was rebuilt on the new fetch. Under a
+    // configure that kept the old promise this stays 1 — the stale-client hazard
+    // the old throwing guard could only complain about.
+    await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('2'));
+    expect(second.calls.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * 🔴 THE REGRESSION GUARD FOR THIS REPO'S OWN TEST SETUP, and the first version
+   * of it was VACUOUS — recorded here because the reason generalises.
+   *
+   * `src/test-setup.ts` calls `resetHarnessTransport()` in a global `beforeEach`,
+   * which NULLS the bridge's process-wide transport so the next `getTransport()`
+   * builds a new object. A runtime caching its adapter with a plain `??=` would keep
+   * wrapping the DISPOSED transport, and every later test in the process would read
+   * a dead snapshot with nothing saying so.
+   *
+   * 🔴 THE FIRST ATTEMPT ASSERTED "re-rendering does not throw" AND THE UNKEYED-CACHE
+   * MUTANT SURVIVED IT. `dispose()` only drops listeners — `getSnapshot()` on a
+   * disposed transport still answers with its last value — so "does not throw" is no
+   * discriminator at all, and neither is `ready`, which is already `true` on the old
+   * transport by then. The observable has to be a field whose value DIFFERS between
+   * the two transports. So: anonymous on the first, signed-in on the second. Under
+   * the unkeyed cache the second render reads transport #1 and reports 'anon'.
+   */
+  it('follows the bridge transport across a resetTransport()', async () => {
+    const { installHarnessTransport, resetHarnessTransport } = await import('../dev-transport.js');
+    const { getTransport } = await import('@civitai/blocks-react');
+    const { Harness } = await import('@civitai/blocks-react/testing');
+
+    function Probe() {
+      const { viewer } = useBlockContext();
+      return <span data-testid="who">{viewer?.username ?? 'anon'}</span>;
+    }
+
+    installHarnessTransport();
+    const first = getTransport();
+    configureSdkRuntime({});
+
+    const one = render(
+      <Harness viewer={null} applyUrlToggles={false} showLog={false}>
+        <Probe />
+      </Harness>,
     );
+    await waitFor(() => expect(screen.getByTestId('who').textContent).toBe('anon'));
+    one.unmount();
+
+    resetHarnessTransport();
+    // The premise the guard rests on. Without this the test could not tell a keyed
+    // cache from an unkeyed one and would pass either way.
+    expect(getTransport()).not.toBe(first);
+
+    render(
+      <Harness viewer={{ id: 42, username: 'porter' }} applyUrlToggles={false} showLog={false}>
+        <Probe />
+      </Harness>,
+    );
+
+    // Reads the NEW transport, or it does not read the port at all.
+    await waitFor(() => expect(screen.getByTestId('who').textContent).toBe('porter'));
   });
 
   it('resetSdkRuntime lets a second configure through', () => {
