@@ -22,9 +22,26 @@ packages:
 #     (src/skin.css) is written on top of.
 #   - @civitai/theme@0.3.1         — the `--civitai-*` design tokens (src/theme.ts,
 #     src/bootTheme.ts). 0.3.1 is the latest published; do not bump blindly.
+#   - @civitai/sdk@0.8.0           — the REST clients this app's runtime hooks are
+#     being rebound onto (src/lib/sdk-transport.ts). Added here because
+#     b157419 pinned it in package.json and pnpm-lock.yaml without the entry
+#     CLAUDE.md's release protocol requires in the same commit; that commit ran
+#     under the host's pnpm 10.28.1, where `minimumReleaseAge` does not exist,
+#     so the omission could not fail locally while the pinned pnpm 11 refuses
+#     the install outright.
+#     🔴 THE CLOCK, NOT A CONDITION ON US: 0.8.0 was published
+#     2026-09-27T02:04:53Z — read from `npm view @civitai/sdk time --json`, which
+#     is the only authority on it; an earlier revision of this comment guessed
+#     02:03:55Z and was 58s early. pnpm 11's 24h `minimumReleaseAge` therefore
+#     clears it at 2026-09-28T02:04:53Z, and this entry is inert from that
+#     moment — delete it then, not before: until it passes, dropping the entry
+#     makes `pnpm install` fail outright under the pinned pnpm 11.
+#     An EXACT version on purpose — a bare `@civitai/sdk` would exempt
+#     every future release, including one cut by a compromised token.
 # All resolve straight from the npm registry — no `link:`/`overrides`.
 minimumReleaseAgeExclude:
   - '@civitai/app-sdk@0.38.0 || 0.39.0'
   - '@civitai/blocks-react@0.48.0 || 0.49.0'
   - '@civitai/components@0.4.1'
   - '@civitai/theme@0.3.1'
+  - '@civitai/sdk@0.8.0'

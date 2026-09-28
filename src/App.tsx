@@ -32,6 +32,13 @@ import type { CSSProperties } from 'react';
 
 import { nextIndex, rovingAction } from './lib/roving.js';
 
+// 🔴 THE NINE RUNTIME HOOKS NOW COME FROM `./lib/sdk-runtime.js`, NOT FROM
+// `@civitai/blocks-react`. Same names, same shapes, different transport underneath:
+// the snapshot-derived five still read the bridge transport (so the /testing Harness
+// keeps answering them), while app storage, shared storage and the Buzz balance are
+// HTTP against `/api/v1` through `@civitai/sdk`'s `initialize({ transport })`. The
+// `/ui` import BELOW deliberately stays on the bridge package until starters#328 —
+// see `lib/sdk-transport.ts` for why one transport serves both.
 import {
   useAppStorage,
   useBlockContext,
@@ -42,7 +49,7 @@ import {
   useRequestConsent,
   useRequestSignIn,
   useSharedStorage,
-} from '@civitai/blocks-react';
+} from './lib/sdk-runtime.js';
 import {
   Alert,
   Button,
@@ -181,9 +188,19 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const isMobile = useIsMobile();
   const toasts = useToasts();
 
-  // Buzz balance via the host-mediated GET_BUZZ_BALANCE bridge —
-  // NOT a block HTTP endpoint (the old `/api/v1/blocks/buzz` was retired by
-  // civitai #3144).
+  // Buzz balance over REST: `GET /api/v1/blocks/buzz`.
+  //
+  // 🔴 CORRECTED BY THE PORT — THIS COMMENT SAID THE OPPOSITE AND WAS STALE. It read
+  // "via the host-mediated GET_BUZZ_BALANCE bridge — NOT a block HTTP endpoint (the
+  // old `/api/v1/blocks/buzz` was retired by civitai #3144)". The route was indeed
+  // deleted, and then RESTORED by civitai#5051 (`ca57ac0fbb`, 2026-09-23) on the
+  // bridge's own three-account shape, expressly so a consumer could switch transports
+  // without a shape change. The retirement is history; reading it as current is what
+  // would have made this hook look unportable.
+  //
+  // ⚠ ONE DIVERGENCE FROM THE BRIDGE, inherited not introduced: the tRPC procedure
+  // also evaluates the `app-blocks-enabled` kill-switch and charges the per-instance
+  // catalog rate-limit bucket. The REST route does neither.
   //
   // 🔴 "(scope-free)" USED TO BE WRITTEN HERE AND IS NO LONGER TRUE. The host's
   // `blocks.getMyBuzzBalance` now throws FORBIDDEN unless the block token carries
@@ -199,10 +216,15 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const { balance: buzzPools, refetch: refetchBalance } = useBuzzBalance();
   const balance = totalBuzz(buzzPools);
 
-  // Cross-user "popular" play-counts via App Blocks SHARED storage
-  // (apps:storage:shared:* postMessage bridge) — replaces the guessed
-  // `/api/v1/blocks/shared-storage/{increment,top}` REST routes. Stable identity
-  // across renders, so it's safe in the effect/callback deps below.
+  // Cross-user "popular" play-counts via App Blocks SHARED storage — now the REST
+  // routes under `/api/v1/blocks/shared-storage/`, not the postMessage bridge.
+  //
+  // 🔴 THE EARLIER COMMENT CALLED THOSE ROUTES "guessed". They are not, and were not
+  // the ones it named: `list` and `append` come from `AppClient.sharedStorage`, and
+  // `vote` is app-layer over `app.site` because starters#479 kept voting OUT of the
+  // SDK client on purpose. `increment`/`top` do exist on the platform but this app
+  // uses neither. Stable identity across renders, so it stays safe in the
+  // effect/callback deps below.
   const shared = useSharedStorage();
 
   // Inject the component-pack stylesheet into the block document once (gotcha
@@ -291,10 +313,16 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // `undefined` until BLOCK_INIT, so we build NO client and fetch NOTHING until
   // BOTH the host origin AND the bearer token are present.
   //
-  // 🔴 `useBlockToken()` returns a FRESH object every render (`{...token,
+  // 🔴 `useBlockToken()` USED TO RETURN A FRESH OBJECT EVERY RENDER (`{...token,
   // refresh}`), so memoizing on the token OBJECT would rebuild the client (and
   // re-run every loader) each render — an infinite fetch loop. Memoize on the
   // STABLE `token.raw` string, and read the live token/refresh via a ref.
+  //
+  // ⚠ The port's binding memoises on the snapshot's token identity, so the object is
+  // now stable between mints and the hazard above is gone. The `raw`-keyed memo is
+  // KEPT anyway: it is the narrower claim, it is correct under either binding, and
+  // relaxing it would couple this file to an implementation detail of
+  // `lib/sdk-runtime.ts` for no gain.
   const tokenRef = useRef(token);
   tokenRef.current = token;
   const tokenRaw = token.raw;
@@ -464,6 +492,38 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const discoverSeqRef = useRef(0);
   const mineSeqRef = useRef(0);
   const popularSeqRef = useRef(0);
+
+  /**
+   * 🔴 UNMOUNT IS A CASE OF "STALE" — without this it is not, and the ten
+   * `seq !== …Ref.current` guards below every one of them let a settled
+   * response call `setState` after teardown.
+   *
+   * React 19 reads `window` in `resolveUpdatePriority` on the way into
+   * `dispatchSetState`, so a post-unmount write throws `ReferenceError: window
+   * is not defined` — and because it happens inside an `await`, it surfaces as
+   * an UNHANDLED REJECTION, not a test failure. Vitest then exits 1 with every
+   * test PASSING and one "Errors 1 error" line, which reads as infrastructure
+   * noise rather than a defect in this file.
+   *
+   * The guards were never sound; they check ORDERING, never mounted-ness. What
+   * changed is that losing the race became likely: these loaders used to read
+   * through the `postMessage` bridge and now go over REST, which is slow enough
+   * to settle after a test unmounts. Bumping all three refs on teardown reuses
+   * the guard that already exists at all ten sites instead of adding a parallel
+   * `mountedRef` — one rule, one place.
+   *
+   * Applies to all three loaders, not just the one that happened to be caught:
+   * `discover` and `mine` go through the same SDK client on the same path and
+   * differ only in which raced first.
+   */
+  useEffect(
+    () => () => {
+      ++discoverSeqRef.current;
+      ++mineSeqRef.current;
+      ++popularSeqRef.current;
+    },
+    [],
+  );
 
   /**
    * 🔴 APPLIED-REPLACE GENERATIONS — the counter an APPEND is validated against.

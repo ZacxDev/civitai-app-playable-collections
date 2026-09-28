@@ -6,6 +6,7 @@ import { cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, vi } from 'vitest';
 
 import { resetHarnessTransport } from './dev-transport.js';
+import { resetSdkRuntime } from './lib/sdk-runtime.js';
 
 // jsdom does not implement HTMLMediaElement.play/pause (it logs "Not
 // implemented" + throws). The player guards the throw, but stub them as no-ops
@@ -124,6 +125,12 @@ export function flushIntersections(
 // no BLOCK_INIT / token state leaks between tests.
 beforeEach(() => {
   resetHarnessTransport();
+  // The SDK runtime caches one transport adapter and one AppClient, both bound to
+  // the bridge transport the line above just replaced, plus any `fetch` a previous
+  // test injected. Its own cache is keyed on the transport's identity so it would
+  // recover anyway — this makes the per-test reset explicit rather than relying on
+  // that, and it is what drops a leaked `fetch`.
+  resetSdkRuntime();
   MockIntersectionObserver.instances.length = 0;
   globalThis.IntersectionObserver =
     MockIntersectionObserver as unknown as typeof IntersectionObserver;

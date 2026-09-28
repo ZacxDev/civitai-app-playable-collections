@@ -18,7 +18,9 @@ import './skin.css';
 import { App } from './App.js';
 import { Harness } from './Harness.js';
 import { installHarnessTransport } from './dev-transport.js';
+import { createRestFake } from './dev-rest.js';
 import { createFakeApi } from './fake-api.js';
+import { configureSdkRuntime } from './lib/sdk-runtime.js';
 import './index.css';
 
 // Inject the /ui pack's themed stylesheet once up-front (idempotent; the pack
@@ -38,6 +40,22 @@ const useHarness = import.meta.env.VITE_DEV_HARNESS === 'true';
 // The mock host replies from window.location.origin; the SDK transport drops
 // mismatched-origin messages. Allowlist this origin BEFORE any hook runs.
 if (useHarness) installHarnessTransport();
+
+// 🔴 THE HARNESS NEEDS A REST FAKE NOW, AND WITHOUT IT THE DEV LOOP IS BROKEN RATHER
+// THAN DEGRADED. App storage, shared storage and the Buzz balance used to be
+// postMessage, which the mock host answered; after the port they are HTTP against
+// `https://civitai.com/api/v1` (`@civitai/sdk`'s DEFAULT_SITE_URL is absolute, which
+// is also why production needs no override here). From `localhost:5187` with a fake
+// token those calls cannot succeed, so the sort/window prefs would never persist, the
+// Popular rail would stay empty and the tip modal's balance would read as an error —
+// three silent-looking failures in the one loop a developer uses to check their work.
+if (useHarness) {
+  configureSdkRuntime({
+    // viewer id 99 matches the Harness viewer and `createFakeApi` below, so a row the
+    // fake store says the viewer authored is the same viewer the API calls "me".
+    fetch: createRestFake({ viewerUserId: 99, buzz: { blue: 0, green: 0, yellow: 5000 } }),
+  });
+}
 
 const container = document.getElementById('root');
 if (!container) throw new Error('#root missing from index.html');
