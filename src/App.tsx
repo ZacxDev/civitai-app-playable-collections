@@ -494,6 +494,38 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const popularSeqRef = useRef(0);
 
   /**
+   * 🔴 UNMOUNT IS A CASE OF "STALE" — without this it is not, and the ten
+   * `seq !== …Ref.current` guards below every one of them let a settled
+   * response call `setState` after teardown.
+   *
+   * React 19 reads `window` in `resolveUpdatePriority` on the way into
+   * `dispatchSetState`, so a post-unmount write throws `ReferenceError: window
+   * is not defined` — and because it happens inside an `await`, it surfaces as
+   * an UNHANDLED REJECTION, not a test failure. Vitest then exits 1 with every
+   * test PASSING and one "Errors 1 error" line, which reads as infrastructure
+   * noise rather than a defect in this file.
+   *
+   * The guards were never sound; they check ORDERING, never mounted-ness. What
+   * changed is that losing the race became likely: these loaders used to read
+   * through the `postMessage` bridge and now go over REST, which is slow enough
+   * to settle after a test unmounts. Bumping all three refs on teardown reuses
+   * the guard that already exists at all ten sites instead of adding a parallel
+   * `mountedRef` — one rule, one place.
+   *
+   * Applies to all three loaders, not just the one that happened to be caught:
+   * `discover` and `mine` go through the same SDK client on the same path and
+   * differ only in which raced first.
+   */
+  useEffect(
+    () => () => {
+      ++discoverSeqRef.current;
+      ++mineSeqRef.current;
+      ++popularSeqRef.current;
+    },
+    [],
+  );
+
+  /**
    * 🔴 APPLIED-REPLACE GENERATIONS — the counter an APPEND is validated against.
    *
    * The sequence refs above count replaces that were ISSUED. These count
