@@ -1,8 +1,44 @@
 # Porting off the `@civitai/blocks-react` bridge onto `@civitai/sdk` — measured scope
 
-Status: **investigation complete, implementation deliberately not started.** Two
-decisions below change what the central file (`src/App.tsx`) has to look like, so
-building before they are answered would be rework rather than progress.
+> ## ✅ AMENDED 2026-09-28 — BOTH DECISIONS ANSWERED, AND THE PORT SHIPPED
+>
+> This document is kept as the **decision record** for the port, not as an open
+> question. Both blocking decisions were answered and implemented in **PR #49**
+> (`zach/sdk-port-pc-rebind`):
+>
+> - **§3 Decision 1 — what does the SDK attach to?** → `initialize({ transport })`,
+>   wrapping the bridge transport **singleton** via `src/lib/sdk-transport.ts`.
+>   A bare `initialize()` would stand up a second transport — two `message`
+>   listeners, two `BLOCK_HELLO`/`BLOCK_READY` senders, two token copies — because
+>   `/ui`'s `BlockGate` constructs the bridge singleton at the production root.
+>   **That adapter's own closing condition:** delete it and switch to a plain
+>   `initialize()` once `/ui` no longer imports `@civitai/blocks-react`
+>   (`civitai-app-starters#328`).
+> - **§4 Decision 2 — where does the shared-storage client live?** → in the SDK, as
+>   `AppClient.sharedStorage`, shipped by `civitai-app-starters#479` (`62bf04de`)
+>   in `@civitai/sdk@0.8.0`. It is **generic key/value only** — `list`, `get`,
+>   `append`, `update`, `withdraw`. 🔴 `vote`, `unvote`, `counts`, `top`,
+>   `increment` and `report` are **deliberately absent** and belong at the app
+>   layer; the platform serving all eleven routes is **not** a gap to be closed.
+>
+> ⚠ **§1's counts are a BASE measurement, and reading them as post-port numbers is
+> a mistake that has already been made once.** They describe `origin/main` @
+> `65b0028` — bare **7**, production **3** (`App.tsx`, `lib/popular.ts`,
+> `lib/viewer-maturity.ts`), and re-measurement confirms every one of those
+> figures. After the port the same counts read bare **8**, production **2**, and
+> the two that remain are the port's own `sdk-runtime.ts` and `sdk-transport.ts`.
+> The bare count goes UP while the production surface goes DOWN: what the port
+> moved is the COMPOSITION, not the total. Nothing in §1 needs correcting.
+>
+> §§2 and 5–7 stand as written and are the reason to keep this document: the
+> hook→SDK mapping with its evidence, the settled decisions recorded so they are
+> not re-litigated, the `65b0028` baseline, and the harness strategy are what the
+> next port reads.
+
+Status (as first written): **investigation complete, implementation deliberately
+not started.** Two decisions below change what the central file (`src/App.tsx`)
+has to look like, so building before they are answered would be rework rather
+than progress. Both are now answered — see the banner above.
 
 Measured against `origin/main` @ `65b0028` with `@civitai/sdk@0.7.0` installed and
 read from `node_modules` — the authority this repo's `CLAUDE.md` names first
@@ -118,7 +154,11 @@ set moves.
 
 ## 3. Decision 1 — `/ui` keeps the bridge alive, so what does the SDK attach to?
 
-This is the finding that blocks implementation.
+> ✅ **ANSWERED — `initialize({ transport })` over the bridge transport singleton**,
+> via `src/lib/sdk-transport.ts` (PR #49). The options weighed below are kept as the
+> reasoning; the one taken is the adapter. Do not re-open this as a live decision.
+
+This *was* the finding that blocked implementation.
 
 `/ui` is explicitly out of scope (issue #328). But two of the `/ui` components
 this app renders are themselves bridge clients:
@@ -184,6 +224,13 @@ reporting it as unmeasured rather than as "only one greets".
 ---
 
 ## 4. Decision 2 — where does the shared-storage client live?
+
+> ✅ **ANSWERED — in the SDK, as `AppClient.sharedStorage`**, shipped by
+> `civitai-app-starters#479` (`62bf04de`) in `@civitai/sdk@0.8.0`. **Generic
+> key/value only:** `list`, `get`, `append`, `update`, `withdraw`. 🔴 `vote`,
+> `unvote`, `counts`, `top`, `increment`, `report` are deliberately absent and are
+> app-layer; the platform serving all eleven routes is not a gap. The measurement
+> below was correct **for 0.7.0**, which is the version it names.
 
 `@civitai/sdk@0.7.0` exposes **no** shared-storage client. Verified on the
 installed `dist` *and* on the starters working copy source (so it is not merely
