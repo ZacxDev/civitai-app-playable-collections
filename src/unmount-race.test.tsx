@@ -8,13 +8,27 @@
 // answers "is this response stale?" and says nothing about "is the component
 // still mounted?". Ten guard sites, none of them a mount check.
 //
-// Why it stayed invisible until the port: these loaders used to read through the
-// `postMessage` bridge, which settled fast enough that the race was rarely lost.
-// The port routes them over REST, which is slow enough to lose — so a response
-// can land after a test has unmounted and vitest has torn the jsdom environment
-// down. React 19 reads `window` in `resolveUpdatePriority` on the way into
-// `dispatchSetState`, so that late write throws `ReferenceError: window is not
-// defined`.
+// A response settling after a test unmounts — and after vitest tears the jsdom
+// environment down — reaches `setState` with no `window`. React 19 reads it in
+// `resolveUpdatePriority` on the way into `dispatchSetState`, so that late write
+// throws `ReferenceError: window is not defined`.
+//
+// 🔴 CORRECTED. An earlier version of this comment said all three loaders "used
+// to read through the `postMessage` bridge" and that the port moved them to REST.
+// That is true of ONE of them. `loadDiscover` and `loadMine` called
+// `api.listCollections` — already HTTP — both before the port (`65b0028`
+// `App.tsx:571-572`) and after; only `loadPopular` changed transport, bridge
+// shared-storage to REST. So their race is PRE-EXISTING and this teardown fixes
+// it rather than un-breaking it, and the port's contribution was to make one
+// path slow enough to lose a race the guards never covered in the first place.
+// Recorded because the false story mattered: it made the sites below read as out
+// of scope.
+//
+// ⚠ FOUR ASYNC `setState` SITES REMAIN UNGUARDED, and they are the same latent
+// defect on the same `api` client: `App.tsx` ~818, ~858, ~991, ~1098. They are
+// NOT covered by the teardown bump, because that bump only invalidates the three
+// feed sequence refs. They are pre-existing and deliberately out of this PR's
+// scope — named here so the next reader sees them as OPEN rather than absent.
 //
 // 🔴 AND THE SHAPE OF THE FAILURE IS WHY THIS TEST EXISTS RATHER THAN A CI RE-READ.
 // Because the throw happens inside an `await`, it surfaces as an UNHANDLED

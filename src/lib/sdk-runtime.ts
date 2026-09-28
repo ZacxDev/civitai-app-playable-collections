@@ -144,13 +144,55 @@ function transport(): BlockTransport {
   return transportSingleton;
 }
 
-/** The one AppClient promise, created on first use. */
+/**
+ * The one AppClient promise, created on first use.
+ *
+ * 🔴 A REJECTION MUST NOT BE CACHED, AND `??=` ALONE CACHES IT FOREVER.
+ * `initialize()` awaits `ready(transport, 10_000)` and REJECTS with
+ * `BridgeError('unavailable','BLOCK_INIT')` if the host has not posted
+ * `BLOCK_INIT` inside 10 s. `??=` never reassigns a settled promise, so without
+ * the `.catch` below that one rejection becomes the answer to every later
+ * `app()` for the whole life of the page — and nothing in production can reset
+ * it: `configureSdkRuntime`/`resetSdkRuntime` are test-only, and the
+ * bridge-identity swap in `transport()` never fires because `getTransport()`
+ * caches forever.
+ *
+ * What that costs, all at once and all silently: app storage stops loading and
+ * persisting, shared storage leaves the popular rail permanently empty and drops
+ * votes, the Buzz row errors with `refetchBalance()` as a DEAD control (it
+ * re-awaits the same rejected promise), the host consent dialog never opens, and
+ * `useBlockToken().refresh` rejects — so the 401-retry in `lib/api.ts` re-issues
+ * with the same stale token and every call ends as "session expired", advice no
+ * viewer can act on because only a reload clears it.
+ *
+ * 🔴 THIS IS A REGRESSION THIS PORT INTRODUCED, not an inherited flaw. Before
+ * the port these hooks used `sendTypedRequest`, and `IframeTransport.dispatch`
+ * QUEUES outbound messages until `parentOrigin` is set and then flushes them —
+ * nothing here consumed `waitForInit()`, so a late `BLOCK_INIT` recovered
+ * cleanly. The port replaced a queue with a hard deadline.
+ *
+ * Dropping the cache on rejection makes the next `app()` retry. It does not
+ * retry automatically — a caller that wants that must re-invoke — which is the
+ * pre-port behaviour and enough to make a late `BLOCK_INIT` recoverable.
+ */
 function app(): Promise<AppClient> {
-  appPromise ??= initialize({
-    transport: transport(),
-    fetch: options.fetch,
-    ...(options.siteUrl === undefined ? {} : { siteUrl: options.siteUrl }),
-  });
+  if (appPromise === null) {
+    // Named before the `.catch` closure can reference it, so the identity check
+    // below does not depend on temporal-dead-zone timing to be correct.
+    const pending: Promise<AppClient> = initialize({
+      transport: transport(),
+      fetch: options.fetch,
+      ...(options.siteUrl === undefined ? {} : { siteUrl: options.siteUrl }),
+    }).catch((err: unknown) => {
+      // Clear the slot only while it still holds THIS promise. A
+      // `configureSdkRuntime` or a transport swap during the in-flight
+      // `initialize` has already replaced it, and clobbering the newer promise
+      // would reintroduce exactly the staleness `transport()` exists to prevent.
+      if (appPromise === pending) appPromise = null;
+      throw err;
+    });
+    appPromise = pending;
+  }
   return appPromise;
 }
 

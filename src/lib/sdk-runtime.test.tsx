@@ -662,3 +662,81 @@ describe('configureSdkRuntime', () => {
     expect(() => configureSdkRuntime({ transport: t.transport as never })).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 A REJECTED `initialize()` MUST NOT BE CACHED
+// ---------------------------------------------------------------------------
+//
+// `initialize()` awaits `ready(transport, 10_000)` and REJECTS with
+// `BridgeError('unavailable','BLOCK_INIT')` when the host has not posted
+// `BLOCK_INIT` inside 10 s. `app()` memoises its promise, and `??=` never
+// reassigns a SETTLED one — so before the `.catch` in `app()`, that single
+// rejection became the answer to every later call for the life of the page.
+//
+// Nothing in production could clear it: `configureSdkRuntime`/`resetSdkRuntime`
+// are test-only, and the bridge-identity swap in `transport()` cannot fire
+// because `getTransport()` caches forever. One slow host boot therefore took out
+// app storage, shared storage, the Buzz row (with `refetchBalance()` as a DEAD
+// control, re-awaiting the same rejection), host consent, and token refresh —
+// which in turn makes `lib/api.ts`'s 401-retry re-issue the SAME stale token, so
+// every call ends on "session expired", advice no viewer can act on because only
+// a reload clears it.
+//
+// 🔴 A REGRESSION THE PORT INTRODUCED, not an inherited flaw. Pre-port these
+// hooks used `sendTypedRequest`, and `IframeTransport.dispatch` QUEUES outbound
+// messages until `parentOrigin` is set, then flushes — nothing here consumed
+// `waitForInit()`, so a late `BLOCK_INIT` recovered on its own. The port swapped
+// a queue for a hard deadline.
+//
+// Found by an independent round-1 audit of PR #49, and CONFIRMED INDEPENDENTLY on
+// three of the four fleet ports — `model-benchmarking` had already fixed it, with
+// the same `appPromise === pending` identity check written here. One predicate
+// copied to four repos, wrong in three.
+describe('a rejected initialize() is not cached', () => {
+  it('🔴 recovers when BLOCK_INIT lands late, instead of failing for the page life', async () => {
+    vi.useFakeTimers();
+    try {
+      // Host has not posted BLOCK_INIT: `ready: false` is exactly what the SDK's
+      // own `ready()` gate blocks on.
+      const t = fakeTransport(baseSnapshot({ ready: false }));
+      const f = fakeFetch({ 'app-storage/get': { value: { sort: 'popular' } } });
+      configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
+
+      let storage!: ReturnType<typeof useAppStorage>;
+      function Probe() {
+        storage = useAppStorage();
+        return null;
+      }
+      render(<Probe />);
+
+      // First read starts the 10 s clock and must reject.
+      const first = storage.get('browse-prefs');
+      const firstErr = await Promise.all([
+        first.then(
+          () => null,
+          (e: unknown) => e,
+        ),
+        vi.advanceTimersByTimeAsync(11_000),
+      ]).then(([e]) => e);
+      expect(String(firstErr)).toMatch(/10000ms|BLOCK_INIT|unavailable/i);
+
+      // 🔴 POSITIVE CONTROL: the fetch fake was never reached on that first
+      // attempt. Without this the test could pass because the route 404'd rather
+      // than because `initialize` timed out — a different failure wearing the
+      // same shape.
+      expect(f.calls).toHaveLength(0);
+
+      // The host is ready now. This is the late-BLOCK_INIT case, and it is where
+      // the cached rejection used to be fatal.
+      t.set(baseSnapshot({ ready: true }));
+
+      const second = await storage.get('browse-prefs');
+      expect(second).toEqual({ sort: 'popular' });
+      // …and it genuinely went to the wire this time, so the pass is a real read
+      // rather than a resolved-from-nowhere value.
+      expect(f.calls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
