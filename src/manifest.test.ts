@@ -51,8 +51,15 @@ describe('block.manifest.json', () => {
     }
   });
 
-  it('passes defineBlock once augmented to the full runtime shape', () => {
+  it('passes defineBlock as the committed source manifest, unaugmented', () => {
     const validated = validateManifest();
+    // 🔴 "UNAUGMENTED" IS THE CLAIM THAT MOVED. `@civitai/app-sdk@0.49.0` replaced
+    // the hand-written `defineBlock` mirror with an Ajv compile of the canonical
+    // schema and now REJECTS `iframe.src` ("SERVER-OWNED"), where the old mirror
+    // REQUIRED it. So `src/manifest.ts` no longer synthesises `appId`, `targets`
+    // or `iframe.src`, and what this validates is byte-for-byte the file
+    // `civitai app submit` uploads rather than a local variant of it.
+    //
     // Every declared scope validates directly (incl. the 4-segment shared-storage
     // ones and the consent-gated private read) — no exemption needed. The count
     // is deliberately not restated here; it rots on every scope change and the
