@@ -172,6 +172,18 @@ const HOOK_REQUIRED_SCOPES: Readonly<Record<string, readonly BlockScope[]>> = {
   // d.ts: "FORCES the per-app tag filter (scope `ai:write:budgeted`, same trust
   // boundary as submit)".
   useAppWorkflows: [BLOCK_SCOPES.AI_WRITE_BUDGETED],
+  // Both arrived with blocks-react 0.62.0 and sat in ledger 3 only because
+  // `@civitai/app-sdk@0.49.0`'s `BLOCK_SCOPES` could not NAME their scopes.
+  // The app-sdk ^0.55.0 bump supplies that vocabulary (`GOODS_READ_SELF` /
+  // `GOODS_PURCHASE_SELF` entered at 0.52.0), so the move ledger 3's comment
+  // prescribed is executed here. d.ts: `useEntitlements` → "`GET
+  // /api/v1/blocks/entitlements` REST endpoint (scope `goods:read:self`)";
+  // `useGoodPurchase` → "`POST /api/v1/blocks/goods/purchase` REST endpoint
+  // (scope `goods:purchase:self`)". This app sells no digital goods and calls
+  // neither hook, so both scopes are also listed in
+  // `SCOPES_NOT_USED_BY_THIS_APP` and no manifest change is implied.
+  useEntitlements: [BLOCK_SCOPES.GOODS_READ_SELF],
+  useGoodPurchase: [BLOCK_SCOPES.GOODS_PURCHASE_SELF],
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -274,29 +286,18 @@ const HOOK_SCOPE_UNVERIFIED: readonly string[] = [
   'useBuzzPurchase',
   'useBuzzWorkflow',
   'useCheckpointPicker',
-  // 🔴 THE TWO `goods:*` HOOKS ARE HERE FOR `useBlockSettings`' REASON, NOT FOR
-  // THE LEDGER'S HEADLINE REASON — their scope IS established, it is the pinned
-  // SDK's VOCABULARY that cannot name it. Both arrived with blocks-react 0.62.0
-  // and both name their scope outright in their own `.d.ts`: `useEntitlements`
-  // → "`GET /api/v1/blocks/entitlements` REST endpoint (scope `goods:read:self`)",
-  // `useGoodPurchase` → "`POST /api/v1/blocks/goods/purchase` REST endpoint
-  // (scope `goods:purchase:self`)". Neither string is a member of
-  // `@civitai/app-sdk@0.49.0`'s `BLOCK_SCOPES`, so neither can be written into
-  // `HOOK_REQUIRED_SCOPES` (typed `BlockScope[]`) nor survive the
-  // "names no scope outside the SDK vocabulary" test as a literal.
-  //
-  // MEASURED, so the next bump needs no archaeology: `GOODS_READ_SELF` /
-  // `GOODS_PURCHASE_SELF` land in `BLOCK_SCOPES` at `@civitai/app-sdk@0.52.0`
-  // (enumerated across 0.49.0–0.54.0: 13 values through 0.51.0, 15 from 0.52.0).
-  // On an app-sdk bump to ≥0.52.0, MOVE these two into `HOOK_REQUIRED_SCOPES`
-  // with `BLOCK_SCOPES.GOODS_READ_SELF` / `.GOODS_PURCHASE_SELF`, and add both to
-  // `SCOPES_NOT_USED_BY_THIS_APP` — the vocabulary test will demand the second
-  // half the moment the first is possible. This app sells no digital goods and
-  // calls neither hook, so failing closed costs it nothing today.
-  'useEntitlements',
+  // ⚠️ `useEntitlements` and `useGoodPurchase` ARE NO LONGER HERE, and that is
+  // the app-sdk ^0.55.0 bump's doing rather than a reclassification. They sat in
+  // this ledger only because `@civitai/app-sdk@0.49.0`'s `BLOCK_SCOPES` could not
+  // NAME `goods:read:self` / `goods:purchase:self` — the scopes entered the
+  // vocabulary at 0.52.0, so both hooks now carry real entries in
+  // `HOOK_REQUIRED_SCOPES` and both scopes are listed in
+  // `SCOPES_NOT_USED_BY_THIS_APP`. The instruction that prescribed this move has
+  // therefore been executed and is deliberately not restated; what remains worth
+  // keeping is the measurement behind it: enumerated across 0.49.0–0.54.0,
+  // `BLOCK_SCOPES` held 13 values through 0.51.0 and 15 from 0.52.0.
   'useGatedImages',
   'useGenerationResources',
-  'useGoodPurchase',
   'useImageUpload',
   'usePublishGenerationOutputs',
   'useResourcePicker',
@@ -343,6 +344,13 @@ const SCOPES_NOT_USED_BY_THIS_APP: readonly BlockScope[] = [
   BLOCK_SCOPES.USER_READ_SELF,
   // Dropped in 0.2.10 when following moved to the host-mediated consent bridge.
   BLOCK_SCOPES.COLLECTIONS_WRITE_SELF,
+  // Entered `BLOCK_SCOPES` at app-sdk 0.52.0 and became nameable here on the
+  // ^0.55.0 bump. This app sells no digital goods: it calls neither
+  // `useEntitlements` nor `useGoodPurchase`, and declares neither scope in its
+  // manifest. Listed so the "every scope is placed deliberately" test passes on
+  // a deliberate non-use rather than on the vocabulary being too old to see them.
+  BLOCK_SCOPES.GOODS_READ_SELF,
+  BLOCK_SCOPES.GOODS_PURCHASE_SELF,
 ];
 
 // ---------------------------------------------------------------------------

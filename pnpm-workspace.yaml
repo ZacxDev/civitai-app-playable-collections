@@ -12,6 +12,19 @@ packages:
 # Every entry is a Civitai first-party package pinned in package.json, and the
 # version listed is the one package-lock.json already resolved to, so nothing
 # here loosens what the app builds against:
+#   - @civitai/app-sdk@0.55.0     — 🔴 THE PEER FLOOR OF blocks-react@0.63.0,
+#     which declares `peerDependencies: {"@civitai/app-sdk": ">=0.55.0 <1.0.0"}`.
+#     This repo pinned an EXACT `0.49.0`, which admits only itself, so the two
+#     bumps CANNOT be split: 0.63.0 value-imports BLOCK_IDEMPOTENCY_KEY_REGEX,
+#     BLOCK_IDEMPOTENCY_KEY_MAX_LENGTH and blockIdempotencyKeyRejection from
+#     `@civitai/app-sdk/blocks`, all first present at 0.55.0, so against an older
+#     app-sdk it dies at MODULE EVALUATION. Measured here: blocks-react alone took
+#     the jsdom tier from 809 passing tests to 434 (375 silently unrun) on
+#     `SyntaxError: … does not provide an export named
+#     BLOCK_IDEMPOTENCY_KEY_MAX_LENGTH`; with this bump it is 809 again.
+#     Published 2026-10-02T17:38:42.000Z per pnpm's refusal (npm view says
+#     17:41:53.057Z); load-bearing until ~2026-10-03T17:38Z, and controlled
+#     individually on a clean tree — removing only `|| 0.55.0` gives rc=1.
 #   - @civitai/app-sdk@0.38.0     — the block message/type contract: BLOCK_SCOPES
 #     (incl. the 4-segment `apps:storage:shared:*`), `defineBlock`, the tip and
 #     collection payload shapes src/types.ts mirrors.
@@ -36,10 +49,35 @@ packages:
 #     the 0.48.0 -> `0.48.0 || 0.49.0` edit did. The older alternatives are long
 #     past their own clocks and are therefore inert rather than wrong; pruning
 #     them is a separate, purely cosmetic edit.
+#     🔴 `|| 0.63.0` IS THE SAME SHAPE AS `|| 0.62.0` ABOVE, ONE DAY LATER, and it
+#     is load-bearing until ~2026-10-03T17:38Z. pnpm's own refusal names
+#     2026-10-02T17:38:43.000Z as the publish instant. ⚠️ `npm view` reports
+#     2026-10-02T17:42:54.561Z for the same version — 251s later; quote pnpm's,
+#     per this block's standing rule, because pnpm is what fails.
+#     MEASURED BOTH WAYS on a CLEAN tree (`rm -rf node_modules` first — a warm
+#     one short-circuits to `Already up to date` and proves nothing): with the
+#     entry, rc=0; with only `|| 0.63.0` removed, rc=1 and
+#     ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION naming blocks-react@0.63.0 alone.
 #   - @civitai/components@0.4.1    — the attribute-driven CSS primitives the skin
 #     (src/skin.css) is written on top of.
+#     🔴 `|| 0.9.1` IS A TRANSITIVE ENTRY, NOT A DIRECT ONE, and that is the half
+#     worth knowing: `package.json` still pins `^0.4.1`. 0.9.1 enters the LOCKFILE
+#     only as a nested dependency of `blocks-react@0.63.0`, and THE GATE SCORES
+#     EVERY LOCKFILE ENTRY, NOT ONLY THE RANGES YOU EDITED. So a bump that touches
+#     two direct ranges can need four tokens. pnpm appended this one itself during
+#     `pnpm install` (`Added … to minimumReleaseAgeExclude`, easy to scroll past).
+#     Published 2026-10-02T17:38:43.000Z per pnpm; controlled individually on a
+#     clean tree — removing only `|| 0.9.1` gives rc=1 naming components@0.9.1.
 #   - @civitai/theme@0.3.1         — the `--civitai-*` design tokens (src/theme.ts,
-#     src/bootTheme.ts). 0.3.1 is the latest published; do not bump blindly.
+#     src/bootTheme.ts).
+#     🔴 `|| 0.5.0` is the second TRANSITIVE entry, same mechanism and same
+#     evidence as components@0.9.1 above: `package.json` pins `^0.3.1`, 0.5.0
+#     arrives only under `blocks-react@0.63.0`, pnpm appended it unprompted,
+#     published 2026-10-02T17:38:43.000Z per pnpm, and removing only this
+#     alternative on a clean tree gives rc=1 naming theme@0.5.0.
+#     ⚠️ The old note here said "0.3.1 is the latest published; do not bump
+#     blindly" — the first clause is no longer true (0.5.0 exists and is in the
+#     lockfile transitively). The caution is kept; the stale fact is dropped.
 #   - @civitai/sdk@0.8.0           — the REST clients this app's runtime hooks are
 #     being rebound onto (src/lib/sdk-transport.ts). Added here because
 #     b157419 pinned it in package.json and pnpm-lock.yaml without the entry
@@ -58,8 +96,8 @@ packages:
 #     every future release, including one cut by a compromised token.
 # All resolve straight from the npm registry — no `link:`/`overrides`.
 minimumReleaseAgeExclude:
-  - '@civitai/app-sdk@0.38.0 || 0.39.0'
-  - '@civitai/blocks-react@0.48.0 || 0.49.0 || 0.62.0'
-  - '@civitai/components@0.4.1'
-  - '@civitai/theme@0.3.1'
+  - '@civitai/app-sdk@0.38.0 || 0.39.0 || 0.55.0'
+  - '@civitai/blocks-react@0.48.0 || 0.49.0 || 0.62.0 || 0.63.0'
+  - '@civitai/components@0.4.1 || 0.9.1'
+  - '@civitai/theme@0.3.1 || 0.5.0'
   - '@civitai/sdk@0.8.0'
