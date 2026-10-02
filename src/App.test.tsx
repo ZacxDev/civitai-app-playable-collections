@@ -24,6 +24,20 @@ function renderApp(
     isPrivateGranted?: (scopes: string[]) => boolean;
     isTipGranted?: (scopes: string[]) => boolean;
     onOutbound?: (msg: { type: string; payload?: unknown }) => void;
+    /**
+     * Can the mock host grant a `REQUEST_CONSENT` at all? `false` models the host
+     * that can NEVER grant (scope clamped at mint) — it pushes
+     * `CONSENT_UNAVAILABLE` instead of a re-minted token.
+     *
+     * 🔴 THIS IS HOW A DECLINE IS MODELLED NOW, AND THE OLD WAY STOPPED WORKING.
+     * `@civitai/blocks-react` ≤0.51.0 granted exactly `['ai:write:budgeted']` on
+     * every `REQUEST_CONSENT` regardless of what was asked for, so a request for
+     * `collections:read:private` came back "granted" without that scope — which a
+     * test could read as a decline. 0.62.0 grants WHAT WAS ASKED FOR (filtered to
+     * the SDK vocabulary), which is what the real host does, so that trick now
+     * models a GRANT and the decline has to be asked for explicitly.
+     */
+    consentGrantable?: boolean;
     retry?: { retries: number; delayMs: number };
     /** Seed the mock host's per-pool Buzz wallet (GET_BUZZ_BALANCE bridge). */
     buzzBalance?: { blue: number; green: number; yellow: number };
@@ -84,6 +98,7 @@ function renderApp(
       theme={opts.theme ?? 'dark'}
       showLog={false}
       onOutbound={opts.onOutbound}
+      {...(opts.consentGrantable === undefined ? {} : { consentGrantable: opts.consentGrantable })}
       buzzBalance={opts.buzzBalance}
       shared={opts.shared}
       storage={opts.storage}
@@ -573,9 +588,17 @@ describe('App — private collections consent gate', () => {
   it('the affordance sends a REQUEST_CONSENT for collections:read:private (declined path stays public-only, no error)', async () => {
     const outbound: Array<{ type: string; payload?: unknown }> = [];
     const api = createFakeApi({ viewerUserId: 99, collectionsPrivateGranted: () => false });
-    // Default predicate => the mock host's grant (ai:write:budgeted) does NOT map
-    // to the private scope, so this models the host NOT granting (decline).
-    renderApp({ api, onOutbound: (m) => outbound.push(m) });
+    // Default predicate (the REAL scope check) + a host that cannot grant.
+    //
+    // 🔴 `consentGrantable: false` IS LOAD-BEARING AND IS NEW. It used to read
+    // "the mock host's grant (ai:write:budgeted) does NOT map to the private
+    // scope, so this models the host NOT granting (decline)" — true of
+    // blocks-react ≤0.51.0, which granted that one constant whatever you asked
+    // for. 0.62.0 grants the REQUESTED scope, as the real host does, so that
+    // premise now models a GRANT and this case would assert the opposite of its
+    // own name. Asking the host for an un-grantable session is the faithful
+    // decline, and it exercises the same block-side path the real decline does.
+    renderApp({ api, consentGrantable: false, onOutbound: (m) => outbound.push(m) });
     await gotoMine();
 
     await userEvent.click(screen.getByTestId('enable-private'));
@@ -591,15 +614,22 @@ describe('App — private collections consent gate', () => {
   });
 
   it('after grant + token re-mint, private collections appear and the affordance disappears', async () => {
-    // The mock host grants `ai:write:budgeted` on REQUEST_CONSENT and re-mints
-    // the token (TOKEN_REFRESH). We map that grant to the private scope, and flip
-    // the fake server to reveal private on the same consent event — a true
-    // request -> re-mint -> observe -> reload round-trip.
+    // The mock host grants the REQUESTED scope on REQUEST_CONSENT and re-mints
+    // the token (TOKEN_REFRESH); the fake server flips to reveal private on the
+    // same consent event — a true request -> re-mint -> observe -> reload
+    // round-trip.
+    //
+    // 🔴 NO `isPrivateGranted` SEAM ANY MORE, AND THAT MAKES THIS STRICTLY
+    // STRONGER. It used to pass `(scopes) => scopes.includes('ai:write:budgeted')`
+    // because blocks-react ≤0.51.0 granted that one constant whatever a block
+    // asked for, so the real `collections:read:private` check could never go true
+    // on this host and the grant had to be faked onto a different string. 0.62.0
+    // grants what was asked for, so the DEFAULT predicate — the production check,
+    // on the production scope — is what drives the assertions below.
     let granted = false;
     const api = createFakeApi({ viewerUserId: 99, collectionsPrivateGranted: () => granted });
     renderApp({
       api,
-      isPrivateGranted: (scopes) => scopes.includes('ai:write:budgeted'),
       onOutbound: (m) => {
         if (m.type === 'REQUEST_CONSENT') granted = true;
       },

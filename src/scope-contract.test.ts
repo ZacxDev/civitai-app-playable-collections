@@ -194,6 +194,15 @@ const UNSCOPED_HOOKS: readonly string[] = [
   'useBlockTheme',
   'useBlockToken',
   'useCivitaiNavigate',
+  // Arrived with the 0.62.0 bump. d.ts: it "Reads the SAME singleton transport
+  // snapshot {@link useBlockContext} does" and is "the same value as
+  // `useBlockContext().context.subPath` on a page slot" — i.e. a re-read of the
+  // BLOCK_INIT context plus the host's own `ROUTE_CHANGED` pushes. No viewer
+  // resource, no token read, so no declaration. (Its own `.d.ts` mentions the
+  // word "scope" exactly once, and it is `useCivitaiNavigate`'s `scope: 'app'`
+  // ARGUMENT — a navigation target, not a block scope. Reading that as evidence
+  // of a required scope is the trap this comment exists to close.)
+  'useCivitaiRoute',
   // d.ts: "EVERY CALL OPENS A HOST-CHROME CONSENT CONFIRM … What it costs is the
   // manifest `scopes` declaration a moderator reads before install." This repo
   // dropped `collections:write:self` in 0.2.10 for exactly that move — see the
@@ -219,24 +228,33 @@ const UNSCOPED_HOOKS: readonly string[] = [
  * these from `src/` FAILS this file, with instructions to establish its scope
  * (and move it into ledger 1 or 2) first.
  *
- * 🔴 RE-MEASURED AGAINST THE INSTALLED `0.51.0` RATHER THAN ASSERTED, because
- * the paragraph above is exactly the kind of claim that rots into a list nobody
- * rechecks. The enumeration was re-run on the 0.49.0 -> 0.51.0 bump, by the
- * method below, and it moved: `dist/` now has 79 `.d.ts` files, and NINE of
- * `BLOCK_SCOPES`' thirteen strings appear in it rather than eight. The ninth is
- * `posts:write:self`, which arrived with `useCreatePostFromApp` — and it is not
- * a new unknown, because the hook's own `hooks/useCreatePostFromApp.d.ts:97`
- * names it outright ("🔴 REQUIRES THE `posts:write:self` SCOPE"), so it is
- * classified in ledger 1 above. The other eight are unchanged and still
- * accounted for elsewhere in this file: SEVEN by a hook in ledger 1
- * (`social:tip:self` is also a ledger-4 entry, reached by a direct REST POST),
- * and `collections:write:self` by `useCollectionFollow` in ledger 2 plus
- * `SCOPES_NOT_USED_BY_THIS_APP`. None of the nine appears in, or next
- * to, any of the eleven names below. Two of the eleven mention the word "scope"
- * at all (`usePublishGenerationOutputs`, `useViewer`) and both only in the
- * generic failure phrase "missing scope", naming none. So this ledger CANNOT be
- * mechanically reduced from the installed package today; it stays at eleven on
- * evidence rather than on inertia.
+ * 🔴 RE-MEASURED AGAINST THE INSTALLED `blocks-react@0.62.0` + `app-sdk@0.49.0`
+ * RATHER THAN ASSERTED, because the paragraph above is exactly the kind of claim
+ * that rots into a list nobody rechecks. The enumeration was re-run on the
+ * 0.51.0 -> 0.62.0 bump, by the method below, and it moved: `dist/` now has 90
+ * `.d.ts` files (79 at 0.51.0), and NINE of `BLOCK_SCOPES`' thirteen strings
+ * appear in it — the same nine as at 0.51.0, so the SET did not move even though
+ * the package did. They are accounted for elsewhere in this file: EIGHT by a
+ * hook in ledger 1 (`social:tip:self` is also a ledger-4 entry, reached by a
+ * direct REST POST; `posts:write:self` by `useCreatePostFromApp`), and
+ * `collections:write:self` by `useCollectionFollow` in ledger 2 plus
+ * `SCOPES_NOT_USED_BY_THIS_APP`.
+ *
+ * ⚠️ ONE SUB-CLAIM IN THE HEADER ABOVE IS NOW STALE AND IS CORRECTED HERE: at
+ * 0.51.0 `apps:storage:shared:read` appeared in NO `.d.ts` anywhere, only in
+ * `internal/liveHost.js`. At 0.62.0 it DOES — `internal/mockHost.d.ts`, the dev
+ * host's own storage scope gate — so the read half of `useSharedStorage` is no
+ * longer an inference from its write sibling. The mapping is unchanged; the
+ * evidence for it got better.
+ *
+ * None of the nine appears in, or next to, any of the thirteen names below.
+ * Two of them mention the word "scope" at all
+ * (`usePublishGenerationOutputs`, `useViewer`) and both only in the generic
+ * failure phrase "missing scope", naming none; `useEntitlements` and
+ * `useGoodPurchase` DO name theirs and are here for a different, stated reason
+ * (see their own comment). So this ledger still cannot be mechanically reduced
+ * from the installed package today; it stands at thirteen on evidence rather
+ * than on inertia.
  *
  * 🔴 RE-RUN THE ENUMERATION ON AN SDK BUMP, AND DO NOT HAND-ROLL THE REGEX. The
  * obvious "grep the dist for scope-shaped literals" under-counts: a pattern
@@ -256,8 +274,29 @@ const HOOK_SCOPE_UNVERIFIED: readonly string[] = [
   'useBuzzPurchase',
   'useBuzzWorkflow',
   'useCheckpointPicker',
+  // 🔴 THE TWO `goods:*` HOOKS ARE HERE FOR `useBlockSettings`' REASON, NOT FOR
+  // THE LEDGER'S HEADLINE REASON — their scope IS established, it is the pinned
+  // SDK's VOCABULARY that cannot name it. Both arrived with blocks-react 0.62.0
+  // and both name their scope outright in their own `.d.ts`: `useEntitlements`
+  // → "`GET /api/v1/blocks/entitlements` REST endpoint (scope `goods:read:self`)",
+  // `useGoodPurchase` → "`POST /api/v1/blocks/goods/purchase` REST endpoint
+  // (scope `goods:purchase:self`)". Neither string is a member of
+  // `@civitai/app-sdk@0.49.0`'s `BLOCK_SCOPES`, so neither can be written into
+  // `HOOK_REQUIRED_SCOPES` (typed `BlockScope[]`) nor survive the
+  // "names no scope outside the SDK vocabulary" test as a literal.
+  //
+  // MEASURED, so the next bump needs no archaeology: `GOODS_READ_SELF` /
+  // `GOODS_PURCHASE_SELF` land in `BLOCK_SCOPES` at `@civitai/app-sdk@0.52.0`
+  // (enumerated across 0.49.0–0.54.0: 13 values through 0.51.0, 15 from 0.52.0).
+  // On an app-sdk bump to ≥0.52.0, MOVE these two into `HOOK_REQUIRED_SCOPES`
+  // with `BLOCK_SCOPES.GOODS_READ_SELF` / `.GOODS_PURCHASE_SELF`, and add both to
+  // `SCOPES_NOT_USED_BY_THIS_APP` — the vocabulary test will demand the second
+  // half the moment the first is possible. This app sells no digital goods and
+  // calls neither hook, so failing closed costs it nothing today.
+  'useEntitlements',
   'useGatedImages',
   'useGenerationResources',
+  'useGoodPurchase',
   'useImageUpload',
   'usePublishGenerationOutputs',
   'useResourcePicker',

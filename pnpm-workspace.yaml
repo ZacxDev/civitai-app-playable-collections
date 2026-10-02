@@ -18,6 +18,24 @@ packages:
 #   - @civitai/blocks-react@0.48.0 — the hooks + IframeTransport, the host follow
 #     bridge used by 0.2.10, and the `/testing` mock host every *.test.tsx and
 #     the dev Harness mount against.
+#     🔴 `|| 0.62.0` ADDED BY `pnpm install` ITSELF, and it is LOAD-BEARING TODAY,
+#     not convention. This repo's pinned pnpm 11 applies a BUILT-IN 24h
+#     `minimumReleaseAge` — `pnpm config get minimumReleaseAge` prints
+#     `undefined`, which means "the default is in force", NOT "the gate is off".
+#     THE CLOCK: pnpm's own refusal names 2026-10-02T04:00:25.000Z, and that is
+#     the figure the gate uses, so it is the one to trust here. ⚠️ `npm view
+#     @civitai/blocks-react time --json` reports 2026-10-02T04:02:03.809Z for the
+#     same version — 98s later. Two registry fields, not a transcription error;
+#     quote pnpm's, because pnpm is what fails. So until ~2026-10-03T04:00Z every
+#     `pnpm install --frozen-lockfile` — exactly what `.github/workflows/ci.yml`
+#     runs — FAILS with ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION unless this version
+#     is excluded. MEASURED BOTH WAYS on this change: with the entry, rc=0; with
+#     this one line removed and nothing else changed, rc=1 and that error.
+#     The entry goes inert at that moment; delete it then, not before.
+#     ⚠️ APPEND, do not replace: that is what pnpm wrote on its own here, and what
+#     the 0.48.0 -> `0.48.0 || 0.49.0` edit did. The older alternatives are long
+#     past their own clocks and are therefore inert rather than wrong; pruning
+#     them is a separate, purely cosmetic edit.
 #   - @civitai/components@0.4.1    — the attribute-driven CSS primitives the skin
 #     (src/skin.css) is written on top of.
 #   - @civitai/theme@0.3.1         — the `--civitai-*` design tokens (src/theme.ts,
@@ -41,7 +59,7 @@ packages:
 # All resolve straight from the npm registry — no `link:`/`overrides`.
 minimumReleaseAgeExclude:
   - '@civitai/app-sdk@0.38.0 || 0.39.0'
-  - '@civitai/blocks-react@0.48.0 || 0.49.0'
+  - '@civitai/blocks-react@0.48.0 || 0.49.0 || 0.62.0'
   - '@civitai/components@0.4.1'
   - '@civitai/theme@0.3.1'
   - '@civitai/sdk@0.8.0'
