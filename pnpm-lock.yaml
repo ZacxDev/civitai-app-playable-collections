@@ -9,20 +9,23 @@ importers:
   .:
     dependencies:
       '@civitai/app-sdk':
-        specifier: ^0.55.0
-        version: 0.55.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5))
+        specifier: ^0.71.0
+        version: 0.71.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5))
       '@civitai/blocks-react':
-        specifier: ^0.63.0
-        version: 0.63.0(@civitai/app-sdk@0.55.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5)))(@civitai/sdk@0.8.0)(react@19.2.8)
+        specifier: ^0.73.2
+        version: 0.73.2(@civitai/app-sdk@0.71.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5)))(@civitai/sdk@0.14.1)(react@19.2.8)
       '@civitai/components':
-        specifier: ^0.4.1
-        version: 0.4.1
+        specifier: ^0.10.0
+        version: 0.10.0(@civitai/sdk@0.14.1)
+      '@civitai/components-react':
+        specifier: ^0.9.2
+        version: 0.9.2(@civitai/sdk@0.14.1)(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@civitai/sdk':
-        specifier: 0.8.0
-        version: 0.8.0
+        specifier: 0.14.1
+        version: 0.14.1
       '@civitai/theme':
-        specifier: ^0.3.1
-        version: 0.3.1
+        specifier: ^0.5.2
+        version: 0.5.2
       react:
         specifier: ^19.0.0
         version: 19.2.8
@@ -96,8 +99,8 @@ packages:
   '@blazediff/core@1.9.1':
     resolution: {integrity: sha512-ehg3jIkYKulZh+8om/O25vkvSsXXwC+skXmyA87FFx6A/45eqOkZsBltMw/TVteb0mloiGT8oGRTcjRAz66zaA==}
 
-  '@civitai/app-sdk@0.55.0':
-    resolution: {integrity: sha512-wnhXeHc4vUXjAjo+djFwyklsvlyYbuvOWmrdLAV7uPJ5qRGHk16/bRWc0yIAqBQTsYB7EHJ6oZ4vjpK2gRdWTQ==}
+  '@civitai/app-sdk@0.71.0':
+    resolution: {integrity: sha512-NuNSnylV8HLdVGf5vBECXKJL0MmGa+gD3xnoH7LLlNCxTutvbhSOjwNOmnD2V8/l8zUfWOGsALyHETbdJiZcog==}
     engines: {node: '>=20'}
     peerDependencies:
       '@civitai/client': ^0.2.0-beta.98
@@ -111,19 +114,22 @@ packages:
       vite:
         optional: true
 
-  '@civitai/blocks-react@0.63.0':
-    resolution: {integrity: sha512-UDBqZ9oaDT9h+i6M97XZNUUVc55lNNFVk1UmP99O6L6UZg1JM2O7abOzxpde2MZiKXfTTuZnrs5sqOPkIOhCHw==}
+  '@civitai/blocks-react@0.73.2':
+    resolution: {integrity: sha512-Y1TNM4oISJd2CoJ8XHrxm92PZHEfYvuIzWzc/lampiDzVq3+Z85YHJHcqPjFVG/AdcWHH9Q5WV8LNXF8jwDBlA==}
     engines: {node: '>=20'}
     peerDependencies:
-      '@civitai/app-sdk': '>=0.55.0 <1.0.0'
+      '@civitai/app-sdk': '>=0.57.0 <1.0.0'
       react: ^18.0.0 || ^19.0.0
 
-  '@civitai/components@0.4.1':
-    resolution: {integrity: sha512-w8hcqhBlBGGQviGVweLkSEilARzOyDtKqr00O7u/s4i8CXrNu8s4+lAT5GFJb4lAYU75BXX1s99138dZFhyaqA==}
+  '@civitai/components-react@0.9.2':
+    resolution: {integrity: sha512-9M7Dxp1n4YslC4YFzYN5ggvKfqtdS8Q+n3gogLceLInKzDM7NEm7G+aB5qht0ua3OT2ZQGuozfz/Ymdkav5HDQ==}
     engines: {node: '>=20'}
+    peerDependencies:
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
 
-  '@civitai/components@0.9.1':
-    resolution: {integrity: sha512-Y7Mv6IyGx/mus1NPSs4a5D+ID2844C0+WNR/e982AJPblDMmt9y95AMe+0aFb2tC6l2iBavWUuIoQV3XU6K8bA==}
+  '@civitai/components@0.10.0':
+    resolution: {integrity: sha512-2M/OEwdcHz63ctjrUAb3iIl5eizgfGBRfRZHGFC2jayebUDHl+ruX51C4TpQVGID4Pghk/i94vNFffho5NeTGA==}
     engines: {node: '>=20'}
     peerDependencies:
       '@civitai/sdk': '>=0.1.0 <1.0.0'
@@ -135,16 +141,12 @@ packages:
     resolution: {integrity: sha512-z2dCYCnFZCm84F4Oe7bPahTfLZbClInQCeFaz5a1Y3CfRIjHJisG7WbtcpAhaw0Qa+bsQ+plwF+K2MCyCbgZFg==}
     engines: {git: '>=2.11.0', node: '>=18.0.0', npm: '>=7.19.0', yarn: '>=1.7.0'}
 
-  '@civitai/sdk@0.8.0':
-    resolution: {integrity: sha512-QqLazNAE5mh51cYTrLRRL8gVWMGVZa3QHgca2E8hptb46xdZBpjkoBe3urmvZwJkS476USlT9ue9T0xcsp6E4Q==}
+  '@civitai/sdk@0.14.1':
+    resolution: {integrity: sha512-3lTLOqYInUX9iS1HSNh7jk/qbSDChMUjkwXGWuz5QF34hIeTqLgC3R75RkswjxoofWtjbYQ3e6pvJi6jtOGBWQ==}
     engines: {node: '>=20'}
 
-  '@civitai/theme@0.3.1':
-    resolution: {integrity: sha512-S/ibSOGDkXyskNSqbDxXO2sh3bsa+zhm7qPwM8mr5br218osPwBVmca7WI1uSZDd0ij6CZviOaw8kJ92TYkeog==}
-    engines: {node: '>=20'}
-
-  '@civitai/theme@0.5.0':
-    resolution: {integrity: sha512-G7lH4DWqKCHGh6yGtttSxjc117Cff3otJKzBoO/dILcAvm4/bi/caESUeOCk3E0Vm75VXU7mlIxZdT3B28ipMg==}
+  '@civitai/theme@0.5.2':
+    resolution: {integrity: sha512-mqePcnPyC1iVX39PoXn1mMnWrLYKuHb03R4jUNNaVQeKe0c+iz5ifKOdAHUwYun3uKFCiSkho3bHg45I3xEVWw==}
     engines: {node: '>=20'}
 
   '@csstools/color-helpers@5.1.0':
@@ -193,6 +195,11 @@ packages:
 
   '@lit-labs/ssr-dom-shim@1.6.0':
     resolution: {integrity: sha512-VHb0ALPMTlgKjM6yIxxoQNnpKyUKLD04VzeQdsiXkMqkvYlAHxq9glGLmgbb889/1GsohSOAjvQYoiBppXFqrQ==}
+
+  '@lit/react@1.0.8':
+    resolution: {integrity: sha512-p2+YcF+JE67SRX3mMlJ1TKCSTsgyOVdAwd/nxp3NuV1+Cb6MWALbN6nT7Ld4tpmYofcE5kcaSY1YBB9erY+6fw==}
+    peerDependencies:
+      '@types/react': 17 || 18 || 19
 
   '@lit/reactive-element@2.1.2':
     resolution: {integrity: sha512-pbCDiVMnne1lYUIaYNN5wrwQXDtHaYtg7YEFPeW+hws6U47WeFvISGUWekPGKWOP1ygrs0ef0o1VJMk1exos5A==}
@@ -1082,30 +1089,36 @@ snapshots:
 
   '@blazediff/core@1.9.1': {}
 
-  '@civitai/app-sdk@0.55.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5))':
+  '@civitai/app-sdk@0.71.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5))':
     optionalDependencies:
       ajv: 8.20.0
       vite: 8.1.5(@types/node@25.9.5)
 
-  '@civitai/blocks-react@0.63.0(@civitai/app-sdk@0.55.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5)))(@civitai/sdk@0.8.0)(react@19.2.8)':
+  '@civitai/blocks-react@0.73.2(@civitai/app-sdk@0.71.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5)))(@civitai/sdk@0.14.1)(react@19.2.8)':
     dependencies:
-      '@civitai/app-sdk': 0.55.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5))
-      '@civitai/components': 0.9.1(@civitai/sdk@0.8.0)
-      '@civitai/theme': 0.5.0
+      '@civitai/app-sdk': 0.71.0(ajv@8.20.0)(vite@8.1.5(@types/node@25.9.5))
+      '@civitai/components': 0.10.0(@civitai/sdk@0.14.1)
+      '@civitai/theme': 0.5.2
       react: 19.2.8
     transitivePeerDependencies:
       - '@civitai/sdk'
 
-  '@civitai/components@0.4.1':
+  '@civitai/components-react@0.9.2(@civitai/sdk@0.14.1)(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
-      '@civitai/theme': 0.3.1
+      '@civitai/components': 0.10.0(@civitai/sdk@0.14.1)
+      '@lit/react': 1.0.8(@types/react@19.2.17)
+      react: 19.2.8
+      react-dom: 19.2.8(react@19.2.8)
+    transitivePeerDependencies:
+      - '@civitai/sdk'
+      - '@types/react'
 
-  '@civitai/components@0.9.1(@civitai/sdk@0.8.0)':
+  '@civitai/components@0.10.0(@civitai/sdk@0.14.1)':
     dependencies:
-      '@civitai/theme': 0.5.0
+      '@civitai/theme': 0.5.2
       lit: 3.3.3
     optionalDependencies:
-      '@civitai/sdk': 0.8.0
+      '@civitai/sdk': 0.14.1
 
   '@civitai/orchestration-client@0.2.0-beta.101':
     dependencies:
@@ -1113,13 +1126,11 @@ snapshots:
       rfc6902: 5.3.0
       tslib: 2.8.1
 
-  '@civitai/sdk@0.8.0':
+  '@civitai/sdk@0.14.1':
     dependencies:
       '@civitai/orchestration-client': 0.2.0-beta.101
 
-  '@civitai/theme@0.3.1': {}
-
-  '@civitai/theme@0.5.0': {}
+  '@civitai/theme@0.5.2': {}
 
   '@csstools/color-helpers@5.1.0': {}
 
@@ -1162,6 +1173,10 @@ snapshots:
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
   '@lit-labs/ssr-dom-shim@1.6.0': {}
+
+  '@lit/react@1.0.8(@types/react@19.2.17)':
+    dependencies:
+      '@types/react': 19.2.17
 
   '@lit/reactive-element@2.1.2':
     dependencies:

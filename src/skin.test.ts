@@ -148,10 +148,10 @@ describe('skin palette — both themes', () => {
   it('the palette size the ledger quotes is derived, not typed', () => {
     const declarations = [...decomment(SKIN_CSS).matchAll(/(--civitai-[\w-]+)\s*:/g)].map((m) => m[1]);
     const colour = declarations.filter((d) => d.startsWith('--civitai-color-'));
-    expect(declarations).toHaveLength(35); // 33 colour + --civitai-radius in both blocks
-    expect(new Set(declarations).size).toBe(19);
-    expect(colour).toHaveLength(33);
-    expect(new Set(colour).size).toBe(18);
+    expect(declarations).toHaveLength(42); // 40 colour + --civitai-radius in both blocks
+    expect(new Set(declarations).size).toBe(23);
+    expect(colour).toHaveLength(40);
+    expect(new Set(colour).size).toBe(22);
   });
 
   // 🔴 The failure this catches is the one that produced the trap the skin
@@ -164,7 +164,10 @@ describe('skin palette — both themes', () => {
   // and a light root also matches the base selector, so light inherits them
   // rather than repeating them. They are allowlisted BY NAME, so forgetting a
   // theme-varying token still fails — the allowlist is the claim, not a hole.
-  const INVARIANT_BY_DESIGN = ['--civitai-color-gray-1', '--civitai-color-gray-2', '--civitai-color-gray-5'];
+  // gray-0 joined on the Phase 0 bump (components 0.10.0 references it;
+  // upstream holds it invariant at #f8f9fa in both themes, like the rest of
+  // this set). The set is still a closed ledger — see the EXACTLY test below.
+  const INVARIANT_BY_DESIGN = ['--civitai-color-gray-0', '--civitai-color-gray-1', '--civitai-color-gray-2', '--civitai-color-gray-5'];
 
   it('light redefines every theme-varying token the base block defines', () => {
     const expected = Object.keys(DARK)
@@ -181,8 +184,9 @@ describe('skin palette — both themes', () => {
   // `info` fell to 2.93:1 on white against the correct 5.23:1. `info` carries no
   // contrast assertion, so nothing else caught it. The comment claimed "widening
   // it is how this test stops biting" — and widening it was free.
-  it('the allowlist is EXACTLY the three invariant ramp entries', () => {
+  it('the allowlist is EXACTLY the four invariant ramp entries', () => {
     expect([...INVARIANT_BY_DESIGN].sort()).toEqual([
+      '--civitai-color-gray-0',
       '--civitai-color-gray-1',
       '--civitai-color-gray-2',
       '--civitai-color-gray-5',
