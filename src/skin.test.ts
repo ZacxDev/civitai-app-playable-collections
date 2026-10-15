@@ -380,7 +380,7 @@ describe('which files carry colour literals — the rubric line, made checkable'
     .map((f) => f.slice(SRC.length))
     .sort();
 
-  it('is exactly the documented set — two exceptions plus four media-overlay files', () => {
+  it('is exactly the documented set — the brand mark, and nothing else', () => {
     // 🔴 SHRANK BY ONE IN 0.2.11, AND THE SHRINK IS THE POINT. CollectionGrid.tsx
     // left this set because its only colour literals lived in the tap-to-reveal
     // overlay that the maturity rework deleted (a white-on-rgba scrim). An
@@ -405,20 +405,29 @@ describe('which files carry colour literals — the rubric line, made checkable'
     // own because the other's literals were still there; merged, the file holds
     // none and this enumerated set is what said so. That is the guard working —
     // a shrink is visible as a shrink instead of a number quietly going down.
+    // 🔴 SHRANK TO ONE IN PHASE 1 (2026-10-15), AND THE SHRINK IS THE PHASE.
+    // The media-overlay values — the stage chrome (`theme.ts`), the cast-exit
+    // button and lightbox (`CollectionViewer.tsx`), the maturity pill
+    // (`Maturity.tsx`) and the toast shadow (`toast.tsx`) — were not deleted,
+    // they were MOVED: each is now stated once in src/skin.css as an
+    // app-private `--pc-*` token, and the files above hold `var()` references
+    // only. They did not stop being white-on-scrim; they stopped being PLACES
+    // that decide what white-on-scrim means. What remains is the one file
+    // whose literals ARE its subject: the brand mark is an identity, not a
+    // theme surface, and its plate is the thing the skin itself is derived
+    // from.
     expect(carriers).toEqual([
       'components/BrandMark.tsx', // DOCUMENTED: an identity, invariant across themes
-      'components/CollectionViewer.tsx',
-      'components/Maturity.tsx',
-      'components/toast.tsx',
-      'theme.ts', // DOCUMENTED: `stage` — reads against arbitrary media, not a page bg
     ]);
     // The count the rubric quotes. 7 → 6 in 0.2.15 when `components/styles.ts`
     // stopped restating the `stage` values and started reading them, then 6 → 5
-    // when `components/Player.tsx` lost its last literal.
-    expect(carriers.length).toBe(5);
-    // The media-overlay subset, i.e. the set minus the two documented exceptions.
-    // 5 → 4 in 0.2.15 with `components/styles.ts`, then 4 → 3 with `Player.tsx`.
-    expect(carriers.filter((f) => f !== 'theme.ts' && f !== 'components/BrandMark.tsx')).toHaveLength(3);
+    // when `components/Player.tsx` lost its last literal, then 5 → 1 in
+    // Phase 1 when the remaining values moved into skin.css as `--pc-*`.
+    expect(carriers.length).toBe(1);
+    // The media-overlay subset, i.e. the set minus the documented exception.
+    // 5 → 4 in 0.2.15 with `components/styles.ts`, 4 → 3 with `Player.tsx`,
+    // 3 → 0 in Phase 1: there is no second place left.
+    expect(carriers.filter((f) => f !== 'components/BrandMark.tsx')).toHaveLength(0);
   });
 
   // 🔴 NOT a restatement of the list above — that one would pass with `.css`

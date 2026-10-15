@@ -7,14 +7,17 @@
 // self-themed off the same tokens, so the app's own chrome reads as one system.
 //
 // 🔴 WHO SUPPLIES THOSE TOKEN VALUES CHANGED IN 0.2.9. This app is now
-// `brandDepth: skin`, not `accent`: `@civitai/theme@0.3.1` still DECLARES the
+// `brandDepth: skin`, not `accent`: `@civitai/theme` still DECLARES the
 // tokens (and `@property`-registers them), but **src/skin.css overrides their
 // values** from the brand plate `#FA6478` for both themes. So this module is
 // unchanged — it just resolves to the app's palette rather than the platform's.
-// ⚠ "literal-free" was this file's own claim about itself and it is FALSE: `stage`
-// below carries seven literals. They are theme-INVARIANT by design and documented
-// as such, which is a different statement from "there are none"; src/skin.test.ts
-// now lists this file as a colour-literal carrier, so the two agree. Read src/skin.css before reasoning about any colour below;
+// "Literal-free" was once this file's own claim about itself and it was FALSE:
+// the `stage` group carried seven literals, theme-invariant by design but
+// literals all the same. Since Phase 1 (2026-10-15) the claim is TRUE and
+// mechanically held: those values live in src/skin.css as `--pc-*` tokens and
+// this file holds references only — src/skin.test.ts enumerates the files
+// that carry a colour literal, and this file is no longer one of them.
+// Read src/skin.css before reasoning about any colour below;
 // its selectors are (0,2,0) and beat the package's (0,1,0) blocks.
 //
 // Token names: the pre-0.35 pack emitted `--ci-*`; 0.35.2+ emits `--civitai-*` and
@@ -92,16 +95,35 @@ export function tint(color: string, pct: number): string {
 // A full-bleed media player letterboxes on black and overlays white-on-scrim
 // chrome regardless of the host theme (like every video player). These are NOT
 // theme tokens on purpose — they must read against arbitrary user media, not the
-// page background — so they use CSS color keywords / rgba, never a hardcoded hex.
+// page background.
+//
+// 🔴 THE VALUES MOVED IN PHASE 1 (2026-10-15). This group used to carry the
+// literals itself, and three other files restated copies of them (one had
+// already drifted). The values now live ONCE, in src/skin.css, as app-private
+// `--pc-*` tokens — private because upstream owns the `--civitai-*` namespace
+// and a future pack token must never collide with an app meaning. This group
+// is references only, like `token` above; the invariant values resolve from
+// the skin's base block under every `[data-pc-skin]` root.
 export const stage = {
-  bg: 'black',
-  scrim: 'rgba(0, 0, 0, 0.55)',
-  chromeFg: 'white',
-  chromeFgDim: 'rgba(255, 255, 255, 0.82)',
-  chromeBtnBg: 'rgba(0, 0, 0, 0.45)',
-  chromeBtnBorder: 'rgba(255, 255, 255, 0.28)',
-  textShadow: '0 1px 3px rgba(0, 0, 0, 0.8)',
+  bg: 'var(--pc-stage-bg)',
+  scrim: 'var(--pc-stage-scrim)',
+  chromeFg: 'var(--pc-stage-fg)',
+  chromeFgDim: 'var(--pc-stage-fg-dim)',
+  chromeBtnBg: 'var(--pc-stage-btn-bg)',
+  chromeBtnBorder: 'var(--pc-stage-btn-border)',
+  textShadow: 'var(--pc-stage-text-shadow)',
 } as const;
+
+/** The maturity rating pill — on-media like the stage chrome, so the same
+ * `--pc-*` treatment: values stated once in src/skin.css, references here. */
+export const maturityBadge = {
+  bg: 'var(--pc-badge-maturity-bg)',
+  fg: 'var(--pc-badge-maturity-fg)',
+  textShadow: 'var(--pc-badge-maturity-shadow)',
+} as const;
+
+/** The toast elevation shadow (src/skin.css `--pc-toast-shadow`). */
+export const toastShadow = 'var(--pc-toast-shadow)';
 
 /**
  * The app-chrome palette, entirely as `--civitai-*` var references (theme-agnostic
