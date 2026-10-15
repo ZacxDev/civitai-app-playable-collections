@@ -101,6 +101,20 @@
   --civitai-color-warning: #f5a55a;
   --civitai-color-info: #fa6478;
 
+  /* ── the pack's newer surface tokens (Phase 0 bump, 2026-10-15) ────────────
+     `@civitai/components@0.10.0` + `blocks-react@0.73.2` reference three tokens
+     the 0.4.1 pack never did: `track` (slider / progress track), `segmented-bg`
+     (segmented-control track) and `media-placeholder` (media-card placeholder
+     fill). Upstream dark gives all three the same value (#25262B, its
+     surface-2 equivalent); this skin does the same with its own surface-2 in
+     dark, and splits them in light the way upstream does (its light track and
+     placeholder share a value, its segmented-bg is lighter). The coverage
+     guard in skin.test.ts scans both packages, so these are pinned, not
+     remembered. */
+  --civitai-color-track: #291b23;
+  --civitai-color-segmented-bg: #291b23;
+  --civitai-color-media-placeholder: #291b23;
+
   /* Softer than the platform's 0.25rem — this app is a shelf of media cards, and
      a 4px corner on a 16:9 cover reads as an accident rather than a decision. */
   --civitai-radius: 0.625rem;
@@ -114,17 +128,24 @@
      bundle: a pack Slider track rendered `rgb(233,236,239)` (#e9ecef, the
      platform's cold blue-grey) on a rose light surface.
 
-     Only these four are referenced by @civitai/components@0.4.1 +
+     Only these four were referenced by @civitai/components@0.4.1 +
      @civitai/blocks-react@0.47.0 — re-derive rather than assuming, the coverage
-     guard in skin.test.ts now scans BOTH packages and fails if the set grows:
+     guard in skin.test.ts now scans BOTH packages and fails if the set grows.
+     (The Phase 0 bump to components@0.10.0 / blocks-react@0.73.2 grew it by
+     exactly one: gray-0, below.)
        gray-1  segmented-control track   (light only; dark uses surface-2)
        gray-2  slider track, image bg    (light only; dark uses surface-2)
        gray-5  slider disabled accent    (both themes)
        gray-9  tooltip bubble bg         (both themes) — see the exception below
 
-     These three stay INVARIANT, matching upstream's own semantics: they are
+     These stay INVARIANT, matching upstream's own semantics: they are
      defined here in the base block, which a light root ALSO matches, so light
-     inherits them rather than redefining them. */
+     inherits them rather than redefining them. `gray-0` joined the set with
+     the Phase 0 bump: the 0.10.0 pack references it (as the foreground on
+     coloured bootstrap-compat chips and as the lightest ramp fill), upstream
+     holds it at one value (#f8f9fa) in both themes, and it is the ramp step
+     above gray-1, so it takes the same rose tint one lightness up. */
+  --civitai-color-gray-0: #fdf7f8;
   --civitai-color-gray-1: #f7ebee;
   --civitai-color-gray-2: #f0dfe3;
   --civitai-color-gray-5: #a98d95;
@@ -163,6 +184,13 @@
   --civitai-color-success: #1f6f55;
   --civitai-color-warning: #8a4b10;
   --civitai-color-info: #c8324b;
+
+  /* The Phase 0 surface tokens, light side: track and media-placeholder sit
+     one step deeper than surface-2 so a track / placeholder reads on white;
+     segmented-bg matches surface-2, the plane a segmented track sits on. */
+  --civitai-color-track: #e8cbd3;
+  --civitai-color-segmented-bg: #f4e3e7;
+  --civitai-color-media-placeholder: #f0dfe3;
 
   --civitai-radius: 0.625rem;
 

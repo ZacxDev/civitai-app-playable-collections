@@ -184,6 +184,22 @@ const HOOK_REQUIRED_SCOPES: Readonly<Record<string, readonly BlockScope[]>> = {
   // `SCOPES_NOT_USED_BY_THIS_APP` and no manifest change is implied.
   useEntitlements: [BLOCK_SCOPES.GOODS_READ_SELF],
   useGoodPurchase: [BLOCK_SCOPES.GOODS_PURCHASE_SELF],
+  // ── Arrived with the Phase 0 bump (blocks-react 0.73.2, 2026-10-15) ──────
+  // The generation batch/training family. Each of these hooks' own d.ts names
+  // `ai:write:budgeted` (useWorkflowBatch: "Needs the same `ai:write:budgeted`
+  // scope as `submit()`"; useBatchEstimate / useRunConfirmedStep /
+  // usePrepareTrainingDataset / useRunTraining name it the same way). This app
+  // generates nothing and calls none of them, so the scope stays undeclared —
+  // `ai:write:budgeted` is accounted for by this ledger, not by the manifest.
+  useBatchEstimate: [BLOCK_SCOPES.AI_WRITE_BUDGETED],
+  useWorkflowBatch: [BLOCK_SCOPES.AI_WRITE_BUDGETED],
+  useRunConfirmedStep: [BLOCK_SCOPES.AI_WRITE_BUDGETED],
+  usePrepareTrainingDataset: [BLOCK_SCOPES.AI_WRITE_BUDGETED],
+  useRunTraining: [BLOCK_SCOPES.AI_WRITE_BUDGETED],
+  // d.ts: the token needs `posts:write:self` (the server refuses the persist
+  // without it) and the hook "does not prompt for the scope". Same scope as
+  // `useCreatePostFromApp` above; this app uploads nothing and calls neither.
+  useUploadImageBytes: [BLOCK_SCOPES.POSTS_WRITE_SELF],
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -228,6 +244,11 @@ const UNSCOPED_HOOKS: readonly string[] = [
   'useRequestSignIn',
   // d.ts: "TOKEN-INDEPENDENT (no block scope)".
   'useWildcardPack',
+  // Arrived with the Phase 0 bump (blocks-react 0.73.2). d.ts: it fetches one
+  // of the block's OWN bundled documents and returns it as a `srcdoc` string —
+  // a same-bundle fetch of the app's own files. No viewer resource, no host
+  // mediation, no token read, so no declaration.
+  'useNestedDocument',
 ];
 
 // ---------------------------------------------------------------------------
@@ -298,6 +319,14 @@ const HOOK_SCOPE_UNVERIFIED: readonly string[] = [
   // `BLOCK_SCOPES` held 13 values through 0.51.0 and 15 from 0.52.0.
   'useGatedImages',
   'useGenerationResources',
+  // Arrived with the Phase 0 bump (blocks-react 0.73.2) — the #626 image
+  // picker. Its d.ts names NO scope, and it sits with its sibling pickers
+  // (`useCheckpointPicker`, `useResourcePicker`) in this ledger rather than
+  // being presumed unscoped: host mediation alone did not settle
+  // `useCollectionFollow` either — that one is in ledger 2 on the strength of
+  // its own d.ts. If this app ever calls the picker, establish the scope from
+  // the host's behaviour first and move it then.
+  'useImagePicker',
   'useImageUpload',
   'usePublishGenerationOutputs',
   'useResourcePicker',
@@ -351,6 +380,17 @@ const SCOPES_NOT_USED_BY_THIS_APP: readonly BlockScope[] = [
   // a deliberate non-use rather than on the vocabulary being too old to see them.
   BLOCK_SCOPES.GOODS_READ_SELF,
   BLOCK_SCOPES.GOODS_PURCHASE_SELF,
+  // Entered `BLOCK_SCOPES` with the document-store storage model and became
+  // nameable here on the Phase 0 bump (app-sdk ^0.71.0). Deliberately NOT
+  // declared in Phase 0: the app still runs on the legacy per-viewer / shared
+  // storage scopes above, and adopting the document store (`apps:storage`,
+  // plus `apps:storage:publish` for authoring shared documents) is the
+  // migration proposal's Phase 3, a separate change with its own manifest
+  // review. `apps:store:items:write` is unrelated surface — this app lists no
+  // sub-items in the App Store.
+  BLOCK_SCOPES.APPS_STORAGE,
+  BLOCK_SCOPES.APPS_STORAGE_PUBLISH,
+  BLOCK_SCOPES.APPS_STORE_ITEMS_WRITE,
 ];
 
 // ---------------------------------------------------------------------------
