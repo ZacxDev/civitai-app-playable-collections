@@ -20,6 +20,12 @@ import { advanceOffset, clampDt, shouldAutoScroll } from '../modes/scroll-engine
 import { filterToCeiling } from '../lib/maturity.js';
 import { useViewerCeiling } from '../lib/viewer-maturity.js';
 import { MaturityBadge } from './Maturity.js';
+// 🔴 DEEP IMPORT, ON PURPOSE: the components-react barrel pulls every
+// element's define side-effect into the bundle (+127 kB measured); the
+// per-element path pulls only this one (+21 kB, the shared Lit runtime —
+// which every later element adoption reuses). Do not "tidy" this back to
+// the barrel.
+import { CivitaiMediaCard } from '@civitai/components-react/elements/civitai-media-card';
 
 /** Fetch more when the tail sentinel comes near — continuous modes burn items fast. */
 const SENTINEL_MARGIN = '400px';
@@ -304,7 +310,17 @@ function Tile({
 }) {
   // Every tile that reaches here is within the viewer's ceiling (the surface
   // filtered the list), so it renders at full strength with a rating badge.
-  const media = mediaStyle(item);
+  //
+  // 🔴 PHASE 2 (surface 1): the PRESENTATION is the upstream
+  // `<civitai-media-card>` element now — it owns the frame (radius token,
+  // media-placeholder background, media fill + cover fit, overlay slots) and
+  // the tile's own aspect arrives via its `--civitai-media-card-ratio`
+  // custom property, so geometry is unchanged. The BEHAVIOUR deliberately
+  // stays with the app: the element is not a button, so the real <button>
+  // shell keeps the activation, the aria-label, the data-* reporting and
+  // BOTH observer refs (in-view tracking + lazy swap). No `href` is passed,
+  // so the element renders its media in a plain div, never a nested link
+  // inside the button.
   // The poster URL is derived by string-replacing `.mp4→.jpg` (brittle); if it
   // or a lazy cover 404s, fall back to a neutral placeholder instead of a broken
   // image icon.
@@ -322,54 +338,59 @@ function Tile({
       tabIndex={clone ? -1 : 0}
       onClick={() => !clone && onTap(item)}
       ref={clone ? undefined : (el) => registerTile(el, item.mediaId)}
-      style={tileStyle(c, horizontal)}
+      style={tileStyle(horizontal)}
     >
-      {broken ? (
-        <div style={{ ...media, ...tilePlaceholder(c) }} data-testid={clone ? undefined : 'continuous-placeholder'} aria-hidden="true">
-          ▶
-        </div>
-      ) : item.type === 'video' ? (
-        // Poster (first-frame/transcoded still) mirrors the server cover approach;
-        // the video only mounts/plays when it wins an autoplay slot.
-        play ? (
-          <video
-            src={item.url}
-            poster={posterFor(item)}
-            muted={muted}
-            autoPlay
-            loop
-            playsInline
-            style={media}
-            data-testid={clone ? undefined : 'continuous-video'}
-          />
+      <CivitaiMediaCard
+        style={{ '--civitai-media-card-ratio': `${aspectOf(item)} / 1`, width: '100%' } as CSSProperties}
+      >
+        {broken ? (
+          <div slot="media" style={tilePlaceholder(c)} data-testid={clone ? undefined : 'continuous-placeholder'} aria-hidden="true">
+            ▶
+          </div>
+        ) : item.type === 'video' ? (
+          // Poster (first-frame/transcoded still) mirrors the server cover approach;
+          // the video only mounts/plays when it wins an autoplay slot.
+          play ? (
+            <video
+              slot="media"
+              src={item.url}
+              poster={posterFor(item)}
+              muted={muted}
+              autoPlay
+              loop
+              playsInline
+              style={{ objectFit: 'cover' }}
+              data-testid={clone ? undefined : 'continuous-video'}
+            />
+          ) : (
+            <img
+              slot="media"
+              src={posterFor(item)}
+              alt=""
+              data-testid={clone ? undefined : 'continuous-poster'}
+              loading="lazy"
+              onError={() => !clone && setBroken(true)}
+            />
+          )
         ) : (
+          // Lazy image: data-src until the shared observer swaps it in near view.
           <img
-            src={posterFor(item)}
+            slot="media"
+            ref={clone ? undefined : registerLazy}
+            data-src={clone ? undefined : item.url}
+            src={clone ? item.url : undefined}
             alt=""
-            style={media}
-            data-testid={clone ? undefined : 'continuous-poster'}
             loading="lazy"
+            data-testid={clone ? undefined : 'continuous-image'}
             onError={() => !clone && setBroken(true)}
           />
-        )
-      ) : (
-        // Lazy image: data-src until the shared observer swaps it in near view.
-        <img
-          ref={clone ? undefined : registerLazy}
-          data-src={clone ? undefined : item.url}
-          src={clone ? item.url : undefined}
-          alt=""
-          style={media}
-          loading="lazy"
-          data-testid={clone ? undefined : 'continuous-image'}
-          onError={() => !clone && setBroken(true)}
-        />
-      )}
-      {!clone && (
-        <span style={tileBadgeSlot}>
-          <MaturityBadge nsfwLevel={item.nsfwLevel} />
-        </span>
-      )}
+        )}
+        {!clone && (
+          <span slot="top-start" style={{ pointerEvents: 'none' }}>
+            <MaturityBadge nsfwLevel={item.nsfwLevel} />
+          </span>
+        )}
+      </CivitaiMediaCard>
     </button>
   );
 }
@@ -523,14 +544,13 @@ function wallStyle(cols: number): CSSProperties {
 }
 const colStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 };
 
-const tileBadgeSlot: CSSProperties = { position: 'absolute', top: 6, left: 6, zIndex: 2, pointerEvents: 'none' };
-
 function tilePlaceholder(c: Palette): CSSProperties {
   return {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 120,
+    width: '100%',
+    height: '100%',
     color: c.muted,
     fontSize: 28,
     background: c.card,
@@ -576,15 +596,18 @@ function aspectOf(item: Pick<MediaItem, 'width' | 'height'>): number {
   return Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, width / height));
 }
 
-function tileStyle(c: Palette, horizontal: boolean): CSSProperties {
+function tileStyle(horizontal: boolean): CSSProperties {
   return {
     position: 'relative',
     display: 'block',
     padding: 0,
-    border: '1px solid ' + c.border,
-    borderRadius: 10,
-    overflow: 'hidden',
-    background: c.card,
+    // The frame (border/radius/clip/background) is the media card's now —
+    // Phase 2. The shell keeps only layout + activation affordance. (The
+    // card has no border of its own; the 1px tile border is the one
+    // deliberate visual simplification of this surface, matching how the
+    // site's own cards sit.)
+    border: 'none',
+    background: 'transparent',
     cursor: 'pointer',
     // 🔴 The ticker is a flex ROW, so a tile with no width is sized entirely by
     // its content and collapses to 0 until that content loads. A definite width
@@ -596,17 +619,3 @@ function tileStyle(c: Palette, horizontal: boolean): CSSProperties {
   };
 }
 
-/**
- * Media fills its tile and RESERVES its height from the item's own ratio, so the
- * tile is its final size before the first byte arrives. `height: auto` is gone
- * deliberately: it is what made the height depend on the loaded resource.
- */
-function mediaStyle(item: Pick<MediaItem, 'width' | 'height'>): CSSProperties {
-  return {
-    display: 'block',
-    width: '100%',
-    height: 'auto',
-    aspectRatio: aspectOf(item),
-    objectFit: 'cover',
-  };
-}

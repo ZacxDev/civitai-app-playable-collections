@@ -8,12 +8,16 @@
 // only the checked segment is tabbable (roving tabindex), and
 // ArrowLeft/ArrowRight/Home/End move selection + focus across segments.
 //
-// 🔴 TRACK U: blocks-react 0.36 now ships its own `SegmentedControl`
-// (`@civitai/blocks-react/ui`, role="tablist" + arrow roving). We keep this
-// hand-rolled radiogroup for now because the app + tests rely on its
-// `${testid}-${value}` ids, `data-selected`, glyph+title options, and the
-// radio semantics; adopt the pack's version (migrating those hooks) once Track U
-// settles the API. Not a blocker.
+// 🔴 TRACK U — SETTLED, AND THE ANSWER IS STILL THIS FILE (Phase 2 audit,
+// 2026-10-15, against blocks-react 0.73.2). The pack's `SegmentedControl`
+// shipped as a tablist: role="tab" segments, no per-segment testid or
+// aria-label, no Home/End, and a surface+primary-text selected style. This
+// app's switcher is a radiogroup whose tests pin `${testid}-${value}` ids,
+// `data-selected`, glyph+title options and radio semantics, and whose
+// selected segment is the filled primary. Adopting the pack control would
+// be a downgrade on each of those axes, so the hand-rolled radiogroup
+// stays — deliberately, not by drift. Revisit only if the pack grows a
+// radio mode with per-segment hooks. Not a blocker.
 //
 // Reused for BOTH the 3-way view-mode switch and the 3-way media-type filter, so
 // the segmented-control shape is defined once.

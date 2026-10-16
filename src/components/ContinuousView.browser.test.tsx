@@ -69,8 +69,8 @@ function item(mediaId: number, width = 1600, height = 900): MediaItem {
   };
 }
 
-function renderSurface(orientation: 'horizontal' | 'vertical', items: MediaItem[]) {
-  return render(
+async function renderSurface(orientation: 'horizontal' | 'vertical', items: MediaItem[]) {
+  const view = render(
     <ContinuousView
       orientation={orientation}
       items={items}
@@ -84,6 +84,18 @@ function renderSurface(orientation: 'horizontal' | 'vertical', items: MediaItem[
       onTogglePause={vi.fn()}
     />,
   );
+  // 🔴 PHASE 2: a tile's box now comes from the <civitai-media-card>
+  // element's shadow styles, which land on the element's first update. That
+  // update is asynchronous, so measuring in the same tick as render raced
+  // it under full-suite load (every tile 0×0 — the whole file red, then
+  // green on re-run). Await the cards' own updateComplete: the guarantee
+  // becomes structural instead of a timing hope. The media still never
+  // loads, so what is measured is still the pre-load reservation.
+  const cards = Array.from(view.container.querySelectorAll('civitai-media-card')) as Array<{
+    updateComplete?: Promise<unknown>;
+  }>;
+  await Promise.all(cards.map((el) => el.updateComplete ?? Promise.resolve()));
+  return view;
 }
 
 /** Primary (non-clone) tiles only — the surface renders a second copy for the loop. */
@@ -92,8 +104,8 @@ function tiles(container: HTMLElement): HTMLElement[] {
 }
 
 describe('ContinuousView reserves each tile before its media loads', () => {
-  it('🔴 TICKER: a tile has a real width with NO media loaded', () => {
-    const { container } = renderSurface('horizontal', [item(1), item(2), item(3)]);
+  it('🔴 TICKER: a tile has a real width with NO media loaded', async () => {
+    const { container } = await renderSurface('horizontal', [item(1), item(2), item(3)]);
     const all = tiles(container);
     expect(all.length).toBeGreaterThanOrEqual(3);
 
@@ -105,12 +117,12 @@ describe('ContinuousView reserves each tile before its media loads', () => {
     }
   });
 
-  it('🔴 WALL: a tile has a real width AND height with NO media loaded', () => {
+  it('🔴 WALL: a tile has a real width AND height with NO media loaded', async () => {
     // Ticker and wall share `tileStyle` but lay out completely differently (flex
     // row vs grid), so a pass in one is not evidence about the other. The wall
     // gets its WIDTH from the grid column even pre-fix; its HEIGHT was the part
     // that collapsed.
-    const { container } = renderSurface('vertical', [item(1), item(2), item(3), item(4)]);
+    const { container } = await renderSurface('vertical', [item(1), item(2), item(3), item(4)]);
     const all = tiles(container);
     expect(all.length).toBeGreaterThanOrEqual(4);
 
@@ -121,28 +133,28 @@ describe('ContinuousView reserves each tile before its media loads', () => {
     }
   });
 
-  it('the reserved box MATCHES the item’s own aspect ratio, not a guess', () => {
+  it('the reserved box MATCHES the item’s own aspect ratio, not a guess', async () => {
     // 16:9 in, 16:9 out — this is what makes the reservation correct rather than
     // merely non-zero. A tile that reserved an arbitrary box would still pass the
     // two cases above and still shift when the real media arrived.
-    const { container } = renderSurface('horizontal', [item(1, 1600, 900)]);
+    const { container } = await renderSurface('horizontal', [item(1, 1600, 900)]);
     const r = tiles(container)[0]!.getBoundingClientRect();
     expect(r.width / r.height).toBeCloseTo(16 / 9, 1);
   });
 
-  it('a PORTRAIT item reserves a portrait box — the ratio is read, not hardcoded', () => {
+  it('a PORTRAIT item reserves a portrait box — the ratio is read, not hardcoded', async () => {
     // The control for the case above: if the code pinned one ratio, both would
     // measure 16:9 and the previous test would pass vacuously.
-    const { container } = renderSurface('horizontal', [item(1, 900, 1600)]);
+    const { container } = await renderSurface('horizontal', [item(1, 900, 1600)]);
     const r = tiles(container)[0]!.getBoundingClientRect();
     expect(r.width / r.height).toBeCloseTo(9 / 16, 1);
   });
 
-  it('🔴 JUNK DIMENSIONS still render a sane box — not 0, not absurd', () => {
+  it('🔴 JUNK DIMENSIONS still render a sane box — not 0, not absurd', async () => {
     // `MediaItem.width/height` are whatever the API sent. Zero, negative and
     // absurd ratios must all degrade to something renderable, or the fix trades
     // a shift for a broken surface.
-    const { container } = renderSurface('horizontal', [
+    const { container } = await renderSurface('horizontal', [
       item(1, 0, 0),
       item(2, -5, 10),
       item(3, 100000, 1),
@@ -159,10 +171,10 @@ describe('ContinuousView reserves each tile before its media loads', () => {
     }
   });
 
-  it('tiles on a ticker row do not overlap or stack — the row genuinely lays out', () => {
+  it('tiles on a ticker row do not overlap or stack — the row genuinely lays out', async () => {
     // A positive control on the MEASUREMENT itself: if every tile reported the
     // same box, the numbers above would be an artefact rather than a layout.
-    const { container } = renderSurface('horizontal', [item(1), item(2), item(3)]);
+    const { container } = await renderSurface('horizontal', [item(1), item(2), item(3)]);
     const xs = tiles(container).map((t) => t.getBoundingClientRect().left);
     const unique = new Set(xs.map((x) => Math.round(x)));
     expect(unique.size).toBe(xs.length);
