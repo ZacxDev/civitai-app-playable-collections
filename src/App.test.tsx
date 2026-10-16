@@ -441,7 +441,12 @@ describe('App — infinite scroll (feedback #1)', () => {
     return api;
   }
 
-  it('appends the next page on sentinel intersection and dedupes the re-emitted id', async () => {
+  // 🔴 DE-FLAKED 2026-10-16 (see the waitFor below): this test carries an
+  // explicit 15s test timeout. It is the only one in the suite that needs
+  // one — its chain (initial render + observer + fetch + a page of
+  // media-card elements upgrading) is the heaviest here, and under a
+  // loaded runner its honest wall-clock outgrew vitest's 5s default.
+  it('appends the next page on sentinel intersection and dedupes the re-emitted id', { timeout: 15000 }, async () => {
     renderApp({ api: paginatedApi() });
     const grid = await screen.findByTestId('collection-grid');
     expect(within(grid).getAllByTestId('collection-card')).toHaveLength(3);
@@ -452,8 +457,20 @@ describe('App — infinite scroll (feedback #1)', () => {
     await act(async () => {
       flushIntersections(true);
     });
-    await waitFor(() =>
-      expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5),
+    // 🔴 The waitFor half of the de-flake: it is CONDITION-based — it polls
+    // until five cards exist, so its budget is not part of what the test
+    // proves. testing-library's 1s default was too small for this chain
+    // under a loaded runner: THREE recorded failures — CI on PR #58, CI
+    // on PR #59, local full-suite runs — all the identical signature
+    // "expected 5, got 3" just past the deadline, all green on re-run.
+    // The budget is 5s now (inside the test's own 15s, above): a genuine
+    // regression — the page never appends, the dup is not deduped —
+    // still fails, on the same condition. Every other waitFor in the
+    // suite keeps the default; only this chain has ever needed more.
+    await waitFor(
+      () =>
+        expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5),
+      { timeout: 5000 },
     );
     // Fully loaded → the sentinel is gone (no unbounded scroll fetch).
     expect(screen.queryByTestId('grid-sentinel')).toBeNull();
