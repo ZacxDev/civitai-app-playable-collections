@@ -128,7 +128,15 @@ describe('the viewer ⚙ settings disclosure', () => {
     const panel = screen.getByTestId('viewer-settings');
     // The panel does contain focusable controls — so "nothing was focused" is a
     // real observation about the disclosure, not an artefact of an empty panel.
-    expect(within(panel).getAllByRole('button').length).toBeGreaterThan(0);
+    // 🔴 The control used to count role=button; Phase 2 surface 4 turned the
+    // panel's two toggle buttons into <civitai-switch> elements, whose
+    // focusable input lives in shadow DOM where jsdom's role queries cannot
+    // see it. The observation is about FOCUSABLES, so it counts them in the
+    // forms they now take (segments, sliders, switch hosts) — the finding it
+    // protects, that opening moves no focus, is unchanged.
+    expect(
+      panel.querySelectorAll('button, [role="radio"], [role="slider"], civitai-switch').length,
+    ).toBeGreaterThan(0);
     expect(toggle).toHaveFocus();
     expect(panel.contains(document.activeElement)).toBe(false);
   });

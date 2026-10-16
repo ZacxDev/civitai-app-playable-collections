@@ -16,6 +16,33 @@ if (typeof HTMLMediaElement !== 'undefined') {
   HTMLMediaElement.prototype.pause = () => {};
 }
 
+// jsdom's ElementInternals is an ARIA-reflection stub: it has none of the
+// form-association surface (setFormValue / setValidity / validity / form).
+// Every form-associated upstream element (the <civitai-*> field family —
+// Phase 2 surface 4's switch is the first this app renders) calls
+// setFormValue + setValidity unconditionally from its sync-on-connect, so
+// mounting one in jsdom threw an uncaught TypeError per element: the tests
+// still passed (the throw lands after render), but vitest counts unhandled
+// errors and the run exits 1 despite a green board. Real browsers implement
+// all of it — this is a test-environment fidelity gap, so the shim lives
+// here, next to the media/localStorage ones. No-ops are the honest shape:
+// jsdom has no form machinery to receive a value or a validity state, and
+// nothing in the suite submits a form through these controls. Each stub is
+// installed only when the real method is absent, so a jsdom that grows the
+// API wins automatically.
+if (typeof ElementInternals !== 'undefined') {
+  const proto = ElementInternals.prototype as ElementInternals & {
+    setFormValue?: unknown;
+    setValidity?: unknown;
+  };
+  if (typeof proto.setFormValue !== 'function') {
+    proto.setFormValue = () => {};
+  }
+  if (typeof proto.setValidity !== 'function') {
+    proto.setValidity = () => {};
+  }
+}
+
 // This jsdom build ships no `localStorage`, so install a simple in-memory one on
 // globalThis (== window under jsdom) — the localStorage-backed player settings
 // need a real Storage to exercise persistence.

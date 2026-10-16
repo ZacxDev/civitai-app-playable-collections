@@ -54,6 +54,8 @@ import { ModeSwitcher, SegmentedControl } from './ModeSwitcher.js';
 import type { TipSender } from '../lib/tip-target.js';
 import { TipSplitModal, splitTipKey, type PlannedLeg, type SplitRecipient } from './TipSplitModal.js';
 import { FocusTrap } from './FocusTrap.js';
+// Per-element deep import (see ContinuousView.tsx for why not the barrel).
+import { CivitaiSwitch } from '@civitai/components-react/elements/civitai-switch';
 
 export interface CollectionViewerProps {
   detail: CollectionDetail;
@@ -630,30 +632,42 @@ export function CollectionViewer(props: CollectionViewerProps) {
       {/* ---- settings popover ---- */}
       {settingsOpen && !cast && (
         <Card padding="md" data-testid="viewer-settings" style={settingsCard}>
+          {/* 🔴 PHASE 2 (surface 4): the two on/off settings are the upstream
+              <civitai-switch> (a real checkbox input wearing role="switch")
+              instead of toggle Buttons restating their state as text.
+              The app drives them CONTROLLED from its own click handler —
+              deliberately NOT from the element's change event: the handler
+              is the single source of truth in every environment (a click on
+              the host reaches it whether it lands on the track, the thumb
+              or the label, and under jsdom, where shadow internals are not
+              hit-testable, the same click still toggles exactly once).
+              `checked` then mirrors state back into the element. The row
+              label stays visible beside it; the switch's own label is its
+              accessible name, visually hidden via ::part(label) in
+              index.css (the shipped 0.10.0 field has `label`, not the
+              guide's labelText/hideLabel) so the row does not say it
+              twice. Audio's switch reads as what it controls:
+              checked = sound ON. */}
           <div style={settingRow}>
             <span style={settingLabel}>Audio</span>
-            <Button
-              size="sm"
-              variant={prefs.muted ? 'outline' : 'filled'}
+            <CivitaiSwitch
+              className="pc-setting-switch"
+              label="Sound on"
+              checked={!prefs.muted}
               onClick={toggleMuted}
-              aria-pressed={!prefs.muted}
               data-testid="toggle-mute"
-            >
-              {prefs.muted ? '🔇 Muted' : '🔊 Sound on'}
-            </Button>
+            />
           </div>
 
           <div style={settingRow}>
             <span style={settingLabel}>Shuffle</span>
-            <Button
-              size="sm"
-              variant={shuffleOn ? 'filled' : 'outline'}
+            <CivitaiSwitch
+              className="pc-setting-switch"
+              label="Shuffle"
+              checked={shuffleOn}
               onClick={() => setShuffleOn((s) => !s)}
-              aria-pressed={shuffleOn}
               data-testid="toggle-shuffle"
-            >
-              🔀 {shuffleOn ? 'On' : 'Off'}
-            </Button>
+            />
           </div>
 
           <div style={settingRow}>

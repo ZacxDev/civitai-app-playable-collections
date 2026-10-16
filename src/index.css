@@ -105,6 +105,23 @@
       animation: none;
     }
   }
+
+  /* Settings switches (Phase 2 surface 4): the settings row already shows
+     the setting's name, so the <civitai-switch>'s own label is for the
+     accessibility tree only — visually hidden with the classic clip pattern
+     (NOT display:none, which would drop the label from the input's accessible
+     name in some engines). ::part(label) is the element's sanctioned hook
+     for exactly this. Inside the layer like everything else in this file —
+     skin.test.ts holds "every rule in the layer" as an invariant, and a
+     part rule is not an exception worth breaking it for. */
+  civitai-switch.pc-setting-switch::part(label) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }
 
 /* 🔴 OUTSIDE the layer on purpose: `@keyframes` is not a style rule, so it takes
