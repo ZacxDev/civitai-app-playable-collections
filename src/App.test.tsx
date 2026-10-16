@@ -441,7 +441,9 @@ describe('App — infinite scroll (feedback #1)', () => {
     return api;
   }
 
-  it('appends the next page on sentinel intersection and dedupes the re-emitted id', async () => {
+  // 🔴 DE-FLAKED 2026-10-16 (see the wait below): explicit timeout, sized
+  // for a loaded runner — this test's chain is the heaviest in the file.
+  it('appends the next page on sentinel intersection and dedupes the re-emitted id', { timeout: 15000 }, async () => {
     renderApp({ api: paginatedApi() });
     const grid = await screen.findByTestId('collection-grid');
     expect(within(grid).getAllByTestId('collection-card')).toHaveLength(3);
@@ -449,11 +451,29 @@ describe('App — infinite scroll (feedback #1)', () => {
     expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
 
     // Sentinel scrolls into view → fetch + append page 2 (dedupe id 3 → 5 total).
-    await act(async () => {
-      flushIntersections(true);
-    });
-    await waitFor(() =>
-      expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5),
+    //
+    // 🔴 THE FLAKE, DIAGNOSED (2026-10-16, instrumented runs — see PR #60):
+    // this test used to fire `flushIntersections(true)` ONCE and then poll
+    // for five cards. The one-shot flush races the sentinel's own effect:
+    // the mock observer only exists once the sentinel's useEffect has run,
+    // and when the flush landed first it fired NOTHING (probe-verified:
+    // in failing runs loadMoreDiscover was never entered, at ANY wait
+    // budget — the append had not been discarded or delayed, it had
+    // never been requested). A real IntersectionObserver cannot lose
+    // this race: it fires on observe() itself when the target is already
+    // in view, and keeps firing on change. The faithful fix is to drive
+    // the mock the same way — re-fire on every poll until the append
+    // lands — not to widen budgets and hope the effect wins. (Budget-only
+    // attempts at 5s and 10s both still failed intermittently; they are
+    // recorded in PR #60 so nobody repeats them.)
+    await waitFor(
+      async () => {
+        await act(async () => {
+          flushIntersections(true);
+        });
+        expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5);
+      },
+      { timeout: 5000 },
     );
     // Fully loaded → the sentinel is gone (no unbounded scroll fetch).
     expect(screen.queryByTestId('grid-sentinel')).toBeNull();
