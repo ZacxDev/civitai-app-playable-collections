@@ -180,7 +180,6 @@
                    ARBITRARY USER MEDIA, not the page background, so it must
                    not flip with the theme (see src/theme.ts's `stage`).
        badge-*     the maturity rating pill, which sits on media the same way.
-       toast-shadow  an elevation shadow; a shadow has no theme to flip.
      Until this block existed these values were literals restated in
      theme.ts / CollectionViewer.tsx / Maturity.tsx / toast.tsx — one of
      them had already drifted (the cast-exit border, 0.25 against the
@@ -195,7 +194,10 @@
   --pc-badge-maturity-bg: rgba(224, 49, 49, 0.92);
   --pc-badge-maturity-fg: #fff;
   --pc-badge-maturity-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  --pc-toast-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  /* (No --pc-toast-shadow: Phase 2 surface 3 moved toasts to the upstream
+     <civitai-toast> element, which owns its shadow. A token with no
+     consumer is a lie about where a value lives, so it left with the
+     Alert it was styling.) */
 }
 
 /* LIGHT — same key set, asserted (skin.test.ts fails if the two blocks diverge,

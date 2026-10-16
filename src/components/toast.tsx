@@ -1,17 +1,24 @@
 // Minimal toast system: a hook that owns a queue + a host component that renders
 // it. Used for tip success/failure, rate-limit backoff notices, and follow
-// errors. Auto-dismisses; the pack `Alert` supplies the ARIA role
-// (error → assertive `alert`, success/info → polite `status`).
+// errors. Auto-dismisses (the queue owns the TTL; the renderer is presentational).
 //
-// v0.1.5: the toast surface is the `@civitai/blocks-react/ui` `Alert` so it
-// matches Civitai's callout styling (auto-themed via the app's `data-theme`).
+// v0.1.5: the toast surface was the `@civitai/blocks-react/ui` `Alert`.
+// 🔴 PHASE 2 (surface 3): the surface is the upstream `<civitai-toast>`
+// element now. The mapping is 1:1 with what the Alert provided — `color`
+// takes the toast kind, the ARIA role moves to the element itself
+// (`urgent` → role=alert for errors, role=status otherwise, set on
+// connect), the close button is the element's (`closable`), and the
+// message stays light-DOM children in the element's default slot, so
+// text queries and copy are unchanged. Placement stays the app's:
+// bottom-centre, app width — the element's own ToastRegion (bottom-right)
+// was not adopted; where toasts appear is this app's choice, what a toast
+// IS is now upstream's.
 
 import { useCallback, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Alert } from '@civitai/blocks-react/ui';
-
-import { toastShadow } from '../theme.js';
+// Per-element deep import (see ContinuousView.tsx for why not the barrel).
+import { CivitaiToast } from '@civitai/components-react/elements/civitai-toast';
 
 export type ToastKind = 'success' | 'error' | 'info';
 
@@ -52,20 +59,21 @@ export function useToasts(): UseToasts {
 
 export function ToastHost({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   return (
-    <div style={hostStyle} aria-live="polite">
+    <div style={hostStyle}>
       {toasts.map((t) => (
-        <Alert
+        <CivitaiToast
           key={t.id}
           color={t.kind}
-          withCloseButton
+          urgent={t.kind === 'error'}
+          closable
+          closeLabel="Dismiss"
           onClose={() => onDismiss(t.id)}
-          closeButtonLabel="Dismiss"
           data-testid={`toast-${t.kind}`}
-          style={toastStyle}
+          style={{ cursor: 'pointer' }}
           onClick={() => onDismiss(t.id)}
         >
           {t.message}
-        </Alert>
+        </CivitaiToast>
       ))}
     </div>
   );
@@ -80,14 +88,4 @@ const hostStyle: CSSProperties = {
   gap: 8,
   zIndex: 2000,
   width: 'min(92vw, 420px)',
-};
-
-const toastStyle: CSSProperties = {
-  cursor: 'pointer',
-  boxShadow: toastShadow,
-  // Sit the tinted callout on an opaque surface so it reads as a floating toast
-  // over arbitrary page content (the pack Alert tint alone is near-transparent).
-  backgroundColor: 'var(--civitai-color-surface)',
-  backgroundImage:
-    'linear-gradient(color-mix(in srgb, currentColor 8%, transparent), color-mix(in srgb, currentColor 8%, transparent))',
 };

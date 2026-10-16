@@ -122,8 +122,6 @@ export const maturityBadge = {
   textShadow: 'var(--pc-badge-maturity-shadow)',
 } as const;
 
-/** The toast elevation shadow (src/skin.css `--pc-toast-shadow`). */
-export const toastShadow = 'var(--pc-toast-shadow)';
 
 /**
  * The app-chrome palette, entirely as `--civitai-*` var references (theme-agnostic
