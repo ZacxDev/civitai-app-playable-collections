@@ -19,7 +19,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Alert, Badge, Button, Card, Loader } from '@civitai/blocks-react/ui';
+import { Alert, Badge, Button, Card, FollowButton, Loader } from '@civitai/blocks-react/ui';
 
 import type { CollectionSummary } from '../types.js';
 import type { Palette } from '../theme.js';
@@ -182,10 +182,18 @@ export function CoverImage({
   );
 }
 
+/**
+ * App's ONE follow-commit handler (App.tsx `onFollowChange`): adopt the host's
+ * echoed flag for `collectionId` into every list that renders follow state.
+ * Threaded into the cards so a card's `FollowButton` is the SAME control, with
+ * the SAME source of truth (`collection.followed`), as the viewer's.
+ */
+export type FollowChangeHandler = (collectionId: number, followed: boolean) => void;
+
 /** A single loading-skeleton card (cover + two text lines), theme-token styled. */
 export function SkeletonCard() {
   return (
-    <div style={cardBtn} data-testid="skeleton-card" aria-hidden="true">
+    <div style={cardShell} data-testid="skeleton-card" aria-hidden="true">
       <div className="pc-skeleton" style={{ ...coverWrap, aspectRatio: '1 / 1' }} />
       <div style={{ ...cardBody, gap: 6 }}>
         <span className="pc-skeleton" style={{ height: 12, borderRadius: 4, width: '80%' }} />
@@ -226,6 +234,12 @@ export interface CollectionGridProps {
   loadingMore?: boolean;
   /** Infinite scroll: fetch + append the next page. */
   onLoadMore?: () => void;
+  /**
+   * Follow commits from a card's `FollowButton`. Optional the way `onRetry`
+   * is: a render without it (component tests, read-only embeds) shows the ★
+   * badge as the read-only followed indicator instead of the control.
+   */
+  onFollowChange?: FollowChangeHandler;
 }
 
 export function CollectionGrid({
@@ -241,6 +255,7 @@ export function CollectionGrid({
   loadingMore = false,
   onLoadMore,
   endLabel,
+  onFollowChange,
 }: CollectionGridProps) {
   const register = useCoverObserver();
 
@@ -288,7 +303,7 @@ export function CollectionGrid({
       >
         {collections.map((col) => (
           <li key={col.id} style={{ listStyle: 'none' }}>
-            <CollectionCard collection={col} onOpen={onOpen} c={c} />
+            <CollectionCard collection={col} onOpen={onOpen} c={c} onFollowChange={onFollowChange} />
           </li>
         ))}
       </ul>
@@ -340,69 +355,101 @@ export function CollectionCard({
   collection,
   onOpen,
   c,
+  onFollowChange,
 }: {
   collection: CollectionSummary;
   onOpen: (collection: CollectionSummary) => void;
   c: Palette;
+  onFollowChange?: FollowChangeHandler;
 }) {
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(collection)}
-      style={cardBtn}
-      data-testid="collection-card"
-      // 🔴 AN EMPTY COLLECTION IS NOT PLAYABLE, AND THIS IS A PLAYER. Measured
-      // live: "Bookmarked Articles · 0 items" rendered an ordinary play
-      // affordance, so the one thing the app exists to do silently does nothing.
-      // `disabled` rather than hidden: the collection is really there and the
-      // viewer put it there, so removing it from their own list would be a
-      // second lie. The label says WHY instead of promising a play.
-      disabled={collection.itemCount === 0}
-      data-empty={collection.itemCount === 0 ? 'true' : undefined}
-      aria-label={
-        collection.itemCount === 0
-          ? `${collection.name} — nothing to play yet`
-          : `Play ${collection.name} — ${collection.itemCount} items`
-      }
-    >
-      {/* 🔴 PHASE 2 (surface 2): the cover's PRESENTATION is the upstream
-          <civitai-media-card> — the same element as the continuous tiles —
-          owning the square frame, the placeholder-token background and the
-          media fill. The button shell keeps everything behavioural, exactly
-          as with the tiles: activation, disabled-for-empty, the aria-label.
-          No href (no nested link). The Private / Followed badges move to
-          the element's overlay slots (top-start / top-end); the maturity
-          badge stays inside the cover, where CoverImage has always put it.
-          borderRadius 0 on the host: the button's own radius + overflow
-          clip the card silhouette, as the old coverWrap did. */}
-      <CivitaiMediaCard
-        noScrim
-        style={{ '--civitai-media-card-ratio': '1 / 1', borderRadius: 0 } as CSSProperties}
+    <div style={cardShell}>
+      <button
+        type="button"
+        onClick={() => onOpen(collection)}
+        style={cardBtn}
+        data-testid="collection-card"
+        // 🔴 AN EMPTY COLLECTION IS NOT PLAYABLE, AND THIS IS A PLAYER. Measured
+        // live: "Bookmarked Articles · 0 items" rendered an ordinary play
+        // affordance, so the one thing the app exists to do silently does nothing.
+        // `disabled` rather than hidden: the collection is really there and the
+        // viewer put it there, so removing it from their own list would be a
+        // second lie. The label says WHY instead of promising a play.
+        disabled={collection.itemCount === 0}
+        data-empty={collection.itemCount === 0 ? 'true' : undefined}
+        aria-label={
+          collection.itemCount === 0
+            ? `${collection.name} — nothing to play yet`
+            : `Play ${collection.name} — ${collection.itemCount} items`
+        }
       >
-        <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} slot="media" />
-        {!collection.isPublic && (
-          <span slot="top-start">
-            <Badge size="sm" variant="filled" color="warning" data-testid="private-badge">
-              Private
-            </Badge>
+        {/* 🔴 PHASE 2 (surface 2): the cover's PRESENTATION is the upstream
+            <civitai-media-card> — the same element as the continuous tiles —
+            owning the square frame, the placeholder-token background and the
+            media fill. The button shell keeps everything behavioural, exactly
+            as with the tiles: activation, disabled-for-empty, the aria-label.
+            No href (no nested link). The Private / Followed badges move to
+            the element's overlay slots (top-start / top-end); the maturity
+            badge stays inside the cover, where CoverImage has always put it.
+            borderRadius 0 on the host: the shell's own radius + overflow
+            clip the card silhouette, as the old coverWrap did. */}
+        <CivitaiMediaCard
+          noScrim
+          style={{ '--civitai-media-card-ratio': '1 / 1', borderRadius: 0 } as CSSProperties}
+        >
+          <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} slot="media" />
+          {!collection.isPublic && (
+            <span slot="top-start">
+              <Badge size="sm" variant="filled" color="warning" data-testid="private-badge">
+                Private
+              </Badge>
+            </span>
+          )}
+          {/* The ★ badge is the followed indicator ONLY for renders with no
+              follow control wired: where the control renders (the app), it
+              shows the state itself — pressed + "Following" — so the badge
+              would state the same fact twice in the same corner. */}
+          {collection.followed && !onFollowChange && (
+            <span slot="top-end">
+              <Badge size="sm" variant="filled" data-testid="followed-badge" aria-label="Followed">
+                ★
+              </Badge>
+            </span>
+          )}
+        </CivitaiMediaCard>
+        <div style={cardBody}>
+          <span style={cardTitle}>{collection.name}</span>
+          <span style={cardMeta}>
+            {collection.curator.username ? `by ${collection.curator.username}` : 'by unknown'} ·{' '}
+            {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'}
           </span>
-        )}
-        {collection.followed && (
-          <span slot="top-end">
-            <Badge size="sm" variant="filled" data-testid="followed-badge" aria-label="Followed">
-              ★
-            </Badge>
-          </span>
-        )}
-      </CivitaiMediaCard>
-      <div style={cardBody}>
-        <span style={cardTitle}>{collection.name}</span>
-        <span style={cardMeta}>
-          {collection.curator.username ? `by ${collection.curator.username}` : 'by unknown'} ·{' '}
-          {collection.itemCount} {collection.itemCount === 1 ? 'item' : 'items'}
-        </span>
-      </div>
-    </button>
+        </div>
+      </button>
+      {/* 🔴 PHASE 3: the follow control is the viewer's OWN `FollowButton`,
+          same props, same commit handler — not a card-local variant. It is a
+          SIBLING of the open button, never a child: a <button> inside a
+          <button> is invalid nesting, and a click on the child would bubble
+          into opening the viewer. As a sibling it is its own tab stop, its
+          clicks cannot reach `onOpen`, and it stays live on an EMPTY card
+          whose open button is disabled — following an empty collection is
+          legitimate even though playing it is not. It overlays the cover's
+          top-end corner, the exact spot the ★ badge it supersedes occupied.
+          DOM order (after the open button) keeps the tab order play-then-
+          follow, matching the actions' importance. */}
+      {onFollowChange && (
+        <div style={followOverlay}>
+          <FollowButton
+            size="sm"
+            variant="outline"
+            collectionId={collection.id}
+            collectionName={collection.name}
+            followed={collection.followed}
+            onChange={(f) => onFollowChange(collection.id, f)}
+            data-testid="card-follow"
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -410,9 +457,11 @@ export interface PopularRailProps {
   entries: Array<{ collection: CollectionSummary; count: number }>;
   onOpen: (collection: CollectionSummary) => void;
   c: Palette;
+  /** Follow commits from a card's `FollowButton` — see `CollectionGridProps`. */
+  onFollowChange?: FollowChangeHandler;
 }
 
-export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
+export function PopularRail({ entries, onOpen, c, onFollowChange }: PopularRailProps) {
   const register = useCoverObserver();
   // 🔴 THE RAIL FILTERS ITSELF rather than trusting its caller. The heading makes
   // a claim ("Popular right now") that only the data can honour, so the component
@@ -426,14 +475,14 @@ export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
         <h2 style={railHeading}>🔥 Popular right now</h2>
         <div style={railScroller}>
           {shown.map(({ collection, count }) => (
-            <button
-              key={collection.id}
-              type="button"
-              onClick={() => onOpen(collection)}
-              style={railCard}
-              data-testid="popular-card"
-              aria-label={`Play ${collection.name} — played ${count} times`}
-            >
+            <div key={collection.id} style={railCard}>
+              <button
+                type="button"
+                onClick={() => onOpen(collection)}
+                style={railOpenBtn}
+                data-testid="popular-card"
+                aria-label={`Play ${collection.name} — played ${count} times`}
+              >
               {/* 🔴 PHASE 2 (surface 5): the rail cover is the same
                   <civitai-media-card> as everywhere else — the rails were
                   the last bare CoverImage call sites. Same shape as the
@@ -446,13 +495,33 @@ export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
               >
                 <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} slot="media" />
               </CivitaiMediaCard>
-              <span style={railTitle}>{collection.name}</span>
-              <span style={cardMeta}>
-                <Badge size="sm" variant="light">
-                  {count} {count === 1 ? 'play' : 'plays'}
-                </Badge>
-              </span>
-            </button>
+                <span style={railTitle}>{collection.name}</span>
+              </button>
+              {/* PHASE 3: the same `FollowButton` as the grid cards and the
+                  viewer, a SIBLING of the open button for the same reason
+                  (see CollectionCard). Placement differs by geometry: a rail
+                  cover is ~124px wide, too narrow for the labelled control
+                  to overlay its corner, so the control sits in the meta row
+                  beside the plays badge instead. */}
+              <div style={railMetaRow}>
+                <span style={cardMeta}>
+                  <Badge size="sm" variant="light">
+                    {count} {count === 1 ? 'play' : 'plays'}
+                  </Badge>
+                </span>
+                {onFollowChange && (
+                  <FollowButton
+                    size="sm"
+                    variant="outline"
+                    collectionId={collection.id}
+                    collectionName={collection.name}
+                    followed={collection.followed}
+                    onChange={(f) => onFollowChange(collection.id, f)}
+                    data-testid="popular-follow"
+                  />
+                )}
+              </div>
+            </div>
           ))}
         </div>
       </section>
@@ -467,7 +536,12 @@ export interface RecentRailProps {
 }
 
 /** "Continue watching" rail — recently-played collections that reopen at their
- * saved mode + position (Feature #7). */
+ * saved mode + position (Feature #7).
+ *
+ * No follow control here, deliberately: `RecentEntry` is device-local play
+ * history (id / name / cover — no `followed` flag exists for it anywhere), so
+ * there is no source of truth to bind the control to. The viewer's own
+ * FollowButton is one tap away on the collection this rail reopens. */
 export function RecentRail({ entries, onOpen, c }: RecentRailProps) {
   const register = useCoverObserver();
   if (entries.length === 0) return null;
@@ -528,19 +602,41 @@ function gridStyle(isMobile: boolean): CSSProperties {
   };
 }
 
-const cardBtn: CSSProperties = {
+// The card's visual shell (border / radius / clipping / surface). Since
+// Phase 3 it is a plain div: the open <button> and the follow control are
+// siblings inside it, so neither is nested in the other.
+const cardShell: CSSProperties = {
+  position: 'relative',
   display: 'grid',
-  gap: 8,
-  width: '100%',
-  padding: 0,
   border: '1px solid var(--civitai-color-border)',
   borderRadius: 'var(--civitai-radius)',
   overflow: 'hidden',
   background: 'var(--civitai-color-surface)',
   color: 'var(--civitai-color-text)',
+  fontFamily: 'var(--civitai-font)',
+};
+
+const cardBtn: CSSProperties = {
+  display: 'grid',
+  gap: 8,
+  width: '100%',
+  padding: 0,
+  border: 'none',
+  background: 'transparent',
+  color: 'inherit',
   cursor: 'pointer',
   textAlign: 'left',
-  fontFamily: 'var(--civitai-font)',
+  fontFamily: 'inherit',
+};
+
+// The follow control's overlay on the grid card: the cover's top-end corner,
+// where the ★ badge sat. Above the open button (which is in flow) so it
+// receives its own clicks.
+const followOverlay: CSSProperties = {
+  position: 'absolute',
+  top: 8,
+  right: 8,
+  zIndex: 3,
 };
 
 const coverWrap: CSSProperties = {
@@ -584,6 +680,9 @@ const railScroller: CSSProperties = {
   paddingBottom: 4,
   WebkitOverflowScrolling: 'touch',
 };
+// Rail card shell — a div since Phase 3, for the same sibling reason as
+// `cardShell`: the open <button> and the follow control sit inside it side
+// by side (stacked), never nested.
 const railCard: CSSProperties = {
   flex: '0 0 auto',
   width: 140,
@@ -594,9 +693,28 @@ const railCard: CSSProperties = {
   borderRadius: 'var(--civitai-radius)',
   background: 'var(--civitai-color-surface)',
   color: 'var(--civitai-color-text)',
-  cursor: 'pointer',
   textAlign: 'left',
   fontFamily: 'var(--civitai-font)',
+};
+
+const railOpenBtn: CSSProperties = {
+  display: 'grid',
+  gap: 4,
+  width: '100%',
+  padding: 0,
+  border: 'none',
+  background: 'transparent',
+  color: 'inherit',
+  cursor: 'pointer',
+  textAlign: 'left',
+  fontFamily: 'inherit',
+};
+
+const railMetaRow: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 6,
 };
 const railTitle: CSSProperties = {
   fontWeight: 600,

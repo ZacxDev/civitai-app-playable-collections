@@ -18,9 +18,9 @@
 //
 // So the interesting property is not "does the button revert" — `e2e.test.tsx`
 // already pins that, and it is upstream's behaviour anyway. It is the SEAM:
-// this app commits follow state (the grid badge, the read-cache drop, the
-// analytics event) from `onChange`, which upstream fires ONLY on a confirmed
-// host echo. A refusal must therefore leave NO app-side trace. Nothing measured
+// this app commits follow state (the grid cards' followed flag, the
+// read-cache drop, the analytics event) from `onChange`, which upstream fires
+// ONLY on a confirmed host echo. A refusal must therefore leave NO app-side trace. Nothing measured
 // that: the repo pinned the confirmed-follow cache drop, and the button's own
 // revert, but never that a refused follow commits nothing.
 //
@@ -57,9 +57,14 @@ async function openNeonInstrumented(hostOptions: Partial<HarnessProps> = {}) {
     </Harness>,
   );
   const grid = await screen.findByTestId('collection-grid');
-  // Control: nothing is followed at the start, so a badge appearing later can
-  // only have come from the flow under test.
-  expect(within(grid).queryAllByTestId('followed-badge')).toHaveLength(0);
+  // Control: nothing is followed at the start, so a card follow control
+  // reading pressed later can only have come from the flow under test.
+  // (Phase 3 retarget: the grid-side observable used to be the ★ badge; the
+  // badge is superseded by the card's own FollowButton wherever the control
+  // is wired, so the probe is now the control's pressed state.)
+  const cardFollows = within(grid).getAllByTestId('card-follow');
+  expect(cardFollows.length).toBeGreaterThan(0);
+  expect(cardFollows.every((b) => b.getAttribute('aria-pressed') === 'false')).toBe(true);
   await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
   await screen.findByTestId('player');
   return { events, invalidateReads };
@@ -68,7 +73,7 @@ async function openNeonInstrumented(hostOptions: Partial<HarnessProps> = {}) {
 const followEvents = (events: TrackedEvent[]) => events.filter((e) => e.type === 'follow');
 
 describe('follow: the app commits only what the host ECHOED', () => {
-  it('a CONFIRMED follow commits: grid badge, cache drop, analytics', async () => {
+  it('a CONFIRMED follow commits: grid card state, cache drop, analytics', async () => {
     // 🔴 THIS IS ALSO THE FIXTURE CONTROL FOR THE REFUSAL CASES BELOW. It is what
     // proves the badge, the spy and the sink can all move at all — without it, a
     // refusal test asserting "no badge / not called / no event" is three zeros
@@ -85,10 +90,17 @@ describe('follow: the app commits only what the host ECHOED', () => {
       expect.objectContaining({ type: 'follow', collectionId: 101, followed: true }),
     ]);
 
-    // …and the grid card the viewer came from now carries the badge.
+    // …and the grid card the viewer came from now shows the followed state
+    // on its own follow control — exactly one card pressed.
     await userEvent.click(screen.getByTestId('viewer-exit'));
     const grid = await screen.findByTestId('collection-grid');
-    await waitFor(() => expect(within(grid).getAllByTestId('followed-badge')).toHaveLength(1));
+    await waitFor(() =>
+      expect(
+        within(grid)
+          .getAllByTestId('card-follow')
+          .filter((b) => b.getAttribute('aria-pressed') === 'true'),
+      ).toHaveLength(1),
+    );
   });
 
   it('🔴 a REFUSED follow rolls back and commits NOTHING — no badge, no cache drop, no event', async () => {
@@ -113,8 +125,8 @@ describe('follow: the app commits only what the host ECHOED', () => {
     );
 
     // 🔴 AND THE APP COMMITTED NOTHING. A commit here would outlive the button:
-    // the badge survives an exit, and the cache drop / analytics event are
-    // unrecoverable once made.
+    // a card's followed state survives an exit, and the cache drop / analytics
+    // event are unrecoverable once made.
     //
     // 🔴 ONE ASSERTION OVER ALL THREE, DELIBERATELY. Written as three separate
     // `expect`s the first failure short-circuits the other two, so two of the
@@ -126,8 +138,10 @@ describe('follow: the app commits only what the host ECHOED', () => {
     expect({
       followEvents: followEvents(events),
       invalidateReadsCalls: invalidateReads.mock.calls.length,
-      gridBadges: within(grid).queryAllByTestId('followed-badge').length,
-    }).toEqual({ followEvents: [], invalidateReadsCalls: 0, gridBadges: 0 });
+      gridFollowed: within(grid)
+        .getAllByTestId('card-follow')
+        .filter((b) => b.getAttribute('aria-pressed') === 'true').length,
+    }).toEqual({ followEvents: [], invalidateReadsCalls: 0, gridFollowed: 0 });
   });
 
   it('🔴 a DECLINED follow commits nothing either — declining is not a write', async () => {
@@ -150,7 +164,40 @@ describe('follow: the app commits only what the host ECHOED', () => {
     expect({
       followEvents: followEvents(events),
       invalidateReadsCalls: invalidateReads.mock.calls.length,
-      gridBadges: within(grid).queryAllByTestId('followed-badge').length,
-    }).toEqual({ followEvents: [], invalidateReadsCalls: 0, gridBadges: 0 });
+      gridFollowed: within(grid)
+        .getAllByTestId('card-follow')
+        .filter((b) => b.getAttribute('aria-pressed') === 'true').length,
+    }).toEqual({ followEvents: [], invalidateReadsCalls: 0, gridFollowed: 0 });
+  });
+
+  it('a follow committed from a GRID CARD lands in the same app state', async () => {
+    // Phase 3: the cards carry the same control. The seam this file exists
+    // for must hold for a card-origin commit too — the echo reaches App's ONE
+    // handler, so the cache drop and the analytics event fire exactly as for
+    // a viewer-origin follow, and the click itself must not open the viewer
+    // (the control is a sibling of the card's open button, not a child).
+    const events: TrackedEvent[] = [];
+    const invalidateReads = vi.fn();
+    const api = { ...createFakeApi({ viewerUserId: 99 }), invalidateReads } as unknown as ApiClient;
+    render(
+      <Harness viewer={{ id: 99, username: 'me' }} theme="dark" showLog={false}>
+        <App api={api} isTipGranted={() => true} onEvent={(e) => void events.push(e)} />
+      </Harness>,
+    );
+    const grid = await screen.findByTestId('collection-grid');
+    const cardFollow = within(grid).getAllByTestId('card-follow')[0];
+    expect(cardFollow).toHaveAttribute('aria-pressed', 'false');
+
+    await userEvent.click(cardFollow);
+    await waitFor(() =>
+      expect(within(grid).getAllByTestId('card-follow')[0]).toHaveAttribute('aria-pressed', 'true'),
+    );
+
+    // Followed, not opened.
+    expect(screen.queryByTestId('collection-viewer')).toBeNull();
+    expect(invalidateReads).toHaveBeenCalledTimes(1);
+    expect(followEvents(events)).toEqual([
+      expect.objectContaining({ type: 'follow', collectionId: 101, followed: true }),
+    ]);
   });
 });
