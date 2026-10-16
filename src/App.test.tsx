@@ -442,11 +442,11 @@ describe('App — infinite scroll (feedback #1)', () => {
   }
 
   // 🔴 DE-FLAKED 2026-10-16 (see the waitFor below): this test carries an
-  // explicit 15s test timeout. It is the only one in the suite that needs
+  // explicit 20s test timeout. It is the only one in the suite that needs
   // one — its chain (initial render + observer + fetch + a page of
   // media-card elements upgrading) is the heaviest here, and under a
   // loaded runner its honest wall-clock outgrew vitest's 5s default.
-  it('appends the next page on sentinel intersection and dedupes the re-emitted id', { timeout: 15000 }, async () => {
+  it('appends the next page on sentinel intersection and dedupes the re-emitted id', { timeout: 20000 }, async () => {
     renderApp({ api: paginatedApi() });
     const grid = await screen.findByTestId('collection-grid');
     expect(within(grid).getAllByTestId('collection-card')).toHaveLength(3);
@@ -460,17 +460,21 @@ describe('App — infinite scroll (feedback #1)', () => {
     // 🔴 The waitFor half of the de-flake: it is CONDITION-based — it polls
     // until five cards exist, so its budget is not part of what the test
     // proves. testing-library's 1s default was too small for this chain
-    // under a loaded runner: THREE recorded failures — CI on PR #58, CI
-    // on PR #59, local full-suite runs — all the identical signature
+    // under a loaded runner: recorded failures — CI on PR #58, CI on PR
+    // #59, local full-suite runs — all the identical signature
     // "expected 5, got 3" just past the deadline, all green on re-run.
-    // The budget is 5s now (inside the test's own 15s, above): a genuine
+    // The budget is 10s now (inside the test's own 20s, above): a first
+    // attempt at 5s still starved once in a local full-suite run under
+    // this sandbox's contention, while every CI failure on record was
+    // marginal (the PR #58 instance died at 1108ms), so 10s is sized
+    // from the worst observed environment, not the average. A genuine
     // regression — the page never appends, the dup is not deduped —
     // still fails, on the same condition. Every other waitFor in the
     // suite keeps the default; only this chain has ever needed more.
     await waitFor(
       () =>
         expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5),
-      { timeout: 5000 },
+      { timeout: 10000 },
     );
     // Fully loaded → the sentinel is gone (no unbounded scroll fetch).
     expect(screen.queryByTestId('grid-sentinel')).toBeNull();
