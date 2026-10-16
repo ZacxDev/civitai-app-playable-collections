@@ -1,7 +1,8 @@
-// An in-memory stand-in for the three REST families this app reaches after the
-// port: per-viewer app storage, cross-user shared storage, and the Buzz balance.
-// Used by the dev harness (`main.tsx`) and by the tests that used to seed those
-// stores through the mock host.
+// An in-memory stand-in for the REST families this app reaches after the
+// port: per-viewer app storage, cross-user shared storage, the Buzz balance,
+// and (Phase 3) the document store's `popular_plays` tallies. Used by the dev
+// harness (`main.tsx`) and by the tests that used to seed those stores
+// through the mock host.
 //
 // 🔴 WHY THIS IS A `fetch` FAKE AND NOT A MOCK HOST, which is the whole point.
 // Before the port, `useAppStorage`/`useSharedStorage`/`useBuzzBalance` were
@@ -36,6 +37,18 @@ export interface RestSharedSeed {
   key?: string;
 }
 
+/** One seeded document-store document. Mirrors {@link RestSharedSeed}'s shape. */
+export interface RestDocSeed {
+  /** The declared collection's name (this app declares one: `popular_plays`). */
+  collection: string;
+  /** The document's key (for `popular_plays`, a collection id as a string). */
+  key: string;
+  /** Counter tallies the document carries, by counter name. */
+  counters?: Record<string, number>;
+  /** Mark name → ids of the viewers holding that mark. The count is the list's length. */
+  marks?: Record<string, number[]>;
+}
+
 export interface RestFakeOptions {
   /** The signed-in viewer's id — decides `viewerVoted` and default authorship. */
   viewerUserId?: number;
@@ -43,6 +56,14 @@ export interface RestFakeOptions {
   storage?: { seed?: Record<string, unknown>; limitBytes?: number; limitRows?: number };
   /** Shared-store seed, listed newest-first in the order given. */
   shared?: { seed?: RestSharedSeed[] };
+  /**
+   * Document-store seed + kill switch. `disabled` answers every
+   * `blocks/storage/*` call with the store's own 503 envelope — how a server
+   * with the document store not enabled (or a collection that does not exist
+   * yet) reads to the app, which is the state the migration's fallback exists
+   * for.
+   */
+  docStore?: { seed?: RestDocSeed[]; disabled?: boolean };
   /**
    * The viewer's per-pool balance. Omit for {@link DEFAULT_BUZZ_BALANCE}; pass
    * `null` to make the balance route REFUSE (403), which is how a missing
@@ -64,6 +85,19 @@ interface SharedRow {
   voters: Set<number>;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * One document-store document, reduced to what the tally routes carry: this
+ * app's only declared collection is `write: "none"`, so a document's `data`
+ * is always the empty object the creating increment made, and everything a
+ * reader can see is its counters and its per-viewer marks.
+ */
+interface DocRow {
+  key: string;
+  counters: Map<string, number>;
+  /** Mark name → the viewer ids holding it. The count is the set's size. */
+  marks: Map<string, Set<number>>;
 }
 
 /** A fixed instant, so nothing here reads a clock a test cannot control. */
@@ -149,6 +183,36 @@ export function createRestFake(options: RestFakeOptions = {}): typeof globalThis
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     viewerVoted: row.voters.has(viewerUserId),
+  });
+
+  const docStores = new Map<string, Map<string, DocRow>>();
+  for (const seed of options.docStore?.seed ?? []) {
+    let coll = docStores.get(seed.collection);
+    if (!coll) {
+      coll = new Map();
+      docStores.set(seed.collection, coll);
+    }
+    coll.set(seed.key, {
+      key: seed.key,
+      counters: new Map(Object.entries(seed.counters ?? {})),
+      marks: new Map(Object.entries(seed.marks ?? {}).map(([name, ids]) => [name, new Set(ids)])),
+    });
+  }
+
+  // The wire shape `@civitai/sdk`'s document client validates field by field:
+  // `author` is `{ kind: 'counter' }` because in a `write: "none"` collection
+  // every document was created by a counter's first increment, and `viewer`
+  // carries only the READING viewer's own mark names.
+  const projectDoc = (row: DocRow) => ({
+    key: row.key,
+    data: {},
+    version: 1,
+    createdAt: EPOCH,
+    updatedAt: EPOCH,
+    author: { kind: 'counter' },
+    counters: Object.fromEntries(row.counters),
+    marks: Object.fromEntries([...row.marks].map(([name, ids]) => [name, ids.size])),
+    viewer: { marks: [...row.marks].filter(([, ids]) => ids.has(viewerUserId)).map(([name]) => name) },
   });
 
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -251,6 +315,91 @@ export function createRestFake(options: RestFakeOptions = {}): typeof globalThis
       }
       if (method !== 'GET' && method !== 'POST') {
         return json({ error: 'Method not allowed' }, 405);
+      }
+    }
+
+    // --- document store: blocks/storage/* --------------------------------------
+    // Shapes from the storage guide's REST reference. Refusals use the store's
+    // one envelope (`{ code, message, error }`), because the SDK client branches
+    // on `code` — a bare `{ error }` here would exercise a different failure
+    // class than the server ever produces. Policy (scopes, trust, moderation,
+    // quotas) stays the server's, per this file's charter; what is modelled is
+    // the tally behaviour the routes themselves define: an increment creates a
+    // missing document, a mark needs one to exist, and a mark tally counts
+    // DISTINCT viewers because a viewer's second mark changes nothing.
+    if (path.startsWith('blocks/storage')) {
+      if (options.docStore?.disabled) {
+        return json(
+          { code: 'storage_disabled', message: 'storage is disabled', error: 'storage is disabled' },
+          503,
+        );
+      }
+      const seg = path.split('/').filter(Boolean).map(decodeURIComponent);
+      // seg: ['blocks', 'storage', collection, key?, 'counters'|'marks', name?]
+      const collection = seg[2];
+      let coll = collection === undefined ? undefined : docStores.get(collection);
+      const docNotFound = () =>
+        json({ code: 'not_found', message: 'document not found', error: 'document not found' }, 404);
+
+      if (collection !== undefined && seg.length === 3 && method === 'GET') {
+        // list — one page; `nextCursor` is the next offset as a string, or null.
+        const sort = url.searchParams.get('sort') ?? 'key';
+        const desc = sort.startsWith('-');
+        const field = desc ? sort.slice(1) : sort;
+        const tally = /^(counter|mark):(.+)$/.exec(field);
+        const tallyOf = (row: DocRow): number =>
+          tally === null
+            ? 0
+            : tally[1] === 'counter'
+              ? (row.counters.get(tally[2]) ?? 0)
+              : (row.marks.get(tally[2])?.size ?? 0);
+        const all = [...(coll?.values() ?? [])].sort((a, b) => {
+          const cmp = tally !== null ? tallyOf(a) - tallyOf(b) : a.key.localeCompare(b.key);
+          return desc ? -cmp : cmp;
+        });
+        const limitRaw = url.searchParams.get('limit');
+        const limit = limitRaw === null ? all.length : Number(limitRaw);
+        const offset = Number(url.searchParams.get('cursor') ?? 0) || 0;
+        const page = all.slice(offset, offset + limit);
+        return json({
+          items: page.map(projectDoc),
+          nextCursor: offset + page.length < all.length ? String(offset + page.length) : null,
+        });
+      }
+
+      if (collection !== undefined && seg.length === 6 && seg[4] === 'counters' && method === 'POST') {
+        if (!coll) {
+          coll = new Map();
+          docStores.set(collection, coll);
+        }
+        const key = seg[3] as string;
+        let row = coll.get(key);
+        if (!row) {
+          // The first increment of a missing key creates the document — the
+          // ONLY creation a `write: "none"` collection has.
+          row = { key, counters: new Map(), marks: new Map() };
+          coll.set(key, row);
+        }
+        const by = typeof body.by === 'number' ? body.by : 1;
+        const value = (row.counters.get(seg[5] as string) ?? 0) + by;
+        row.counters.set(seg[5] as string, value);
+        return json({ value });
+      }
+
+      if (collection !== undefined && seg.length === 6 && seg[4] === 'marks' && (method === 'PUT' || method === 'DELETE')) {
+        const row = coll?.get(seg[3] as string);
+        // A mark on a document that does not exist is a `not_found`, not a
+        // creation — measured against the SDK's own fake store.
+        if (!row) return docNotFound();
+        const name = seg[5] as string;
+        let holders = row.marks.get(name);
+        if (!holders) {
+          holders = new Set();
+          row.marks.set(name, holders);
+        }
+        if (method === 'PUT') holders.add(viewerUserId);
+        else holders.delete(viewerUserId);
+        return json({ marked: method === 'PUT', count: holders.size });
       }
     }
 

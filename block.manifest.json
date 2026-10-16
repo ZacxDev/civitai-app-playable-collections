@@ -17,7 +17,8 @@
     "apps:storage:read",
     "apps:storage:write",
     "apps:storage:shared:read",
-    "apps:storage:shared:write"
+    "apps:storage:shared:write",
+    "apps:storage"
   ],
   "scopeJustifications": {
     "collections:read:private": "Lets a signed-in viewer browse and play their own private collections (behind an explicit in-app consent prompt), in addition to public ones.",
@@ -25,7 +26,13 @@
     "buzz:read:self": "Reads the viewer's Buzz balance so a tip amount can be validated before it is sent.",
     "apps:storage:read": "Reads back the viewer's own saved browse preferences — the collection sort and the popularity window — so a return visit opens the way they left it. Private to that viewer; no other viewer's data is readable.",
     "apps:storage:write": "Saves the viewer's own browse preferences (collection sort and popularity window) so the choice survives a reload. One small record, visible only to that viewer.",
-    "apps:storage:shared:write": "Records the shared popular-collections rail entries (collection references and tallies) that are visible to all viewers."
+    "apps:storage:shared:write": "Records the shared popular-collections rail entries (collection references and tallies) that are visible to all viewers.",
+    "apps:storage": "Reads the shared popular_plays tallies that rank the Popular rail, and records a signed-in viewer's own play in that collection — a plays counter increment plus their own played mark. The collection is write:none, so no viewer authors or edits a document; viewers only tally and mark."
+  },
+  "storage": {
+    "collections": {
+      "popular_plays": { "visibility": "shared", "write": "none", "counters": ["plays"], "marks": ["played"] }
+    }
   },
   "page": {
     "path": "/",

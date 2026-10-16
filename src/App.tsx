@@ -49,6 +49,7 @@ import {
   useRequestConsent,
   useRequestSignIn,
   useSharedStorage,
+  useStorageCollection,
 } from './lib/sdk-runtime.js';
 import {
   Alert,
@@ -63,7 +64,7 @@ import {
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
 import { createCachedApiClient, type CachedApiClient } from './lib/cache.js';
-import { readPopular, recordPlay, resolvePopularEntries, summaryFromPage, totalBuzz, type ResolvedPopular } from './lib/popular.js';
+import { POPULAR_PLAYS_COLLECTION, readPopularMigrated, recordPlayMigrated, resolvePopularEntries, summaryFromPage, totalBuzz, type ResolvedPopular } from './lib/popular.js';
 import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
@@ -85,6 +86,7 @@ import {
   BUZZ_READ_SELF,
   COLLECTIONS_READ_PRIVATE,
   SOCIAL_TIP_SELF,
+  defaultHasDocStoreScope,
   defaultHasPrivateScope,
   defaultHasTipScope,
 } from './scopes.js';
@@ -173,13 +175,23 @@ export interface AppProps {
    * real press -> REQUEST_CONSENT -> re-mint -> picker-opens round trip.
    */
   isTipGranted?: (tokenScopes: string[]) => boolean;
+  /**
+   * Predicate over the current block-token scopes deciding whether the token
+   * carries `apps:storage` — i.e. whether the APPROVED manifest is the one
+   * declaring the `popular_plays` document-store collection, so the Popular
+   * rail's migrated read/write path may be attempted. Defaults to the real
+   * check. Same test-seam shape as `isPrivateGranted`: the mock host's token
+   * carries none of the storage scopes, so a test grants it by predicate to
+   * drive the document-store path against the REST fake.
+   */
+  isStorageGranted?: (tokenScopes: string[]) => boolean;
   /** Bounded-retry config for the auto-run data loaders (test seam). */
   retry?: RetryConfig;
   /** Analytics sink (Feature #10). A test injects one; prod plugs a transport. */
   onEvent?: AnalyticsSink;
 }
 
-export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
+export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorageGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
   const host = useHostOrigin();
@@ -216,16 +228,27 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   const { balance: buzzPools, refetch: refetchBalance } = useBuzzBalance();
   const balance = totalBuzz(buzzPools);
 
-  // Cross-user "popular" play-counts via App Blocks SHARED storage — now the REST
-  // routes under `/api/v1/blocks/shared-storage/`, not the postMessage bridge.
+  // Cross-user "popular" play-counts. TWO stores while the migration runs
+  // (see `lib/popular.ts` for the model and the merge rule):
+  //
+  //   - the DOCUMENT store's `popular_plays` collection — the destination.
+  //     Reached as REST under `/api/v1/blocks/storage/`, behind the
+  //     `apps:storage` scope; attempted only when the token carries that
+  //     scope, which is what `docPlays` below encodes.
+  //   - App Blocks SHARED storage — the legacy store, now the REST routes
+  //     under `/api/v1/blocks/shared-storage/`, not the postMessage bridge.
+  //     Still read on every rail load (dual-read) and still written when a
+  //     doc-store write fails, so pre-migration behaviour is the floor.
   //
   // 🔴 THE EARLIER COMMENT CALLED THOSE ROUTES "guessed". They are not, and were not
   // the ones it named: `list` and `append` come from `AppClient.sharedStorage`, and
   // `vote` is app-layer over `app.site` because starters#479 kept voting OUT of the
   // SDK client on purpose. `increment`/`top` do exist on the platform but this app
-  // uses neither. Stable identity across renders, so it stays safe in the
-  // effect/callback deps below.
+  // uses neither (the document store's own `increment` is a different surface and
+  // IS used, via the collection façade). Stable identity across renders, so it
+  // stays safe in the effect/callback deps below.
   const shared = useSharedStorage();
+  const plays = useStorageCollection(POPULAR_PLAYS_COLLECTION);
 
   // Inject the component-pack stylesheet into the block document once (gotcha
   // #60). Themed via `data-theme` on the app's own root below.
@@ -280,6 +303,16 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // Can this token actually send a tip? See `scopes.ts` for why this is keyed on
   // `social:tip:self` alone even though the request below asks for both.
   const hasTipScope = (isTipGranted ?? defaultHasTipScope)(token.scopes ?? []);
+
+  // May the Popular rail use the document store? `apps:storage` is
+  // consent-exempt, so this is not a consent state: the mint builds the token
+  // from the APPROVED manifest, so the scope's presence is exactly "the
+  // version declaring `popular_plays` is the approved one" — and its absence
+  // is the pre-migration state, in which the migrated helpers are handed
+  // `null` and run the legacy path whole (see `src/scopes.ts`). The helpers
+  // ALSO fall back on any doc-store failure, so this gate is the cheap common
+  // case, not the only guard.
+  const docPlays = (isStorageGranted ?? defaultHasDocStoreScope)(token.scopes ?? []) ? plays : null;
 
   /**
    * The viewer pressed Tip without the grant that makes tipping possible.
@@ -761,7 +794,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     // cheaper to be wrong about.
     const seq = ++popularSeqRef.current;
     try {
-      const entries = await readPopular(shared, POPULAR_LIMIT);
+      const entries = await readPopularMigrated(docPlays, shared, POPULAR_LIMIT);
       // Resolve each ranked entry to a full card. An id already on a loaded list
       // is used directly; an id that ISN'T (a popular collection not on the
       // current page) is fetched by id so the rail always shows the true top-N
@@ -782,7 +815,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
       if (seq !== popularSeqRef.current) return;
       setPopular([]);
     }
-  }, [shared, known, api]);
+  }, [docPlays, shared, known, api]);
 
   // ---- effects ---- (all gated on `canFetch`: don't fetch until the host
   // origin + token are established, or the loop's root cause returns)
@@ -826,9 +859,11 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         analytics.track({ type: 'play', collectionId: summary.id });
         // Add to the device-local "Continue watching" rail (#7).
         recordRecentPlay({ id: summary.id, name: summary.name, coverImageUrl: summary.coverImageUrl, coverNsfwLevel: summary.coverNsfwLevel });
-        // Fire-and-forget the shared play-count vote; a failure never blocks
-        // playback (anon viewers reject on the write path — that's fine).
-        recordPlay(shared, summary)
+        // Fire-and-forget the play count; a failure never blocks playback
+        // (anon viewers reject on the write path — that's fine). The write
+        // goes to the document store when the migration gate is open, and
+        // falls back to the shared-store vote when it is not or it fails.
+        recordPlayMigrated(docPlays, shared, summary)
           .then(() => loadPopular())
           .catch(() => {});
       } catch (err) {
@@ -839,7 +874,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         setOpenLoading(false);
       }
     },
-    [api, shared, loadPopular, recordRecentPlay, analytics],
+    [api, docPlays, shared, loadPopular, recordRecentPlay, analytics],
   );
 
   const retryOpen = useCallback(() => {
@@ -860,7 +895,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         const s = summaryFromPage(page);
         analytics.track({ type: 'play', collectionId: s.id });
         recordRecentPlay({ id: s.id, name: s.name, coverImageUrl: s.coverImageUrl, coverNsfwLevel: s.coverNsfwLevel });
-        recordPlay(shared, s)
+        recordPlayMigrated(docPlays, shared, s)
           .then(() => loadPopular())
           .catch(() => {});
       } catch (err) {
@@ -880,7 +915,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
         setOpenLoading(false);
       }
     },
-    [api, shared, loadPopular, recordRecentPlay, analytics],
+    [api, docPlays, shared, loadPopular, recordRecentPlay, analytics],
   );
 
   // Reopen a recently-played collection (#7). Reuses the id-based open; the saved
@@ -1016,8 +1051,8 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     });
     setDiscover(patch);
     setMine(patch);
-    // The Popular rail's entries are their own copies (resolved from shared
-    // storage, not list state), so patch them too — since Phase 3 the rail
+    // The Popular rail's entries are their own copies (resolved from the
+    // popularity stores, not list state), so patch them too — since Phase 3 the rail
     // renders the follow control from this same flag.
     setPopular((entries) =>
       entries.map((e) => (e.collection.id === id ? { ...e, collection: { ...e.collection, followed } } : e)),

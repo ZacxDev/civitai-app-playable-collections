@@ -3,7 +3,9 @@
 A Civitai **App Block**: a full-page (W10) page app served at
 `/apps/run/playable-collections` that plays a collection's images and videos
 straight through — slideshow / ticker / wall, discovery of public + own
-collections, and a cross-user "Popular" rail on App Blocks shared storage.
+collections, and a cross-user "Popular" rail on the document store's
+`popular_plays` collection (dual-reading App Blocks shared storage while the
+migration runs — see `src/lib/popular.ts`).
 
 This repo is a **public OSS mirror** — block source only, no infrastructure
 internals. Keep it that way.

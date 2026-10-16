@@ -37,11 +37,13 @@ import type {
   AppClient,
   BlockSnapshot,
   BlockTransport,
+  DocumentListQuery,
   Host,
   Scope,
   SharedItem,
   SharedValue,
   StorageClient,
+  StorageCollection,
   Theme,
   ViewerInfo,
 } from '@civitai/sdk';
@@ -458,6 +460,46 @@ export function useSharedStorage(): SharedStorageFacade {
       },
     }),
     [],
+  );
+}
+
+/**
+ * One declared document-store collection, narrowed to the tally operations
+ * the popularity migration uses: `list` (ranked reads), `increment` (the
+ * counter that brings a `write: "none"` document into existence) and `mark`
+ * (the per-viewer flag). The full `StorageCollection` does more — `put`,
+ * `create`, `delete` — and none of it is reachable through this façade,
+ * because the one collection this app declares (`popular_plays`, see
+ * `lib/popular.ts`) is `write: "none"`: the server refuses document writes
+ * there by policy, so a façade that offered them would offer only refusals.
+ *
+ * The collection NAME is the caller's: the manifest declares it and
+ * `lib/popular.ts` owns the constant, so this module stays a runtime binding
+ * with no domain vocabulary of its own — the same split that keeps
+ * `SHARED_VOTE_ROUTE` a route and nothing more.
+ *
+ * Stable identity per name, for the same reason as `useAppStorage`: the
+ * object goes into dependency arrays. Every method awaits the AppClient
+ * internally, so a call made before `initialize()` resolves simply waits —
+ * and a call against a server where the collection does not exist yet (the
+ * declaring version not yet approved) rejects with the store's
+ * `collection_not_declared`, which callers treat as "not migrated yet",
+ * never as a viewer-facing error. Gated on the `apps:storage` scope (see
+ * `src/scopes.ts`): a token minted by a manifest that does not declare it
+ * would be refused `insufficient_scope` instead, so callers check first.
+ */
+export function useStorageCollection(
+  name: string,
+): Pick<StorageCollection, 'list' | 'increment' | 'mark'> {
+  return useMemo<Pick<StorageCollection, 'list' | 'increment' | 'mark'>>(
+    () => ({
+      list: async (query?: DocumentListQuery) => (await app()).storage.collection(name).list(query),
+      increment: async (key: string, counter: string) =>
+        (await app()).storage.collection(name).increment(key, counter),
+      mark: async (key: string, markName: string) =>
+        (await app()).storage.collection(name).mark(key, markName),
+    }),
+    [name],
   );
 }
 

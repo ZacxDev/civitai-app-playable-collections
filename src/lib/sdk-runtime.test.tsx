@@ -32,6 +32,7 @@ import {
   useRequestConsent,
   useRequestSignIn,
   useSharedStorage,
+  useStorageCollection,
 } from './sdk-runtime.js';
 
 // ---------------------------------------------------------------------------
@@ -521,6 +522,98 @@ describe('group 3: REST bindings — the wire, not a stub', () => {
     // already been bitten by once (a dropped `cursor` survived a whole suite).
     expect(list!.url).toContain('limit=5');
     expect(f.calls.find((c) => c.url.includes('shared-storage/append'))!.method).toBe('POST');
+  });
+
+  it('useStorageCollection.list GETs the collection route with the sort on the query string', async () => {
+    const doc = {
+      key: '101',
+      data: {},
+      version: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      author: { kind: 'counter' },
+      counters: { plays: 7 },
+      marks: { played: 3 },
+      viewer: { marks: [] },
+    };
+    const f = fakeFetch({ 'blocks/storage/popular_plays': { items: [doc], nextCursor: null } });
+    configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
+
+    let plays: ReturnType<typeof useStorageCollection> | null = null;
+    function P() {
+      plays = useStorageCollection('popular_plays');
+      return null;
+    }
+    render(<P />);
+
+    const page = await plays!.list({ sort: '-mark:played', limit: 100 });
+    expect(page.items).toHaveLength(1);
+    // The wire's ISO strings arrive as Dates and the tallies as plain numbers —
+    // the shape `lib/popular.ts` ranks on.
+    expect(page.items[0].marks.played).toBe(3);
+    expect(page.items[0].createdAt).toBeInstanceOf(Date);
+
+    const call = f.calls.find((c) => c.url.includes('blocks/storage/popular_plays'));
+    expect(call!.method).toBe('GET');
+    expect(call!.url).toContain('sort=-mark%3Aplayed');
+    expect(call!.url).toContain('limit=100');
+  });
+
+  it('useStorageCollection.increment POSTs the counter route and .mark PUTs the mark route', async () => {
+    const f = fakeFetch({
+      'counters/plays': { value: 4 },
+      'marks/played': { marked: true, count: 2 },
+    });
+    configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
+
+    let plays: ReturnType<typeof useStorageCollection> | null = null;
+    function P() {
+      plays = useStorageCollection('popular_plays');
+      return null;
+    }
+    render(<P />);
+
+    expect(await plays!.increment('101', 'plays')).toEqual({ value: 4 });
+    expect(await plays!.mark('101', 'played')).toEqual({ marked: true, count: 2 });
+
+    const inc = f.calls.find((c) => c.url.includes('counters/plays'));
+    expect(inc!.method).toBe('POST');
+    expect(inc!.url).toContain('/blocks/storage/popular_plays/101/counters/plays');
+    // No `by` in the body when omitted: the server's default (1) applies, and
+    // the client sends no body at all rather than `{ by: undefined }`.
+    expect(inc!.body).toBeNull();
+
+    const mark = f.calls.find((c) => c.url.includes('marks/played'));
+    expect(mark!.method).toBe('PUT');
+    expect(mark!.url).toContain('/blocks/storage/popular_plays/101/marks/played');
+  });
+
+  it('useStorageCollection surfaces the store’s envelope code (collection_not_declared) as a rejection', async () => {
+    // 🔴 THE MIGRATION'S LOAD-BEARING FAILURE. Before the declaring version is
+    // approved, EVERY doc-store call is refused with this code; `lib/popular.ts`
+    // treats any rejection as "not migrated yet" and falls back. A façade that
+    // resolved an empty page instead would silently pin the rail to the legacy
+    // store even after approval — the failure has to stay a failure.
+    const f = fakeFetch(
+      {
+        'blocks/storage/popular_plays': {
+          code: 'collection_not_declared',
+          message: 'collection not declared',
+          error: 'collection not declared',
+        },
+      },
+      404,
+    );
+    configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
+
+    let plays: ReturnType<typeof useStorageCollection> | null = null;
+    function P() {
+      plays = useStorageCollection('popular_plays');
+      return null;
+    }
+    render(<P />);
+
+    await expect(plays!.list()).rejects.toMatchObject({ code: 'collection_not_declared' });
   });
 
   it('useAppStorage reaches blocks/app-storage and keeps a STABLE identity', async () => {

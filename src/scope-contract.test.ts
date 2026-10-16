@@ -365,6 +365,19 @@ const NON_HOOK_SCOPE_CONSUMERS: Readonly<
     token: "tip: '/api/v1/blocks/tip'",
     why: 'The tip POST. This app posts it directly rather than through `useTip`.',
   },
+  // The document store is reached through this app's own `useStorageCollection`
+  // façade in `lib/sdk-runtime.ts`, not through a blocks-react hook, so no
+  // ledger-1 entry can name it. The consumer the contract can pin is the GATE:
+  // `App.tsx` attempts the store only when this predicate — over the token's
+  // scopes, with the constant below — says the scope is carried, and
+  // `lib/popular.ts` makes the calls. If the gate goes, the capability is
+  // unreachable and the declaration is for nothing, which is what direction 2
+  // exists to catch.
+  [BLOCK_SCOPES.APPS_STORAGE]: {
+    file: 'scopes.ts',
+    token: "APPS_STORAGE = 'apps:storage'",
+    why: 'The document-store gate for the Popular rail migration: `App.tsx` hands `lib/popular.ts` the `popular_plays` collection façade only when the token carries this scope (an approved manifest declares it), and the legacy shared store covers every other state.',
+  },
 };
 
 /** SDK scopes this app has no consumer for, by design. */
@@ -381,14 +394,16 @@ const SCOPES_NOT_USED_BY_THIS_APP: readonly BlockScope[] = [
   BLOCK_SCOPES.GOODS_READ_SELF,
   BLOCK_SCOPES.GOODS_PURCHASE_SELF,
   // Entered `BLOCK_SCOPES` with the document-store storage model and became
-  // nameable here on the Phase 0 bump (app-sdk ^0.71.0). Deliberately NOT
-  // declared in Phase 0: the app still runs on the legacy per-viewer / shared
-  // storage scopes above, and adopting the document store (`apps:storage`,
-  // plus `apps:storage:publish` for authoring shared documents) is the
-  // migration proposal's Phase 3, a separate change with its own manifest
-  // review. `apps:store:items:write` is unrelated surface — this app lists no
-  // sub-items in the App Store.
-  BLOCK_SCOPES.APPS_STORAGE,
+  // nameable here on the Phase 0 bump (app-sdk ^0.71.0). `apps:storage` itself
+  // LEFT this list in Phase 3: the Popular rail's document-store migration
+  // declares it and consumes it through the gate registered in
+  // `NON_HOOK_SCOPE_CONSUMERS` above. `apps:storage:publish` stays unused by
+  // design: it gates AUTHORING shared documents (`write: "own"`), and the one
+  // collection this app declares (`popular_plays`) is `write: "none"` — its
+  // counter increments and marks need only `apps:storage`, so publish would
+  // be a consent-gated capability disclosed to a moderator and to every
+  // viewer for nothing. `apps:store:items:write` is unrelated surface — this
+  // app lists no sub-items in the App Store.
   BLOCK_SCOPES.APPS_STORAGE_PUBLISH,
   BLOCK_SCOPES.APPS_STORE_ITEMS_WRITE,
 ];

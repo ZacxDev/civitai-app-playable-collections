@@ -18,12 +18,46 @@
 //
 // The functions take only the SHARED-store slice they use so they're pure +
 // unit-testable with a fake store (see popular.test.ts).
+//
+// MIGRATION (Phase 3): the shared store above is DEPRECATED platform-wide in
+// favour of the document store, so popularity is moving to a declared
+// collection — `popular_plays`, shared, `write: "none"`, one counter
+// (`plays`) and one mark (`played`) — declared in `block.manifest.json` under
+// `storage.collections` and reached via `app.storage.collection(...)` behind
+// the `apps:storage` scope. The model maps one-to-one:
+//
+//   • ONE document per collection, keyed by the collection id itself.
+//   • "playing" = setting the viewer's `played` MARK on that document — a
+//     mark is the platform's own replacement for a shared-store vote
+//     (at most one per viewer per document, idempotent), so the count a
+//     reader sees is still DISTINCT viewers, never raw plays.
+//   • the counter exists because a mark cannot create its document: in a
+//     `write: "none"` collection the first INCREMENT of a missing key is the
+//     only creation there is. `plays` therefore tallies raw plays (replays
+//     included) and NOTHING ranks on it; the rail ranks on the mark count,
+//     exactly as it ranked on the vote count.
+//
+// The move is DUAL-READ and gated, because the platform gives no other safe
+// shape: a declared collection exists only once the version declaring it is
+// APPROVED, and legacy data is never copied across ("nothing is copied for
+// you" — the storage guide's migration section). So until approval the app
+// runs the legacy path untouched (the token does not even carry
+// `apps:storage` — see `defaultHasDocStoreScope` in `src/scopes.ts`), and
+// after approval every read merges both stores with the document store
+// winning per collection, while every write goes to the document store with
+// the legacy vote kept as the fallback for a failed doc write. A collection
+// whose plays all predate the migration keeps its legacy count until its
+// first post-migration play creates its document — from then on its count is
+// its post-migration distinct viewers. That discontinuity is the platform's
+// own ("legacy vote counts cannot become marks; they start at zero"), not a
+// choice made here: the alternative — summing the two — would count a viewer
+// who played on both sides of the migration twice.
 
 // Types come from `@civitai/sdk` now, not the bridge package: `SharedValue` is the
 // contributed `{ title, body?, data? }` and `SharedItem` is one listed row. Both are
 // field-for-field the shapes the bridge declared, so nothing below changes — but the
 // import is what actually moves this module off `@civitai/blocks-react`.
-import type { SharedItem } from '@civitai/sdk';
+import type { SharedItem, StorageCollection } from '@civitai/sdk';
 
 import type { SharedStorageFacade } from './sdk-runtime.js';
 
@@ -120,6 +154,171 @@ export async function readPopular(shared: SharedReadStore, limit: number): Promi
     .filter((e): e is PopularEntry => e.collectionId != null && e.count > 0)
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// The document store — the same popularity, on `popular_plays`
+// ---------------------------------------------------------------------------
+
+/**
+ * The declared collection's name. It must match `storage.collections` in
+ * `block.manifest.json` EXACTLY: the server reads the approved manifest, and
+ * a name it does not declare is refused `collection_not_declared` — which the
+ * migration path reads as "not migrated yet", so a typo here would silently
+ * pin the app to the legacy store forever. `popular.test.ts` builds its fake
+ * store from the committed manifest itself, so the two cannot drift apart
+ * without a red test.
+ */
+export const POPULAR_PLAYS_COLLECTION = 'popular_plays';
+
+/** The raw-plays counter. Creation mechanism only — nothing ranks on it. */
+export const PLAYS_COUNTER = 'plays';
+
+/** The per-viewer mark whose COUNT is the popularity (distinct viewers). */
+export const PLAYED_MARK = 'played';
+
+/** The document-store slice the migrated helpers need (subset of the handle). */
+export type PlaysStore = Pick<StorageCollection, 'list' | 'increment' | 'mark'>;
+
+/** Read-only slice — `readPopularDoc` only lists. */
+export type PlaysReadStore = Pick<StorageCollection, 'list'>;
+
+/**
+ * The largest page the store serves. Two pages bound a migrated read the way
+ * `LIST_LIMIT` bounds a legacy one, so the merge below ranks over the same
+ * horizon the legacy read always had.
+ */
+const DOC_PAGE_LIMIT = 100;
+
+/** A collection's document key: the id itself, as a decimal string. */
+function playsKey(collectionId: number): string {
+  return String(collectionId);
+}
+
+/**
+ * Record that the viewer played `collection`, in the document store:
+ * increment the `plays` counter (which creates the document when this is the
+ * collection's first recorded play), then set the viewer's `played` mark.
+ *
+ * 🔴 THE ORDER IS THE PLATFORM'S, NOT A PREFERENCE. A mark on a key with no
+ * document is refused `not_found` (measured against the SDK's own fake store,
+ * which enforces the server's rules); in a `write: "none"` collection the
+ * counter increment is the only creation there is. The mark is idempotent
+ * per viewer, so a replay moves only the counter and the popularity count —
+ * the mark's — does not inflate: the legacy vote's invariant, preserved.
+ *
+ * Requires a signed-in viewer and the `apps:storage` scope; rejects with the
+ * store's error (`sign_in_required`, `collection_not_declared`,
+ * `not_eligible`, …) and the caller decides what a rejection means — see
+ * `recordPlayMigrated`.
+ */
+export async function recordPlayDoc(plays: PlaysStore, collection: { id: number }): Promise<void> {
+  const key = playsKey(collection.id);
+  await plays.increment(key, PLAYS_COUNTER);
+  await plays.mark(key, PLAYED_MARK);
+}
+
+/**
+ * The top-N most-played collections by DISTINCT-viewer mark count (desc),
+ * from the document store alone. Reads ranked pages (`sort: '-mark:played'`
+ * is a server sort over the declared mark, missing tallies counting as 0) up
+ * to the same 200-document horizon as the legacy read, and drops documents
+ * nobody has marked — a document can exist with a zero mark count when its
+ * creating increment landed but the mark did not, and zero is not popularity
+ * in either store.
+ */
+export async function readPopularDoc(plays: PlaysReadStore, limit: number): Promise<PopularEntry[]> {
+  const entries: PopularEntry[] = [];
+  let cursor: string | undefined;
+  // At most two pages: the horizon above, stated as a page count so a store
+  // full of unparseable keys cannot page this read forever.
+  for (let pageNo = 0; pageNo < LIST_LIMIT / DOC_PAGE_LIMIT; pageNo += 1) {
+    const page = await plays.list({
+      sort: `-mark:${PLAYED_MARK}`,
+      limit: DOC_PAGE_LIMIT,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    for (const doc of page.items) {
+      const collectionId = Number(doc.key);
+      const count = doc.marks[PLAYED_MARK] ?? 0;
+      if (Number.isInteger(collectionId) && collectionId > 0 && count > 0) {
+        entries.push({ collectionId, count });
+      }
+    }
+    if (page.nextCursor === null) break;
+    cursor = page.nextCursor;
+  }
+  return entries.sort((a, b) => b.count - a.count).slice(0, limit);
+}
+
+/**
+ * Merge the two stores' rankings into one: the document store's count wins
+ * for any collection it has a count for, and a collection it has never heard
+ * of keeps its legacy count. Ranked desc and sliced AFTER the merge — slicing
+ * either input at the rail's limit first would drop exactly the entries the
+ * other store's shadowing promotes.
+ */
+export function mergePopular(
+  docEntries: readonly PopularEntry[],
+  legacyEntries: readonly PopularEntry[],
+  limit: number,
+): PopularEntry[] {
+  const byId = new Map<number, PopularEntry>();
+  for (const e of legacyEntries) byId.set(e.collectionId, e);
+  for (const e of docEntries) byId.set(e.collectionId, e);
+  return [...byId.values()].sort((a, b) => b.count - a.count).slice(0, limit);
+}
+
+/**
+ * The play write the app actually makes. With a document store available
+ * (`plays` non-null — the caller gates that on the token carrying
+ * `apps:storage`), the write goes there and the legacy store is not touched:
+ * the write has MOVED. Any doc-store rejection — the collection not yet
+ * existing, the store disabled, the viewer ineligible — falls back to the
+ * legacy vote, so a play is recorded somewhere whenever it can be; the
+ * rejection this function can still surface is the legacy write's own, which
+ * is exactly the contract `recordPlay` always had.
+ */
+export async function recordPlayMigrated(
+  plays: PlaysStore | null,
+  shared: SharedStore,
+  collection: { id: number; name: string },
+): Promise<void> {
+  if (plays) {
+    try {
+      await recordPlayDoc(plays, collection);
+      return;
+    } catch {
+      // Not migrated yet, or the store refused: the legacy vote below is the
+      // pre-migration behaviour, kept whole. Popularity is best-effort and
+      // the caller swallows even this fallback's failure.
+    }
+  }
+  await recordPlay(shared, collection);
+}
+
+/**
+ * The rail read the app actually makes: both stores, merged by
+ * `mergePopular`. A document store that rejects (not yet approved, disabled,
+ * a transient 503) contributes NOTHING rather than failing the read — the
+ * legacy ranking alone is precisely what the rail showed before the
+ * migration. The legacy read keeps its old contract: if IT rejects, this
+ * rejects, and the caller empties the rail as it always did.
+ */
+export async function readPopularMigrated(
+  plays: PlaysReadStore | null,
+  shared: SharedReadStore,
+  limit: number,
+): Promise<PopularEntry[]> {
+  const legacy = await readPopular(shared, LIST_LIMIT);
+  if (!plays) return legacy.slice(0, limit);
+  let doc: PopularEntry[] = [];
+  try {
+    doc = await readPopularDoc(plays, LIST_LIMIT);
+  } catch {
+    doc = [];
+  }
+  return mergePopular(doc, legacy, limit);
 }
 
 /** One resolved rail entry: a full collection card + its distinct-viewer play count. */
