@@ -341,6 +341,7 @@ function Tile({
       style={tileStyle(horizontal)}
     >
       <CivitaiMediaCard
+        noScrim
         style={{ '--civitai-media-card-ratio': `${aspectOf(item)} / 1`, width: '100%' } as CSSProperties}
       >
         {broken ? (
