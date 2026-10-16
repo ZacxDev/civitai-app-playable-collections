@@ -103,8 +103,9 @@ export function CoverImage({
   src: string | null;
   c: Palette;
   nsfwLevel?: number;
-  /** When the cover renders inside a `<civitai-media-card>`, its root carries
-   * this slot name ('media'). The rails render it bare and pass nothing. */
+  /** The cover renders inside a `<civitai-media-card>` at all three call
+   * sites (grid card since surface 2, both rails since surface 5), so its
+   * root carries the element's 'media' slot name. */
   slot?: string;
 }) {
   const register = useContext(CoverObserverContext);
@@ -433,9 +434,18 @@ export function PopularRail({ entries, onOpen, c }: PopularRailProps) {
               data-testid="popular-card"
               aria-label={`Play ${collection.name} — played ${count} times`}
             >
-              <div style={railCover}>
-                <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} />
-              </div>
+              {/* 🔴 PHASE 2 (surface 5): the rail cover is the same
+                  <civitai-media-card> as everywhere else — the rails were
+                  the last bare CoverImage call sites. Same shape as the
+                  grid card, one difference: the rail cover carries its OWN
+                  radius (8, what railCover had), because the rail card's
+                  padding leaves the cover unclipped by the button. */}
+              <CivitaiMediaCard
+                noScrim
+                style={{ '--civitai-media-card-ratio': '1 / 1', borderRadius: 8 } as CSSProperties}
+              >
+                <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} slot="media" />
+              </CivitaiMediaCard>
               <span style={railTitle}>{collection.name}</span>
               <span style={cardMeta}>
                 <Badge size="sm" variant="light">
@@ -476,9 +486,14 @@ export function RecentRail({ entries, onOpen, c }: RecentRailProps) {
               data-collection-id={entry.id}
               aria-label={`Resume ${entry.name}`}
             >
-              <div style={railCover}>
-                <CoverImage src={entry.coverImageUrl} c={c} nsfwLevel={entry.coverNsfwLevel} />
-              </div>
+              {/* Surface 5, as in the Popular rail above: the cover is the
+                  shared <civitai-media-card>, own radius 8. */}
+              <CivitaiMediaCard
+                noScrim
+                style={{ '--civitai-media-card-ratio': '1 / 1', borderRadius: 8 } as CSSProperties}
+              >
+                <CoverImage src={entry.coverImageUrl} c={c} nsfwLevel={entry.coverNsfwLevel} slot="media" />
+              </CivitaiMediaCard>
               <span style={railTitle}>{entry.name}</span>
               <span style={cardMeta}>
                 <Badge size="sm" variant="light">
@@ -582,12 +597,6 @@ const railCard: CSSProperties = {
   cursor: 'pointer',
   textAlign: 'left',
   fontFamily: 'var(--civitai-font)',
-};
-const railCover: CSSProperties = {
-  aspectRatio: '1 / 1',
-  borderRadius: 8,
-  overflow: 'hidden',
-  background: 'var(--civitai-color-surface-2)',
 };
 const railTitle: CSSProperties = {
   fontWeight: 600,
