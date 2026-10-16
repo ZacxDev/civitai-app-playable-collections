@@ -7,7 +7,7 @@ import { manifest, validateManifest } from './manifest.js';
 import { RECIPIENT_PERCENT, TIP_TOTAL_MAX, type TipRecipientChoice } from './lib/tip-split.js';
 
 describe('block.manifest.json', () => {
-  it('declares the 8 required scopes (no block:settings:*, no collections:write:self)', () => {
+  it('declares the 9 required scopes (no block:settings:*, no collections:write:self)', () => {
     // 🔴 `apps:storage:read` / `apps:storage:write` — the PER-VIEWER store — are
     // NOT the same capability as the `apps:storage:shared:*` pair below, and the
     // host does not treat one as satisfying the other: it compares the required
@@ -15,6 +15,15 @@ describe('block.manifest.json', () => {
     // both families and declares both: the per-viewer pair backs the saved browse
     // preferences (`lib/browse-prefs.ts` via `useAppStorage`), the shared pair
     // backs the cross-user Popular rail (`lib/popular.ts` via `useSharedStorage`).
+    //
+    // Phase 3 adds the THIRD storage family: `apps:storage`, the DOCUMENT
+    // store scope — again a distinct string no sibling satisfies. It backs the
+    // `popular_plays` collection declared below, which the Popular rail is
+    // migrating to. Both legacy families stay declared during the migration:
+    // the per-viewer pair still backs browse prefs, and the shared pair backs
+    // the rail's legacy half — the dual-read fallback and the write a failed
+    // doc-store write falls back to (`lib/popular.ts`). Dropping either is a
+    // later change, made when nothing reads it any more.
     //
     // This literal ledger pins WHAT IS DECLARED. It cannot tell you whether the
     // code needs it — that relationship lives in `scope-contract.test.ts`, which
@@ -30,6 +39,7 @@ describe('block.manifest.json', () => {
       'apps:storage:write',
       'apps:storage:shared:read',
       'apps:storage:shared:write',
+      'apps:storage',
     ]);
     // 🔴 `collections:write:self` was DROPPED in 0.2.10 and must not come back.
     // Following moved to the host-mediated bridge, which needs no scope: the
@@ -68,6 +78,27 @@ describe('block.manifest.json', () => {
     expect(validated.scopes).toContain('apps:storage:read');
     expect(validated.scopes).toContain('apps:storage:shared:read');
     expect(validated.scopes).toContain('collections:read:private');
+  });
+
+  it('declares the popular_plays document-store collection, write:"none", and no publish scope', () => {
+    // The declaration IS the collection: undeclared, it does not exist and
+    // every call is refused `collection_not_declared`. `write: "none"` is the
+    // load-bearing choice — nobody authors a document, so the consent-gated
+    // `apps:storage:publish` scope is NOT required and must not be declared
+    // (a scope nothing needs is a capability disclosed for nothing; the
+    // server's own manifest rules require publish only for `write: "own"` /
+    // `"anyone"`). The counter and the mark must not share a name (the server
+    // refuses that too): `plays` tallies raw plays and creates documents,
+    // `played` is the per-viewer mark whose count ranks the rail.
+    expect(manifest.storage).toEqual({
+      collections: {
+        popular_plays: { visibility: 'shared', write: 'none', counters: ['plays'], marks: ['played'] },
+      },
+    });
+    expect(manifest.scopes).not.toContain('apps:storage:publish');
+    // The declaration survives the canonical validator intact — what the
+    // moderator reviews is what this file declares.
+    expect(validateManifest().storage).toEqual(manifest.storage);
   });
 
   it('is a page app at "/" with NO manifest settings block (settings are localStorage-local)', () => {

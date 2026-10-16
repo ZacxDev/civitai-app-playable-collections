@@ -5,7 +5,8 @@ plays through a Civitai collection's images and videos like a media player —
 auto-advancing images, looping videos, per-media **creator tips**, **curator
 tips**, on-site **collection bookmark (follow)**, configurable pacing, discovery
 of public + your own collections, and a cross-user **"Popular"** rail backed by
-App Blocks shared storage.
+the document store's `popular_plays` collection (migrating from App Blocks
+shared storage, which it still dual-reads during the transition).
 
 > This is a Civitai **onsite App Block** — it runs in-platform at
 > `playable-collections.civit.ai`, embedded by the Civitai host. Open it via

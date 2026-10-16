@@ -10,7 +10,7 @@ import { BROWSE_PREFS_KEY } from './lib/browse-prefs.js';
 import { CollectionGrid } from './components/CollectionGrid.js';
 import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi } from './fake-api.js';
-import { createRestFake } from './dev-rest.js';
+import { createRestFake, type RestFakeOptions } from './dev-rest.js';
 import { configureSdkRuntime } from './lib/sdk-runtime.js';
 import { palette } from './theme.js';
 import type { CollectionSummary, MediaItem } from './types.js';
@@ -23,6 +23,15 @@ function renderApp(
     theme?: 'light' | 'dark';
     isPrivateGranted?: (scopes: string[]) => boolean;
     isTipGranted?: (scopes: string[]) => boolean;
+    /**
+     * Grants the document-store gate (`apps:storage`) by predicate — the mock
+     * host's token carries none of the storage scopes, so without this the app
+     * runs its pre-migration legacy path, which is what every other case in
+     * this file exercises.
+     */
+    isStorageGranted?: (scopes: string[]) => boolean;
+    /** Seed / disable the REST fake's document store (`blocks/storage/*`). */
+    docStore?: RestFakeOptions['docStore'];
     onOutbound?: (msg: { type: string; payload?: unknown }) => void;
     /**
      * Can the mock host grant a `REQUEST_CONSENT` at all? `false` models the host
@@ -88,6 +97,7 @@ function renderApp(
       viewerUserId: (opts.viewer === undefined ? { id: 99 } : opts.viewer)?.id ?? 99,
       storage: opts.storage,
       shared: opts.shared,
+      docStore: opts.docStore,
       buzz: opts.buzzBalance,
       onRequest: opts.onRestRequest,
     }),
@@ -111,6 +121,7 @@ function renderApp(
         api={opts.api}
         isPrivateGranted={opts.isPrivateGranted}
         isTipGranted={opts.isTipGranted ?? (() => true)}
+        isStorageGranted={opts.isStorageGranted}
         retry={opts.retry}
         onEvent={opts.onEvent}
       />
@@ -980,6 +991,109 @@ describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', 
     renderApp({ api, shared: { seed: [] } });
     await screen.findByTestId('collection-grid');
     expect(screen.queryByTestId('popular-rail')).toBeNull();
+  });
+});
+
+describe('App — Popular rail on the document store (Phase 3 migration)', () => {
+  const grantStorage = () => true;
+
+  it('prefers the document store per collection and fills the rest from the legacy store', async () => {
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
+      isStorageGranted: grantStorage,
+      docStore: {
+        seed: [
+          { collection: 'popular_plays', key: '101', marks: { played: [11, 12, 13, 14, 15] } },
+          { collection: 'popular_plays', key: '102', marks: { played: [11, 12, 13, 14] } },
+          { collection: 'popular_plays', key: '201', marks: { played: [11, 12, 13] } },
+        ],
+      },
+      shared: {
+        seed: [
+          // 101 also has NINE legacy votes: the doc count (5) must win — not
+          // the legacy count, and never the sum.
+          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2, 3, 4, 5, 6, 7, 8, 9] },
+          // 202 exists only in the legacy store: its count fills in as-is.
+          { value: { title: 'My Private Board', data: { collectionId: 202 } }, voters: [1, 2] },
+        ],
+      },
+    });
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    const labels = within(rail)
+      .getAllByTestId('popular-card')
+      .map((el) => el.getAttribute('aria-label'));
+    expect(labels).toEqual([
+      'Play Neon Cities — played 5 times',
+      'Play Forest Studies — played 4 times',
+      'Play My Public Board — played 3 times',
+      'Play My Private Board — played 2 times',
+    ]);
+  });
+
+  it('degrades to exactly the legacy rail when the document store is unavailable', async () => {
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
+      isStorageGranted: grantStorage,
+      // Every blocks/storage/* call answers the store's 503 envelope — the
+      // pre-approval / store-disabled state the fallback exists for.
+      docStore: { disabled: true },
+      shared: {
+        seed: [
+          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
+          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
+          { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
+        ],
+      },
+    });
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    const labels = within(rail)
+      .getAllByTestId('popular-card')
+      .map((el) => el.getAttribute('aria-label'));
+    expect(labels).toEqual([
+      'Play My Public Board — played 4 times',
+      'Play Forest Studies — played 3 times',
+      'Play Neon Cities — played 2 times',
+    ]);
+  });
+
+  it('records a play in the document store — counter then mark — and not in the legacy store', async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
+      isStorageGranted: grantStorage,
+      onRestRequest: (call) => calls.push(call),
+    });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101)
+    await screen.findByTestId('collection-viewer');
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === 'PUT' && c.path === 'blocks/storage/popular_plays/101/marks/played'),
+      ).toBe(true),
+    );
+    expect(
+      calls.some((c) => c.method === 'POST' && c.path === 'blocks/storage/popular_plays/101/counters/plays'),
+    ).toBe(true);
+    // The write has MOVED: no legacy append/vote for this play.
+    expect(calls.some((c) => c.path.startsWith('blocks/shared-storage/') && c.method === 'POST')).toBe(false);
+  });
+
+  it('falls back to the legacy vote for the play when the document store refuses it', async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
+      isStorageGranted: grantStorage,
+      docStore: { disabled: true },
+      onRestRequest: (call) => calls.push(call),
+    });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101)
+    await screen.findByTestId('collection-viewer');
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'POST' && c.path === 'blocks/shared-storage/vote')).toBe(true),
+    );
   });
 });
 

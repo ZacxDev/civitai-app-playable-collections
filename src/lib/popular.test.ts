@@ -1,19 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SharedAppendValue, SharedListItem } from '@civitai/blocks-react';
+import { createFakeStorage } from '@civitai/sdk/testing';
 
 import {
+  PLAYED_MARK,
+  PLAYS_COUNTER,
   POPULAR_MIN_ENTRIES,
   POPULAR_MIN_PLAYS,
+  POPULAR_PLAYS_COLLECTION,
   entryCollectionId,
+  mergePopular,
   popularRailEntries,
   readPopular,
+  readPopularDoc,
+  readPopularMigrated,
   recordPlay,
+  recordPlayDoc,
+  recordPlayMigrated,
   resolvePopularEntries,
   summaryFromPage,
   totalBuzz,
+  type PlaysStore,
   type SharedStore,
 } from './popular.js';
+import { manifest } from '../manifest.js';
 import type { CollectionPage, CollectionSummary, PopularEntry } from '../types.js';
 
 /**
@@ -376,6 +387,211 @@ describe('resolvePopularEntries', () => {
     // Rank order (count-desc == the input order) is preserved.
     expect(resolved[0].collection.id).toBe(1);
     expect(resolved[249].collection.id).toBe(250);
+  });
+});
+
+/**
+ * The document store, via the SDK's OWN fake (`createFakeStorage`) — the
+ * platform's in-memory enforcement of the server's rules (declaration,
+ * write policies, mark idempotence, error codes), not a hand-rolled stand-in
+ * whose semantics would be mine to get wrong.
+ *
+ * 🔴 THE FAKE IS BUILT FROM THE COMMITTED MANIFEST, and that is the drift
+ * guard for `POPULAR_PLAYS_COLLECTION`: production code names the collection
+ * by the constant, the fake knows only what `block.manifest.json` declares,
+ * so renaming one without the other turns every case below red with
+ * `collection_not_declared` instead of silently testing a phantom store.
+ */
+function makeFakePlays() {
+  const fake = createFakeStorage({
+    manifest: {
+      scopes: manifest.scopes as string[],
+      storage: manifest.storage,
+    },
+    viewer: { username: 'alice' },
+  });
+  return {
+    fake,
+    /** The collection handle as one viewer (default: alice, the fake's own). */
+    as: (username?: string): PlaysStore =>
+      (username === undefined
+        ? fake.storage
+        : fake.as({ viewer: { username } }).storage
+      ).collection(POPULAR_PLAYS_COLLECTION) as PlaysStore,
+  };
+}
+
+describe('the declared collection refuses document writes (write: "none" is load-bearing)', () => {
+  it('rejects put/create, so popularity can only ever move by tally', async () => {
+    const { fake } = makeFakePlays();
+    // The full handle, not the PlaysStore slice: the slice exists precisely
+    // because these two methods are refused by the declaration.
+    const full = fake.storage.collection(POPULAR_PLAYS_COLLECTION);
+    const code = async (p: Promise<unknown>) =>
+      p.then(
+        () => 'ok',
+        (e: unknown) => (e as { code?: string }).code ?? 'threw',
+      );
+    expect(await code(full.put('101', {}))).toBe('write_policy');
+    expect(await code(full.create({}))).toBe('write_policy');
+  });
+
+  it('refuses a mark on a key with no document — the reason recordPlayDoc increments first', async () => {
+    const { as } = makeFakePlays();
+    await expect(as().mark('101', PLAYED_MARK)).rejects.toMatchObject({ code: 'not_found' });
+  });
+});
+
+describe('recordPlayDoc', () => {
+  it('creates the document and counts the first play as one distinct viewer', async () => {
+    const { as } = makeFakePlays();
+    await recordPlayDoc(as(), { id: 101 });
+    expect(await readPopularDoc(as(), 10)).toEqual([{ collectionId: 101, count: 1 }]);
+  });
+
+  it('counts DISTINCT viewers: a second viewer raises the count, a replay does not', async () => {
+    const { as } = makeFakePlays();
+    await recordPlayDoc(as('alice'), { id: 101 });
+    await recordPlayDoc(as('bob'), { id: 101 });
+    await recordPlayDoc(as('alice'), { id: 101 }); // replay
+    expect(await readPopularDoc(as(), 10)).toEqual([{ collectionId: 101, count: 2 }]);
+  });
+
+  it('the raw counter tallies EVERY play while the mark counts viewers — and only the mark ranks', async () => {
+    const { as } = makeFakePlays();
+    await recordPlayDoc(as('alice'), { id: 101 });
+    await recordPlayDoc(as('alice'), { id: 101 });
+    const page = await as().list();
+    // The divergence is the design, pinned so nobody "fixes" the rail onto
+    // the counter: plays=2 (both plays), played=1 (one viewer).
+    expect(page.items[0].counters[PLAYS_COUNTER]).toBe(2);
+    expect(page.items[0].marks[PLAYED_MARK]).toBe(1);
+    expect(await readPopularDoc(as(), 10)).toEqual([{ collectionId: 101, count: 1 }]);
+  });
+});
+
+describe('readPopularDoc', () => {
+  it('ranks by mark count desc and applies the limit', async () => {
+    const { as } = makeFakePlays();
+    for (const v of ['a', 'b', 'c']) await recordPlayDoc(as(v), { id: 1 });
+    for (const v of ['a', 'b']) await recordPlayDoc(as(v), { id: 2 });
+    await recordPlayDoc(as('a'), { id: 3 });
+    expect(await readPopularDoc(as(), 10)).toEqual([
+      { collectionId: 1, count: 3 },
+      { collectionId: 2, count: 2 },
+      { collectionId: 3, count: 1 },
+    ]);
+    expect(await readPopularDoc(as(), 1)).toEqual([{ collectionId: 1, count: 3 }]);
+  });
+
+  it('drops a document nobody has marked (increment landed, mark did not)', async () => {
+    const { as } = makeFakePlays();
+    await as().increment('7', PLAYS_COUNTER); // a torn write: doc exists, zero marks
+    await recordPlayDoc(as(), { id: 8 });
+    expect(await readPopularDoc(as(), 10)).toEqual([{ collectionId: 8, count: 1 }]);
+  });
+
+  it('returns an empty list when nothing has been played', async () => {
+    const { as } = makeFakePlays();
+    expect(await readPopularDoc(as(), 10)).toEqual([]);
+  });
+});
+
+describe('mergePopular', () => {
+  it('the document store wins per collection; legacy-only collections keep their count', () => {
+    const doc: PopularEntry[] = [
+      { collectionId: 1, count: 5 },
+      { collectionId: 2, count: 4 },
+    ];
+    const legacy: PopularEntry[] = [
+      { collectionId: 1, count: 9 }, // shadowed by the doc count, NOT summed
+      { collectionId: 3, count: 2 },
+    ];
+    expect(mergePopular(doc, legacy, 10)).toEqual([
+      { collectionId: 1, count: 5 },
+      { collectionId: 2, count: 4 },
+      { collectionId: 3, count: 2 },
+    ]);
+  });
+
+  it('slices AFTER merging, so shadowing promotes the legacy entry below the cut', () => {
+    // Legacy top-2 is [100, 90]; the doc store shadows id 1 down to 1. Sliced
+    // per-store first, the merged rail would be [90, 1]; merged first, the
+    // legacy #3 (80) rightly takes the second slot.
+    const legacy: PopularEntry[] = [
+      { collectionId: 1, count: 100 },
+      { collectionId: 2, count: 90 },
+      { collectionId: 3, count: 80 },
+    ];
+    const doc: PopularEntry[] = [{ collectionId: 1, count: 1 }];
+    expect(mergePopular(doc, legacy, 2)).toEqual([
+      { collectionId: 2, count: 90 },
+      { collectionId: 3, count: 80 },
+    ]);
+  });
+});
+
+describe('recordPlayMigrated', () => {
+  it('writes to the document store when it is available and does NOT touch the legacy store', async () => {
+    const { as } = makeFakePlays();
+    const legacy = makeFakeShared(99);
+    await recordPlayMigrated(as(), legacy, { id: 101, name: 'Neon Cities' });
+    expect(await readPopularDoc(as(), 10)).toEqual([{ collectionId: 101, count: 1 }]);
+    expect(legacy.entries).toHaveLength(0);
+  });
+
+  it('falls back to the legacy vote when the document store refuses', async () => {
+    const refusing: PlaysStore = {
+      list: vi.fn(async () => ({ items: [], nextCursor: null })),
+      increment: vi.fn(async () => {
+        throw new Error('collection_not_declared');
+      }),
+      mark: vi.fn(async () => ({ marked: true as const, count: 1 })),
+    };
+    const legacy = makeFakeShared(99);
+    await recordPlayMigrated(refusing, legacy, { id: 101, name: 'Neon Cities' });
+    expect(legacy.entries).toHaveLength(1);
+    expect(legacy.entries[0].count).toBe(1);
+  });
+
+  it('with no document store (null) it is exactly the legacy recordPlay', async () => {
+    const legacy = makeFakeShared(99);
+    await recordPlayMigrated(null, legacy, { id: 101, name: 'Neon Cities' });
+    expect(legacy.entries).toHaveLength(1);
+    expect(legacy.entries[0].count).toBe(1);
+  });
+});
+
+describe('readPopularMigrated', () => {
+  it('merges both stores, document store winning per collection', async () => {
+    const { as } = makeFakePlays();
+    for (const v of ['a', 'b', 'c', 'd', 'e']) await recordPlayDoc(as(v), { id: 1 });
+    const legacy = makeFakeShared(99);
+    legacy.seed({ title: 'A', data: { collectionId: 1 } }, [1, 2, 3, 4, 5, 6, 7, 8, 9]); // 9, shadowed to 5
+    legacy.seed({ title: 'B', data: { collectionId: 2 } }, [1, 2]); // legacy-only, kept
+    expect(await readPopularMigrated(as(), legacy, 10)).toEqual([
+      { collectionId: 1, count: 5 },
+      { collectionId: 2, count: 2 },
+    ]);
+  });
+
+  it('degrades to exactly the legacy ranking when the document store refuses', async () => {
+    const refusing: PlaysStore = {
+      list: vi.fn(async () => {
+        throw new Error('storage_disabled');
+      }),
+      increment: vi.fn(async () => ({ value: 0 })),
+      mark: vi.fn(async () => ({ marked: true as const, count: 0 })),
+    };
+    const legacy = makeFakeShared(99);
+    legacy.seed({ title: 'A', data: { collectionId: 1 } }, [1, 2, 3]);
+    expect(await readPopularMigrated(refusing, legacy, 10)).toEqual(await readPopular(legacy, 10));
+  });
+
+  it('with no document store (null) it is exactly readPopular', async () => {
+    const legacy = makeFakeShared(99);
+    legacy.seed({ title: 'A', data: { collectionId: 1 } }, [1, 2, 3]);
+    expect(await readPopularMigrated(null, legacy, 10)).toEqual(await readPopular(legacy, 10));
   });
 });
 
