@@ -441,12 +441,9 @@ describe('App — infinite scroll (feedback #1)', () => {
     return api;
   }
 
-  // 🔴 DE-FLAKED 2026-10-16 (see the waitFor below): this test carries an
-  // explicit 20s test timeout. It is the only one in the suite that needs
-  // one — its chain (initial render + observer + fetch + a page of
-  // media-card elements upgrading) is the heaviest here, and under a
-  // loaded runner its honest wall-clock outgrew vitest's 5s default.
-  it('appends the next page on sentinel intersection and dedupes the re-emitted id', { timeout: 20000 }, async () => {
+  // 🔴 DE-FLAKED 2026-10-16 (see the wait below): explicit timeout, sized
+  // for a loaded runner — this test's chain is the heaviest in the file.
+  it('appends the next page on sentinel intersection and dedupes the re-emitted id', { timeout: 15000 }, async () => {
     renderApp({ api: paginatedApi() });
     const grid = await screen.findByTestId('collection-grid');
     expect(within(grid).getAllByTestId('collection-card')).toHaveLength(3);
@@ -454,27 +451,29 @@ describe('App — infinite scroll (feedback #1)', () => {
     expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
 
     // Sentinel scrolls into view → fetch + append page 2 (dedupe id 3 → 5 total).
-    await act(async () => {
-      flushIntersections(true);
-    });
-    // 🔴 The waitFor half of the de-flake: it is CONDITION-based — it polls
-    // until five cards exist, so its budget is not part of what the test
-    // proves. testing-library's 1s default was too small for this chain
-    // under a loaded runner: recorded failures — CI on PR #58, CI on PR
-    // #59, local full-suite runs — all the identical signature
-    // "expected 5, got 3" just past the deadline, all green on re-run.
-    // The budget is 10s now (inside the test's own 20s, above): a first
-    // attempt at 5s still starved once in a local full-suite run under
-    // this sandbox's contention, while every CI failure on record was
-    // marginal (the PR #58 instance died at 1108ms), so 10s is sized
-    // from the worst observed environment, not the average. A genuine
-    // regression — the page never appends, the dup is not deduped —
-    // still fails, on the same condition. Every other waitFor in the
-    // suite keeps the default; only this chain has ever needed more.
+    //
+    // 🔴 THE FLAKE, DIAGNOSED (2026-10-16, instrumented runs — see PR #60):
+    // this test used to fire `flushIntersections(true)` ONCE and then poll
+    // for five cards. The one-shot flush races the sentinel's own effect:
+    // the mock observer only exists once the sentinel's useEffect has run,
+    // and when the flush landed first it fired NOTHING (probe-verified:
+    // in failing runs loadMoreDiscover was never entered, at ANY wait
+    // budget — the append had not been discarded or delayed, it had
+    // never been requested). A real IntersectionObserver cannot lose
+    // this race: it fires on observe() itself when the target is already
+    // in view, and keeps firing on change. The faithful fix is to drive
+    // the mock the same way — re-fire on every poll until the append
+    // lands — not to widen budgets and hope the effect wins. (Budget-only
+    // attempts at 5s and 10s both still failed intermittently; they are
+    // recorded in PR #60 so nobody repeats them.)
     await waitFor(
-      () =>
-        expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5),
-      { timeout: 10000 },
+      async () => {
+        await act(async () => {
+          flushIntersections(true);
+        });
+        expect(within(screen.getByTestId('collection-grid')).getAllByTestId('collection-card')).toHaveLength(5);
+      },
+      { timeout: 5000 },
     );
     // Fully loaded → the sentinel is gone (no unbounded scroll fetch).
     expect(screen.queryByTestId('grid-sentinel')).toBeNull();
