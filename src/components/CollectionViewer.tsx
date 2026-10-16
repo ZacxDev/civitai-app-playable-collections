@@ -34,7 +34,7 @@ import { Button, Card, FollowButton, Slider } from '@civitai/blocks-react/ui';
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
 import { getLocalStorage, SECONDS_PER_IMAGE, VIDEO_LOOP_COUNT } from '../settings.js';
-import type { Palette } from '../theme.js';
+import { stage, type Palette } from '../theme.js';
 import { useReducedMotion } from '../useMediaQuery.js';
 import { DEFAULT_AUTOPLAY_CAP } from '../modes/autoplay.js';
 import { maybeShuffle } from '../lib/shuffle.js';
@@ -924,8 +924,14 @@ const lightboxOverlay: CSSProperties = {
   position: 'fixed',
   inset: 0,
   zIndex: 50,
-  background: '#000',
+  background: stage.bg,
 };
+// 🔴 THE CAST-EXIT CHROME READS THE STAGE TOKENS NOW (Phase 1). It used to
+// restate them as literals — and its border had drifted to
+// `rgba(255,255,255,0.25)` against the stage's 0.28, the same one-rule-two-
+// places defect `components/styles.ts` was fixed for in 0.2.15. The border
+// therefore changes 0.25 → 0.28 here on purpose: the stage value is the
+// canonical one, and this button is the same over-media chrome idiom.
 const castExitStyle: CSSProperties = {
   position: 'absolute',
   top: 12,
@@ -933,9 +939,9 @@ const castExitStyle: CSSProperties = {
   zIndex: 40,
   padding: '6px 12px',
   borderRadius: 999,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'rgba(0,0,0,0.45)',
-  color: '#fff',
+  border: `1px solid ${stage.chromeBtnBorder}`,
+  background: stage.chromeBtnBg,
+  color: stage.chromeFg,
   fontSize: 13,
   cursor: 'pointer',
   fontFamily: 'inherit',

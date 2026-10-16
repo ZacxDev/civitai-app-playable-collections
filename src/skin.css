@@ -165,6 +165,37 @@
      block. This inverts the tooltip in dark (light chip, dark text), which is
      legible and simply not what upstream drew. */
   --civitai-color-gray-9: #f4e9ec;
+
+  /* ── app-private tokens (--pc-*) ──────────────────────────────────────────
+     Phase 1 formalisation (2026-10-15): the values that are NOT the
+     platform's to name. Upstream owns `--civitai-*` only, so a `--pc-` token
+     can never collide with a future pack token, and repurposing a
+     `--civitai-*` name for an app meaning would silently fight the pack on
+     the next bump. The `--pc-` prefix is already this app's convention —
+     index.html's pre-bundle boot skeleton defines `--pc-boot-*` the same way.
+
+     Everything below is theme-INVARIANT by design, so it lives only in this
+     base block and light inherits it, exactly like the gray ramp above:
+       stage-*     the media player's over-media chrome. It reads against
+                   ARBITRARY USER MEDIA, not the page background, so it must
+                   not flip with the theme (see src/theme.ts's `stage`).
+       badge-*     the maturity rating pill, which sits on media the same way.
+       toast-shadow  an elevation shadow; a shadow has no theme to flip.
+     Until this block existed these values were literals restated in
+     theme.ts / CollectionViewer.tsx / Maturity.tsx / toast.tsx — one of
+     them had already drifted (the cast-exit border, 0.25 against the
+     stage's 0.28). They are stated once now, here. */
+  --pc-stage-bg: black;
+  --pc-stage-scrim: rgba(0, 0, 0, 0.55);
+  --pc-stage-fg: white;
+  --pc-stage-fg-dim: rgba(255, 255, 255, 0.82);
+  --pc-stage-btn-bg: rgba(0, 0, 0, 0.45);
+  --pc-stage-btn-border: rgba(255, 255, 255, 0.28);
+  --pc-stage-text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  --pc-badge-maturity-bg: rgba(224, 49, 49, 0.92);
+  --pc-badge-maturity-fg: #fff;
+  --pc-badge-maturity-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  --pc-toast-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
 }
 
 /* LIGHT — same key set, asserted (skin.test.ts fails if the two blocks diverge,

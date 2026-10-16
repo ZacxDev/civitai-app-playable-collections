@@ -63,8 +63,18 @@ describe('transport icon controls resolve from tokens, not literals', () => {
   it('🔴 the RESTING control matches the stage tokens exactly — no second copy', () => {
     // The regression case. Re-introducing a literal here (or letting one drift
     // from `stage`) fails this, which is what the old code could not do.
+    // 🔴 THE PROBE LIVES UNDER A SKIN ROOT (Phase 1): `stage` values are now
+    // `var(--pc-*)` references, and `--pc-*` is defined under
+    // `[data-pc-skin]` — a probe appended to <body> would resolve nothing
+    // and compute to transparent black, which is a statement about the probe,
+    // not about the tokens. Every real consumer renders under a root; the
+    // probe now does too.
+    const wrap = document.createElement('div');
+    wrap.setAttribute('data-pc-skin', '');
+    wrap.setAttribute('data-theme', 'dark');
+    document.body.appendChild(wrap);
     const probe = document.createElement('div');
-    document.body.appendChild(probe);
+    wrap.appendChild(probe);
 
     for (const [prop, expected] of [
       ['color', stage.chromeFg],
@@ -80,7 +90,7 @@ describe('transport icon controls resolve from tokens, not literals', () => {
     expect(normalise(got.background)).toBe(normalise(want.backgroundColor));
     expect(normalise(got.border)).toBe(normalise(want.borderTopColor));
 
-    probe.remove();
+    wrap.remove();
   });
 
   it('🔴 over-media chrome is IDENTICAL in light and dark — invariance is the property', () => {

@@ -12,6 +12,7 @@
 import type { CSSProperties } from 'react';
 
 import { hasMaturityBadge, maturityLabel } from '../lib/maturity.js';
+import { maturityBadge } from '../theme.js';
 
 /** A small rating pill (e.g. `R`, `XXX`). Renders nothing for plain PG content. */
 export function MaturityBadge({ nsfwLevel, style }: { nsfwLevel: number; style?: CSSProperties }) {
@@ -33,7 +34,10 @@ const badgeStyle: CSSProperties = {
   fontWeight: 800,
   letterSpacing: 0.4,
   lineHeight: 1.4,
-  color: '#fff',
-  background: 'rgba(224,49,49,0.92)',
-  textShadow: '0 1px 2px rgba(0,0,0,0.6)',
+  // Colours are the `--pc-badge-maturity-*` tokens (src/skin.css via
+  // theme.ts): the pill sits on arbitrary media, so it is theme-invariant
+  // like the stage chrome — but stated once, not as literals here.
+  color: maturityBadge.fg,
+  background: maturityBadge.bg,
+  textShadow: maturityBadge.textShadow,
 };
