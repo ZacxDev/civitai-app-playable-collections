@@ -28,6 +28,8 @@ import { hasMaturityBadge, withinCeiling } from '../lib/maturity.js';
 import { useViewerCeiling } from '../lib/viewer-maturity.js';
 import { popularRailEntries } from '../lib/popular.js';
 import { MaturityBadge } from './Maturity.js';
+// Per-element deep import (see ContinuousView.tsx for why not the barrel).
+import { CivitaiMediaCard } from '@civitai/components-react/elements/civitai-media-card';
 
 /** ~150px prefetch margin so a cover loads just before it enters the viewport. */
 const COVER_PREFETCH_MARGIN = '150px';
@@ -92,7 +94,19 @@ function useCoverObserver(): RegisterCover {
  * permitted it is loaded LAZILY: the element carries `data-src` until the grid
  * observer swaps it in near the viewport.
  */
-export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palette; nsfwLevel?: number }) {
+export function CoverImage({
+  src,
+  c,
+  nsfwLevel,
+  slot,
+}: {
+  src: string | null;
+  c: Palette;
+  nsfwLevel?: number;
+  /** When the cover renders inside a `<civitai-media-card>`, its root carries
+   * this slot name ('media'). The rails render it bare and pass nothing. */
+  slot?: string;
+}) {
   const register = useContext(CoverObserverContext);
   // Read the ceiling HERE rather than threading it from the three call sites
   // (grid card, popular rail, recent rail): a call site cannot forget it, and
@@ -130,18 +144,20 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
   // `!nsfwLevel`, either of which re-merges two of the three states.
   if (!src || failed || !withinCeiling(nsfwLevel, ceiling)) {
     return (
-      <div style={coverPlaceholder(c)} aria-hidden="true" data-testid="cover-placeholder">
+      <div slot={slot} style={coverPlaceholder(c)} aria-hidden="true" data-testid="cover-placeholder">
         ▶
       </div>
     );
   }
 
-  const img = (
-    // `data-src` (not `src`) is set until the grid observer swaps it in near the
-    // viewport — deferring off-screen thumbnail fetches. `register` (via context)
-    // adds this <img> to the shared observer.
+  // `data-src` (not `src`) is set until the grid observer swaps it in near the
+  // viewport — deferring off-screen thumbnail fetches. `register` (via context)
+  // adds this <img> to the shared observer. The img carries the media slot only
+  // when it is itself the cover root; in the badged path the WRAP is the root.
+  const img = (asRoot: boolean) => (
     // eslint-disable-next-line jsx-a11y/img-redundant-alt
     <img
+      slot={asRoot ? slot : undefined}
       ref={register ?? undefined}
       data-src={src}
       alt=""
@@ -153,11 +169,11 @@ export function CoverImage({ src, c, nsfwLevel }: { src: string | null; c: Palet
 
   // The cover is within the ceiling. Label it if it is above PG — a badge on
   // permitted content is information, not a gate, and it hides nothing.
-  if (!hasMaturityBadge(nsfwLevel)) return img;
+  if (!hasMaturityBadge(nsfwLevel)) return img(true);
 
   return (
-    <div style={coverBadgeWrap} data-testid="cover-badged">
-      {img}
+    <div slot={slot} style={coverBadgeWrap} data-testid="cover-badged">
+      {img(false)}
       <span style={coverBadgeSlot}>
         <MaturityBadge nsfwLevel={nsfwLevel} />
       </span>
@@ -348,23 +364,36 @@ export function CollectionCard({
           : `Play ${collection.name} — ${collection.itemCount} items`
       }
     >
-      <div style={coverWrap}>
-        <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} />
+      {/* 🔴 PHASE 2 (surface 2): the cover's PRESENTATION is the upstream
+          <civitai-media-card> — the same element as the continuous tiles —
+          owning the square frame, the placeholder-token background and the
+          media fill. The button shell keeps everything behavioural, exactly
+          as with the tiles: activation, disabled-for-empty, the aria-label.
+          No href (no nested link). The Private / Followed badges move to
+          the element's overlay slots (top-start / top-end); the maturity
+          badge stays inside the cover, where CoverImage has always put it.
+          borderRadius 0 on the host: the button's own radius + overflow
+          clip the card silhouette, as the old coverWrap did. */}
+      <CivitaiMediaCard
+        noScrim
+        style={{ '--civitai-media-card-ratio': '1 / 1', borderRadius: 0 } as CSSProperties}
+      >
+        <CoverImage src={collection.coverImageUrl} c={c} nsfwLevel={collection.coverNsfwLevel} slot="media" />
         {!collection.isPublic && (
-          <span style={badgeSlot('left')}>
+          <span slot="top-start">
             <Badge size="sm" variant="filled" color="warning" data-testid="private-badge">
               Private
             </Badge>
           </span>
         )}
         {collection.followed && (
-          <span style={badgeSlot('right')}>
+          <span slot="top-end">
             <Badge size="sm" variant="filled" data-testid="followed-badge" aria-label="Followed">
               ★
             </Badge>
           </span>
         )}
-      </div>
+      </CivitaiMediaCard>
       <div style={cardBody}>
         <span style={cardTitle}>{collection.name}</span>
         <span style={cardMeta}>
@@ -520,10 +549,6 @@ function coverPlaceholder(c: Palette): CSSProperties {
     color: c.muted,
     fontSize: 28,
   };
-}
-
-function badgeSlot(side: 'left' | 'right'): CSSProperties {
-  return { position: 'absolute', top: 6, [side]: 6 } as CSSProperties;
 }
 
 const cardBody: CSSProperties = { display: 'grid', gap: 2, padding: '0 10px 10px' };
