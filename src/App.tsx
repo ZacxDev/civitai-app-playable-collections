@@ -1016,6 +1016,12 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
     });
     setDiscover(patch);
     setMine(patch);
+    // The Popular rail's entries are their own copies (resolved from shared
+    // storage, not list state), so patch them too — since Phase 3 the rail
+    // renders the follow control from this same flag.
+    setPopular((entries) =>
+      entries.map((e) => (e.collection.id === id ? { ...e, collection: { ...e.collection, followed } } : e)),
+    );
   }, []);
 
   // ---- follow: adopt the host's echo ----
@@ -1026,8 +1032,8 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
   // and the sign-in bounce all belong to the control that owns the request
   // (upstream `FollowButton`, which since T5 is the ONE follow control in all
   // three views).
-  // App keeps only what is genuinely app state: the flag, the two lists that
-  // render a badge from it, and the analytics event.
+  // App keeps only what is genuinely app state: the flag, the lists and the
+  // rail that render follow state from it, and the analytics event.
   //
   // 🔴 The old block treated EVERY rejection as an error toast, which the bridge
   // makes wrong: dismissing the host's consent dialog rejects with `declined`,
@@ -1055,7 +1061,9 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
       // real write serve a stale flag for the 5-minute TTL.
       cachedApi?.invalidateReads();
       analytics.track({ type: 'follow', collectionId, followed });
-      // Keep the grid card badge in sync.
+      // Keep every card in sync — grid and Popular rail render the follow
+      // control from this flag, whichever surface the commit came from (a
+      // card's button, the rail's, or the viewer's `chrome-follow`).
       applyFollowedToLists(collectionId, followed);
       // Only touch the OPEN collection's own flag, and only if it is still the
       // one that was written.
@@ -1416,7 +1424,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
           {tab === 'discover' && <RecentRail entries={recent} onOpen={openRecent} c={c} />}
 
           {/* popular rail (discover only) */}
-          {tab === 'discover' && <PopularRail entries={popular} onOpen={openPopular} c={c} />}
+          {tab === 'discover' && <PopularRail entries={popular} onOpen={openPopular} onFollowChange={onFollowChange} c={c} />}
 
           {/* the grid */}
           {tab === 'mine' && !viewer ? (
@@ -1453,6 +1461,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, retry = 
                     : "You haven't created or bookmarked any collections yet."
                 }
                 onOpen={openCollection}
+                onFollowChange={onFollowChange}
                 onRetry={tab === 'discover' ? loadDiscover : loadMine}
                 c={c}
                 isMobile={isMobile}

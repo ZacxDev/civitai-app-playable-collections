@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { Harness } from '@civitai/blocks-react/testing';
 import { BrowsingLevel, SFW_LEVELS } from '@civitai/app-sdk/blocks';
 
-import { CollectionGrid, RecentRail } from './CollectionGrid.js';
+import { CollectionGrid, PopularRail, RecentRail } from './CollectionGrid.js';
 import { palette } from '../theme.js';
 import type { CollectionSummary } from '../types.js';
 import { flushIntersections } from '../test-setup.js';
@@ -382,5 +382,124 @@ describe('the end of the list is a place, not an absence', () => {
     // obvious. Leaving `endLabel` undefined keeps that surface as it was.
     gridWith({ hasMore: false, loadingMore: false });
     expect(screen.queryByTestId('grid-end')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 3 — the follow control on cards. The control is upstream
+// `FollowButton` (the viewer's own), so these tests pin the CARD-side
+// properties, not the button's internals: presence/supersession, the sibling
+// relationship to the open button, and the commit wiring.
+// ---------------------------------------------------------------------------
+
+describe('follow control on cards (Phase 3)', () => {
+  function renderFollowGrid(collections: CollectionSummary[]) {
+    const onFollowChange = vi.fn<(collectionId: number, followed: boolean) => void>();
+    const onOpen = vi.fn<(collection: CollectionSummary) => void>();
+    render(
+      <Harness viewer={{ id: 99, username: 'me' }} theme="dark" showLog={false}>
+        <CollectionGrid
+          collections={collections}
+          loading={false}
+          error={null}
+          emptyLabel="empty"
+          onOpen={onOpen}
+          onFollowChange={onFollowChange}
+          c={c}
+          isMobile={false}
+        />
+      </Harness>,
+    );
+    return { onFollowChange, onOpen };
+  }
+
+  it('renders the control INSTEAD OF the followed badge when follow is wired', () => {
+    renderFollowGrid([summary({ id: 1, followed: true }), summary({ id: 2, followed: false })]);
+    const controls = screen.getAllByTestId('card-follow');
+    expect(controls).toHaveLength(2);
+    // The control shows the state itself — pressed + "Following" — so the
+    // badge it supersedes must not ALSO render (same fact, twice, same corner).
+    expect(controls[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(controls[0]).toHaveTextContent('Following');
+    expect(controls[1]).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByTestId('followed-badge')).toBeNull();
+  });
+
+  it('keeps the Private badge alongside the control', () => {
+    renderFollowGrid([summary({ id: 1, isPublic: false, followed: false })]);
+    expect(screen.getByTestId('private-badge')).toBeInTheDocument();
+    expect(screen.getByTestId('card-follow')).toBeInTheDocument();
+  });
+
+  it('without a follow handler the badge remains the indicator and no control renders', () => {
+    // The no-wiring render (component isolation): nothing to commit through,
+    // so the card falls back to the read-only ★ and no dead control appears.
+    renderGrid([summary({ id: 1, followed: true })]);
+    expect(screen.getByTestId('followed-badge')).toBeInTheDocument();
+    expect(screen.queryByTestId('card-follow')).toBeNull();
+  });
+
+  it('clicking the control commits through onFollowChange and does NOT open the collection', async () => {
+    const { onFollowChange, onOpen } = renderFollowGrid([summary({ id: 7, followed: false })]);
+    await userEvent.click(screen.getByTestId('card-follow'));
+    // The host echo is adopted by the control itself…
+    await waitFor(() => expect(screen.getByTestId('card-follow')).toHaveAttribute('aria-pressed', 'true'));
+    // …and reported through the app's one handler, bound to THIS card's id.
+    expect(onFollowChange).toHaveBeenCalledTimes(1);
+    expect(onFollowChange).toHaveBeenCalledWith(7, true);
+    // 🔴 The sibling property: the click followed, it did not open. (A
+    // control nested inside the card's <button> would bubble into onOpen.)
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("an EMPTY card's open button is disabled but its follow control is not", async () => {
+    // Playing an empty collection is impossible; following one is not. The
+    // sibling structure is what makes the second half of that sentence true.
+    const { onFollowChange } = renderFollowGrid([summary({ id: 8, itemCount: 0, followed: false })]);
+    expect(screen.getByTestId('collection-card')).toBeDisabled();
+    const control = screen.getByTestId('card-follow');
+    expect(control).not.toBeDisabled();
+    await userEvent.click(control);
+    await waitFor(() => expect(onFollowChange).toHaveBeenCalledWith(8, true));
+  });
+});
+
+describe('follow control on the Popular rail (Phase 3)', () => {
+  const entries = (followedId?: number) =>
+    [11, 12, 13].map((id, i) => ({
+      collection: summary({ id, name: `Popular ${id}`, followed: id === followedId }),
+      count: 5 - i,
+    }));
+
+  function renderRail(followedId?: number) {
+    const onFollowChange = vi.fn<(collectionId: number, followed: boolean) => void>();
+    const onOpen = vi.fn<(collection: CollectionSummary) => void>();
+    render(
+      <Harness viewer={{ id: 99, username: 'me' }} theme="dark" showLog={false}>
+        <PopularRail entries={entries(followedId)} onOpen={onOpen} onFollowChange={onFollowChange} c={c} />
+      </Harness>,
+    );
+    return { onFollowChange, onOpen };
+  }
+
+  it('renders one control per rail card, pressed state from the entry', () => {
+    renderRail(12);
+    const controls = screen.getAllByTestId('popular-follow');
+    expect(controls).toHaveLength(3);
+    expect(controls.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'true', 'false']);
+  });
+
+  it('clicking a rail control commits for that collection and does NOT open it', async () => {
+    const { onFollowChange, onOpen } = renderRail();
+    await userEvent.click(screen.getAllByTestId('popular-follow')[2]);
+    await waitFor(() => expect(onFollowChange).toHaveBeenCalledWith(13, true));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it('the rail open button still opens', async () => {
+    const { onOpen } = renderRail();
+    await userEvent.click(screen.getAllByTestId('popular-card')[0]);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onOpen.mock.calls[0][0]).toMatchObject({ id: 11 });
   });
 });
