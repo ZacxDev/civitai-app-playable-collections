@@ -122,6 +122,18 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
+
+  /* Reaction counts under `statsUnknown` (Phase 3): when the metric store
+     could not answer for an item, the reaction state carries zero counts
+     that must not be READ as "nobody reacted". The <civitai-reaction>
+     element renders its count span unconditionally, so the app hides the
+     part for exactly that state (the toggles stay live — `viewerReactions`
+     is not part of what is unknown). ::part(count) is the element's
+     sanctioned hook for it, and the class is applied only in that state
+     (see CollectionViewer). */
+  civitai-reaction.pc-reaction-unknown::part(count) {
+    display: none;
+  }
 }
 
 /* 🔴 OUTSIDE the layer on purpose: `@keyframes` is not a style rule, so it takes

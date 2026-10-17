@@ -30,6 +30,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
 import { Button, Card, FollowButton, Slider } from '@civitai/blocks-react/ui';
+import { REACTIONS, ReactionError, useReactions } from '@civitai/blocks-react';
+import { isAppReaction, type BlockAppReaction } from '@civitai/app-sdk/blocks';
 
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
@@ -56,6 +58,8 @@ import { TipSplitModal, splitTipKey, type PlannedLeg, type SplitRecipient } from
 import { FocusTrap } from './FocusTrap.js';
 // Per-element deep import (see ContinuousView.tsx for why not the barrel).
 import { CivitaiSwitch } from '@civitai/components-react/elements/civitai-switch';
+import { CivitaiReaction } from '@civitai/components-react/elements/civitai-reaction';
+import type { ReactionDetail } from '@civitai/components/civitai-reaction';
 
 export interface CollectionViewerProps {
   detail: CollectionDetail;
@@ -83,6 +87,41 @@ export interface CollectionViewerProps {
   hasTipScope?: boolean;
   /** Ask the host to open its consent UI for the money scopes. */
   onRequestTipConsent?: () => void;
+  /**
+   * Does the viewer's token carry `social:react:self`?
+   *
+   * 🔴 DEFAULTS TO `false` — THE OPPOSITE TRADE FROM `hasTipScope` ABOVE, AND
+   * DELIBERATELY. A tip press with the guard off can only walk a viewer into a
+   * picker the server then refuses; a reaction surface with the guard off
+   * ISSUES READS (each billed to the app's shared catalog rate limit) and
+   * renders controls whose every write the host refuses `needs-consent`. The
+   * failure this default buys protection against is worse, so the safe state
+   * is the default: no scope on the token → no reaction UI and no reaction
+   * reads, which is also exactly the pre-approval state (the mint builds the
+   * token from the approved manifest, and this scope is consent-gated on top
+   * of that). `App` always passes the real predicate.
+   */
+  hasReactScope?: boolean;
+  /** Ask the host to open its consent UI for `social:react:self`. */
+  onRequestReactConsent?: () => void;
+  /**
+   * The current block token's raw value — it changes on EVERY re-mint, which
+   * is the only observable a consent retry can key on: a toggle refused
+   * `needs-consent` is retried once when a fresh token lands (the grant, if
+   * the viewer gave it, rides that mint). Omitted in fixtures that never
+   * exercise the retry.
+   */
+  reactTokenEpoch?: string;
+  /** Toast channel for reaction outcomes an element state cannot express. */
+  onReactionNotice?: (kind: 'error' | 'info', message: string) => void;
+  /**
+   * Refetch the open collection's first page and resolve with the merged
+   * items (App owns them). The reaction retry uses it ONCE after an
+   * `entity-unavailable` refusal on a ticketed item — an expired ticket
+   * (24h) is one of that code's causes, and a refetch is how a fresh one
+   * arrives. Resolves `null` when the refetch failed or is unavailable.
+   */
+  onRefreshItems?: () => Promise<readonly MediaItem[] | null>;
   tipping: boolean;
   /**
    * The viewer's REAL remaining daily tip allowance, read once per view from the
@@ -145,6 +184,11 @@ export function CollectionViewer(props: CollectionViewerProps) {
     onRequestSignIn,
     hasTipScope = true,
     onRequestTipConsent,
+    hasReactScope = false,
+    onRequestReactConsent,
+    reactTokenEpoch,
+    onReactionNotice,
+    onRefreshItems,
     tipping,
     dailyTipRemaining,
     splitPlans,
@@ -236,6 +280,232 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
   // Restore position only for the initial mode, and only until the user switches.
   const initialPosition = !switchedMode && mode === initMode ? initPosition : 0;
+
+  // =========================================================================
+  // Reactions — the viewer's REAL Civitai reactions on the item on screen
+  // =========================================================================
+  //
+  // `useReactions` over the host bridge (`GET_ENTITY_REACTIONS` /
+  // `SET_ENTITY_REACTION`, scope `social:react:self`): a reaction set here is
+  // a reaction on civitai.com, with the site's rewards, metrics and reactor
+  // list — there is deliberately no app-local record of it anywhere.
+  //
+  // 🔴 ONE HOOK FOR THE WHOLE VIEW, MOUNTED HERE, NEVER PER ITEM. Every read
+  // is billed to the app's shared catalog rate limit, and the hook's economy
+  // is incremental — an id is (re)read only when it is new or its ticket
+  // changed — which only holds while the instance persists. This component
+  // mounts once per collection (`key={detail.id}` in App) and never on item
+  // navigation, so the instance survives every item change; what changes is
+  // the WINDOW of ids it is handed:
+  //
+  // 🔴 A WINDOW, NOT THE WHOLE LOADED SET. ±50 around the current item is at
+  // most 101 ids — one read chunk — and it covers most collections whole (a
+  // single read per collection, exactly as the full set would). A huge
+  // collection read whole would spend a chunk per loaded page on items the
+  // viewer may never reach; the window instead reads a new id only when the
+  // viewer actually arrives near it, and the hook's incrementality means a
+  // slide of the window re-reads only the ids that entered it.
+  const currentItemRef = useRef(currentItem);
+  currentItemRef.current = currentItem;
+  const reactionAnchor = useMemo(() => {
+    if (!currentItem) return 0;
+    const at = displayItems.findIndex((it) => it.mediaId === currentItem.mediaId);
+    return at >= 0 ? at : 0;
+  }, [currentItem, displayItems]);
+  const reactionIds = useMemo<readonly number[]>(() => {
+    if (!hasReactScope) return NO_REACTION_IDS;
+    return displayItems
+      .slice(Math.max(0, reactionAnchor - REACTION_WINDOW), reactionAnchor + REACTION_WINDOW + 1)
+      .map((it) => it.mediaId);
+  }, [hasReactScope, displayItems, reactionAnchor]);
+  // Tickets ride in on the item payloads (see `MediaItem.reactTicket`) and
+  // are keyed over ALL loaded items, not the window: the hook sends only the
+  // tickets of the ids it reads, and a ticket that rotates in on a later page
+  // must already be here when its id enters the window.
+  const reactionTickets = useMemo<Readonly<Record<number, string | undefined>>>(() => {
+    if (!hasReactScope) return NO_REACTION_TICKETS;
+    const out: Record<number, string | undefined> = {};
+    for (const it of items) if (it.reactTicket) out[it.mediaId] = it.reactTicket;
+    return out;
+  }, [hasReactScope, items]);
+  const reactions = useReactions('image', reactionIds, { tickets: reactionTickets });
+
+  // The toggle path reads everything through refs so ONE stable callback
+  // serves every render (the file's `onCastRef` idiom): the hook's `toggle`
+  // is itself stable, the rest are props that change identity per render.
+  const toggleRef = useRef(reactions.toggle);
+  toggleRef.current = reactions.toggle;
+  const ticketsRef = useRef(reactionTickets);
+  ticketsRef.current = reactionTickets;
+  const noticeRef = useRef(onReactionNotice);
+  noticeRef.current = onReactionNotice;
+  const requestReactConsentRef = useRef(onRequestReactConsent);
+  requestReactConsentRef.current = onRequestReactConsent;
+  const refreshItemsRef = useRef(onRefreshItems);
+  refreshItemsRef.current = onRefreshItems;
+  const reactTokenEpochRef = useRef(reactTokenEpoch);
+  reactTokenEpochRef.current = reactTokenEpoch;
+
+  /**
+   * A toggle that could not complete but has ONE defined retry: a consent
+   * refusal (retry when a fresh token lands — the grant rides the re-mint)
+   * or a possible expired ticket (retry once the refetched ticket reaches
+   * the hook). Anything else is reported, never stashed. At most one stash
+   * exists; a newer refused toggle replaces it (the latest intent wins).
+   */
+  const stashedToggleRef = useRef<{
+    id: number;
+    reaction: BlockAppReaction;
+    reacted: boolean;
+    kind: 'consent' | 'ticket';
+    /** consent: the token epoch that was refused. ticket: the ticket refused. */
+    marker: string | undefined;
+  } | null>(null);
+
+  const runReactionToggle = useCallback(
+    async (id: number, reaction: BlockAppReaction, reacted: boolean): Promise<void> => {
+      try {
+        await toggleRef.current(id, reaction, reacted);
+      } catch (err) {
+        if (!(err instanceof ReactionError)) {
+          noticeRef.current?.('error', 'That reaction did not go through.');
+          return;
+        }
+        // 🔴 BUSY IS SILENT BY DESIGN. A write for this (item, reaction) is
+        // already in flight and nothing was sent; the control is disabled
+        // while `pending()` holds, so reaching here is a double-fire racing
+        // the re-render. The in-flight write's settle is the outcome — there
+        // is nothing to report and no state to repair.
+        if (err.busy) return;
+        if (err.needsConsent) {
+          // Ask for the grant (App owns the request, fire-and-forget like
+          // the tip consent) and stash the intent: the retry effect fires it
+          // once when a fresh token lands. NO toast — the host's consent UI
+          // is the surface the viewer is looking at now.
+          stashedToggleRef.current = { id, reaction, reacted, kind: 'consent', marker: reactTokenEpochRef.current };
+          requestReactConsentRef.current?.();
+          return;
+        }
+        if (err.signInRequired) {
+          noticeRef.current?.('error', 'Sign in to react to this media.');
+          return;
+        }
+        if (err.timedOut) {
+          // The write MAY have landed. The hook has already reverted its
+          // optimistic state and re-read the item, so the counts on screen
+          // are converging on the truth — say that, not "it failed".
+          noticeRef.current?.('error', 'That reaction timed out — it may still have landed, so the count shown is the settled one.');
+          return;
+        }
+        if (err.code === 'entity-unavailable') {
+          // 🔴 ONE CODE, MANY CAUSES — an expired ticket (24h) is one of
+          // them, alongside an item the viewer may not react to, a block, the
+          // kill switch and a network failure, and the taxonomy cannot tell
+          // them apart. What CAN be told apart: whether the item HAD a ticket
+          // (a no-ticket refusal is local and final — nothing to refresh) and
+          // whether a refetch returns a DIFFERENT one. Only then is a retry
+          // meaningful, and it is attempted exactly once.
+          const used = ticketsRef.current[id];
+          const refresh = refreshItemsRef.current;
+          if (used && refresh) {
+            const fresh = await refresh().catch(() => null);
+            const freshTicket = fresh?.find((it) => it.mediaId === id)?.reactTicket;
+            if (freshTicket && freshTicket !== used) {
+              stashedToggleRef.current = { id, reaction, reacted, kind: 'ticket', marker: used };
+              return;
+            }
+          }
+          noticeRef.current?.('error', 'Reactions are not available for this media.');
+          return;
+        }
+        if (err.code === 'rate-limited') {
+          // The SAME per-viewer quota the site's own button draws on.
+          noticeRef.current?.('error', 'You are reacting too quickly — reactions share the site’s rate limit. Give it a moment.');
+          return;
+        }
+        // review-mode / not-ready / invalid-request / a code a newer host
+        // added: no viewer action fixes any of them, and `byId` has already
+        // reverted the element, so a plain honest line is the whole response.
+        noticeRef.current?.('error', 'That reaction did not go through.');
+      }
+    },
+    [],
+  );
+
+  // 🔴 THE TWO RETRIES, EACH EXACTLY ONCE. The stash is cleared BEFORE the
+  // retry fires, so a retry that is refused again writes a NEW stash (keyed
+  // on the then-current epoch/ticket) and waits for the NEXT change — there
+  // is no path that loops within one token or one ticket.
+  useEffect(() => {
+    const stash = stashedToggleRef.current;
+    if (!stash) return;
+    if (stash.kind === 'consent') {
+      if (!hasReactScope) return;
+      if (reactTokenEpoch === stash.marker) return; // still the refused token
+      stashedToggleRef.current = null;
+      void runReactionToggle(stash.id, stash.reaction, stash.reacted);
+      return;
+    }
+    const now = reactionTickets[stash.id];
+    if (now && now !== stash.marker) {
+      stashedToggleRef.current = null;
+      void runReactionToggle(stash.id, stash.reaction, stash.reacted);
+    }
+  }, [hasReactScope, reactTokenEpoch, reactionTickets, runReactionToggle]);
+
+  /**
+   * The elements' `react` event. `detail.reaction` names WHICH reaction —
+   * narrowed with the SDK's guard, never branched on the emoji (display
+   * only) — and `detail.reacted` is the state the tap asks for, which is
+   * exactly the hook's set-semantics input. The item is read from the ref:
+   * the element that fired belongs to the item on screen at fire time, not
+   * at the render that bound this callback.
+   */
+  const onReact = useCallback(
+    (e: CustomEvent<ReactionDetail>) => {
+      if (!isAppReaction(e.detail.reaction)) return;
+      const item = currentItemRef.current;
+      if (!item) return;
+      void runReactionToggle(item.mediaId, e.detail.reaction, e.detail.reacted);
+    },
+    [runReactionToggle],
+  );
+
+  // 🔴 THE EVENT IS WIRED WITH A NATIVE LISTENER, NOT THE BINDING'S `onReact`
+  // PROP. The event's contract is DOM-level — it bubbles and is composed, so
+  // one delegated listener on the group hears every element in it — and a
+  // native listener behaves identically in every environment the app runs
+  // in. The binding's event map does not: under a resolver that loads
+  // @lit/react's SSR build (vitest's `node` condition) the prop is never
+  // attached at all, which would make the player's reactions dead in the
+  // test environment while alive in production — the worst direction for a
+  // divergence to point. (The binding still earns its place for the
+  // property side: `reacted`/`count`/`disabled` are set through it.)
+  const onReactRef = useRef(onReact);
+  onReactRef.current = onReact;
+  const reactionDomListener = useCallback((e: Event) => {
+    onReactRef.current(e as CustomEvent<ReactionDetail>);
+  }, []);
+  const reactionGroupNodeRef = useRef<HTMLSpanElement | null>(null);
+  const reactionGroupRef = useCallback(
+    (node: HTMLSpanElement | null) => {
+      reactionGroupNodeRef.current?.removeEventListener('react', reactionDomListener);
+      reactionGroupNodeRef.current = node;
+      node?.addEventListener('react', reactionDomListener);
+    },
+    [reactionDomListener],
+  );
+
+  /**
+   * The current item's reaction state, or `undefined` when no reaction UI
+   * may render: gate off, no item on screen, the read has not answered yet,
+   * or the host listed the id in `unavailable` (no ticket — an anonymous
+   * viewer, an item that arrived unticketed). 🔴 UNANSWERED IS NOT "NOT
+   * REACTED": rendering a fresh control on the assumption of no state is
+   * exactly what the contract forbids, so absence renders nothing.
+   */
+  const currentReactionState =
+    hasReactScope && currentItem ? reactions.byId[currentItem.mediaId] : undefined;
 
   // Report {mode, index} up so App can keep the shareable URL hash in sync (#6).
   const onViewStateChangeRef = useRef(props.onViewStateChange);
@@ -549,6 +819,40 @@ export function CollectionViewer(props: CollectionViewerProps) {
       >
         💸 Tip
       </Button>
+      {/* Reactions on the item on screen — the same "one row, rendered from
+          one function" discipline as Follow/Tip above, so the lightbox's
+          copy of this row is the only one while it is up and ambient mode
+          hides reactions with the rest of the chrome. Rendered only when
+          the current item's state is KNOWN (see `currentReactionState`):
+          an unanswered id gets no controls at all.
+
+          🔴 BOUND FROM `byId` ON EVERY RENDER, AND THAT BINDING IS THE
+          REVERT. The element toggles itself optimistically on click; the
+          hook moves `byId` optimistically too and moves it BACK when the
+          write fails, and the re-render that follows re-sets the element's
+          `reacted`/`count` from the truth. There is no local reaction
+          state anywhere in this component to disagree with it. */}
+      {currentReactionState && currentItem && (
+        <span style={reactionGroupStyle} data-testid="viewer-reactions" ref={reactionGroupRef}>
+          {REACTIONS.map((r) => (
+            <CivitaiReaction
+              key={r}
+              reaction={r}
+              emoji={REACTION_EMOJI[r]}
+              label={r}
+              reacted={currentReactionState.viewerReactions.includes(r)}
+              count={currentReactionState.statsUnknown ? 0 : currentReactionState.counts[r]}
+              disabled={reactions.pending(currentItem.mediaId, r)}
+              // `statsUnknown`: the metric store could not answer, so the
+              // counts are zeros that must not be SHOWN as "nobody reacted".
+              // The count is hidden via ::part(count) (index.css); the
+              // toggles themselves stay live and truthful.
+              className={currentReactionState.statsUnknown ? 'pc-reaction-unknown' : undefined}
+              data-testid={`reaction-${r.toLowerCase()}`}
+            />
+          ))}
+        </span>
+      )}
     </div>
   );
 
@@ -896,6 +1200,27 @@ export function CollectionViewer(props: CollectionViewerProps) {
     </div>
   );
 }
+
+// ---- reactions constants ----
+
+/** Half-width of the reaction read window around the current item (±50 →
+ *  at most 101 ids, one `GET_ENTITY_REACTIONS` chunk). See the mount block. */
+const REACTION_WINDOW = 50;
+
+/** Stable empties for the gate-off hook call: no ids, no tickets, no reads. */
+const NO_REACTION_IDS: readonly number[] = [];
+const NO_REACTION_TICKETS: Readonly<Record<number, string | undefined>> = {};
+
+/** Display emoji per reaction — civitai.com's own mapping. Display only:
+ *  the reaction NAME (`reaction` prop / event detail) is the identity. */
+const REACTION_EMOJI: Record<BlockAppReaction, string> = {
+  Like: '👍',
+  Heart: '❤️',
+  Laugh: '😂',
+  Cry: '😢',
+};
+
+const reactionGroupStyle: CSSProperties = { display: 'inline-flex', gap: 4, alignItems: 'center' };
 
 // ---- styles ----
 function rootStyle(c: Palette): CSSProperties {

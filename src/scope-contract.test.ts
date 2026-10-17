@@ -209,7 +209,8 @@ const HOOK_REQUIRED_SCOPES: Readonly<Record<string, readonly BlockScope[]>> = {
   // manifest with a `scopeJustifications` entry; until the viewer grants it,
   // every call rejects with `needs-consent`". The scope is established from
   // the hook's own typing, which is all ledger membership asks. Classified on
-  // the bump; the app calls the hook from the player wiring that follows it.
+  // the bump; the player wiring that followed it calls the hook from
+  // `components/CollectionViewer.tsx` and the manifest declares the scope.
   useReactions: [BLOCK_SCOPES.SOCIAL_REACT_SELF],
 } as const;
 

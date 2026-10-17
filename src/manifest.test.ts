@@ -7,7 +7,7 @@ import { manifest, validateManifest } from './manifest.js';
 import { RECIPIENT_PERCENT, TIP_TOTAL_MAX, type TipRecipientChoice } from './lib/tip-split.js';
 
 describe('block.manifest.json', () => {
-  it('declares the 9 required scopes (no block:settings:*, no collections:write:self)', () => {
+  it('declares the 10 required scopes (no block:settings:*, no collections:write:self)', () => {
     // 🔴 `apps:storage:read` / `apps:storage:write` — the PER-VIEWER store — are
     // NOT the same capability as the `apps:storage:shared:*` pair below, and the
     // host does not treat one as satisfying the other: it compares the required
@@ -25,6 +25,13 @@ describe('block.manifest.json', () => {
     // doc-store write falls back to (`lib/popular.ts`). Dropping either is a
     // later change, made when nothing reads it any more.
     //
+    // Phase 3's reactions step adds `social:react:self` — CONSENT-GATED and
+    // SENSITIVE (its justification below is a manifest requirement, not a
+    // courtesy). It is the write half of the reaction bridge (`useReactions`):
+    // the token carries it only after the viewer grants it, so a build whose
+    // manifest declares it but which is not yet the approved version mints
+    // tokens without it and the player renders no reaction UI at all.
+    //
     // This literal ledger pins WHAT IS DECLARED. It cannot tell you whether the
     // code needs it — that relationship lives in `scope-contract.test.ts`, which
     // fails in BOTH directions (a called hook whose scope is undeclared; a
@@ -40,6 +47,7 @@ describe('block.manifest.json', () => {
       'apps:storage:shared:read',
       'apps:storage:shared:write',
       'apps:storage',
+      'social:react:self',
     ]);
     // 🔴 `collections:write:self` was DROPPED in 0.2.10 and must not come back.
     // Following moved to the host-mediated bridge, which needs no scope: the

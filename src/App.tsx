@@ -85,9 +85,11 @@ import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
 import {
   BUZZ_READ_SELF,
   COLLECTIONS_READ_PRIVATE,
+  SOCIAL_REACT_SELF,
   SOCIAL_TIP_SELF,
   defaultHasDocStoreScope,
   defaultHasPrivateScope,
+  defaultHasReactScope,
   defaultHasTipScope,
 } from './scopes.js';
 import { palette } from './theme.js';
@@ -185,13 +187,22 @@ export interface AppProps {
    * drive the document-store path against the REST fake.
    */
   isStorageGranted?: (tokenScopes: string[]) => boolean;
+  /**
+   * Predicate over the current block-token scopes deciding whether the token
+   * carries `social:react:self` — whether the player may render reaction
+   * controls and issue reaction reads at all. Defaults to the real check.
+   * Same test-seam shape as `isTipGranted`: the mock host's token carries no
+   * react scope, so a test grants it by predicate to drive the reaction path
+   * against the bridge fake.
+   */
+  isReactGranted?: (tokenScopes: string[]) => boolean;
   /** Bounded-retry config for the auto-run data loaders (test seam). */
   retry?: RetryConfig;
   /** Analytics sink (Feature #10). A test injects one; prod plugs a transport. */
   onEvent?: AnalyticsSink;
 }
 
-export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorageGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
+export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorageGranted, isReactGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
   const host = useHostOrigin();
@@ -335,6 +346,28 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
       return;
     }
     requestConsent({ scopes: [SOCIAL_TIP_SELF, BUZZ_READ_SELF] });
+  }, [viewer, requestSignIn, requestConsent]);
+
+  // Can this token read or set the viewer's reactions? `social:react:self`
+  // is consent-gated AND approval-gated (see `src/scopes.ts`): presence on
+  // the token is the player's whole reaction switch — controls render and
+  // the bridge hook reads only while it is carried.
+  const hasReactScope = (isReactGranted ?? defaultHasReactScope)(token.scopes ?? []);
+
+  /**
+   * The host refused a reaction with `needs-consent` despite the gate — the
+   * grant was revoked after the mint, or the mint raced the grant. Ask for
+   * the grant exactly as the tip path does: fire-and-forget, and on grant
+   * the re-mint flips `hasReactScope` (already true here) and — the part the
+   * viewer actually keys on — changes `token.raw`, which is the epoch the
+   * stashed toggle retries against. Declined changes nothing.
+   */
+  const requestReactConsent = useCallback(() => {
+    if (!viewer) {
+      requestSignIn();
+      return;
+    }
+    requestConsent({ scopes: [SOCIAL_REACT_SELF] });
   }, [viewer, requestSignIn, requestConsent]);
 
   // Real HTTP client (prod) unless a fake is injected (tests/dev).
@@ -1042,6 +1075,43 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
     }
   }, [api]);
 
+  /**
+   * Refetch the open collection's first page and merge it over the loaded
+   * items, resolving with the merged list (or `null` on failure / nothing
+   * open). Exists for ONE caller: the reaction retry after an
+   * `entity-unavailable` refusal, whose likeliest fixable cause is a
+   * `reactTicket` that aged out (24h) mid-session — a fresh page is how
+   * fresh tickets arrive.
+   *
+   * The merge is by `mediaId` over the FIRST PAGE only: appended pages keep
+   * their items (their tickets were minted with their fetch and age on
+   * their own clock), order is the loaded order, and paging state
+   * (`nextCursor`/`pages`) is untouched — this is a ticket refresh, not a
+   * content sync. 🔴 The session cache is dropped first: `getCollection` is
+   * memoized per (id, cursor, limit), so without the invalidation the
+   * "refetch" would be served the very page whose tickets just failed.
+   */
+  const refreshOpenItems = useCallback(async (): Promise<readonly MediaItem[] | null> => {
+    if (!api) return null;
+    const o = openRef.current;
+    if (!o) return null;
+    const id = o.detail.id;
+    try {
+      cachedApi?.invalidateReads();
+      const page = await loadCollectionFirstPage(api, id);
+      const freshById = new Map(page.items.map((it) => [it.mediaId, it]));
+      let merged: MediaItem[] | null = null;
+      setOpen((prev) => {
+        if (!prev || prev.detail.id !== id) return prev;
+        merged = prev.items.map((it) => freshById.get(it.mediaId) ?? it);
+        return { ...prev, items: merged };
+      });
+      return merged;
+    } catch {
+      return null;
+    }
+  }, [api, cachedApi]);
+
   const exitPlayer = useCallback(() => setOpen(null), []);
 
   const applyFollowedToLists = useCallback((id: number, followed: boolean) => {
@@ -1234,6 +1304,11 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
           onRequestSignIn={() => requestSignIn()}
           hasTipScope={hasTipScope}
           onRequestTipConsent={requestTipConsent}
+          hasReactScope={hasReactScope}
+          onRequestReactConsent={requestReactConsent}
+          reactTokenEpoch={token.raw}
+          onReactionNotice={(kind, message) => toasts.push(kind, message)}
+          onRefreshItems={refreshOpenItems}
           tipping={tipping}
           // `null` (unresolved / failed read) becomes `undefined`, which is the
           // pickers' "no local pre-block" default. A failed allowance read must

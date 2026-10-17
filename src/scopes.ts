@@ -92,3 +92,28 @@ export const APPS_STORAGE = 'apps:storage';
 export function defaultHasDocStoreScope(tokenScopes: readonly string[]): boolean {
   return tokenScopes.includes(APPS_STORAGE);
 }
+
+// ---- the reaction scope ----
+//
+// `social:react:self` gates the reaction bridge (`useReactions` →
+// `GET_ENTITY_REACTIONS` / `SET_ENTITY_REACTION`). It is CONSENT-GATED and
+// SENSITIVE — the opposite transition shape from `apps:storage` above: there
+// a viewer is never asked and the gate is approval; here BOTH apply. The mint
+// builds the token from the approved manifest (so a pre-approval build's
+// tokens never carry it), AND withholds it until the viewer grants it through
+// the host consent UI (so an approved build's token carries it only for a
+// viewer who said yes).
+//
+// The predicate is therefore the player's reaction switch, in both senses:
+//   - token lacks it → render NO reaction UI and issue NO reaction reads
+//     (a read without the grant is refused `needs-consent` by the host, and
+//     spending the attempt teaches nothing the predicate doesn't already say);
+//   - token carries it → the controls render and the hook reads.
+// A grant mid-session re-mints the token, the snapshot flips this predicate,
+// and the UI appears — the same shape as `hasPrivateScope` / `hasTipScope`.
+export const SOCIAL_REACT_SELF = 'social:react:self';
+
+/** Default predicate: may this token read or set the viewer's reactions? */
+export function defaultHasReactScope(tokenScopes: readonly string[]): boolean {
+  return tokenScopes.includes(SOCIAL_REACT_SELF);
+}

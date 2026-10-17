@@ -65,6 +65,20 @@ export interface MediaItem {
   creator: UserRef;
   /** Civitai nsfwLevel bitmask value; UI uses it only for a maturity badge. */
   nsfwLevel: number;
+  /**
+   * The reaction provenance ticket the block endpoint attached to this item
+   * (`reactTicket` on the wire), signed for THIS app and THIS viewer, valid
+   * 24 hours. Present only for a signed-in viewer on a payload the server
+   * ticketed — the images / gated-images / collection item payloads are the
+   * ones that carry it; an item that arrived any other way has none.
+   *
+   * 🔴 ABSENT MEANS UNREACTABLE, NOT "NOT REACTED". The host answers no
+   * reaction read for an id without a valid ticket (the id lands in
+   * `unavailable`) and refuses a write on one outright, so an item without a
+   * ticket renders no reaction UI. Never fabricate one: a made-up ticket
+   * passes the dev mock (it cannot verify the HMAC) and fails production.
+   */
+  reactTicket?: string;
 }
 
 /** A cursor-paginated page of anything. */
