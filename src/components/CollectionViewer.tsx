@@ -373,10 +373,17 @@ export function CollectionViewer(props: CollectionViewerProps) {
    *     consent asked (a later tip consent re-mints carrying
    *     `social:react:self` too) — without the drop, that unrelated grant
    *     fired the held Like on an item no longer on screen;
-   *   - EXPIRY drops it: after `STASHED_TOGGLE_TTL_MS` (the timer started
-   *     in `stashConsentToggle`, and the age re-check in the retry effect)
-   *     the tap is stale — the consent round-trip is seconds, so a tap
-   *     still held a minute later is not one the viewer is waiting on.
+   *   - EXPIRY drops it: after `STASHED_TOGGLE_TTL_MS` the tap is stale —
+   *     the consent round-trip is seconds, so a tap still held a minute
+   *     later is not one the viewer is waiting on. Two mechanisms enforce
+   *     the TTL, with different triggers, and round 2 pinned each to its
+   *     own job rather than deleting either: the TIMER (started in
+   *     `stashConsentToggle`) drops the tap at the TTL even if nothing
+   *     else ever happens — the only death a decline can meet, since a
+   *     decline produces no token and no retry effect ever runs — and the
+   *     AGE RE-CHECK in the retry effect refuses a token that arrives
+   *     after the TTL anyway, for the case where the timer itself was
+   *     throttled (a backgrounded iframe's timers can run minutes late).
    * `heldAt` is the wall-clock the toggle was held at, for the age check.
    */
   const stashedToggleRef = useRef<{
@@ -388,13 +395,31 @@ export function CollectionViewer(props: CollectionViewerProps) {
   } | null>(null);
   const stashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Drop the held toggle and cancel its expiry timer. */
+  /**
+   * 🔴 WHILE A TAP IS HELD, PLAYBACK IS PAUSED (round-2 audit). The stash
+   * above is a ref; this is its render-visible twin, fed into the SAME
+   * pause composition the tip picker uses (the classic and lightbox
+   * Players' `pickerOpen`, ContinuousView's `paused`). Without it the
+   * slideshow's auto-advance (5s by default) moves the current item while
+   * the host's consent dialog is still open — and the navigation drop
+   * (correctly) kills the held tap, so the grant lands, sends nothing,
+   * and says nothing: no toast, the button already reset, the viewer's
+   * tap silently eaten by the pacing. The pause's bound is the stash's
+   * own expiry timer: it drops the tap at the TTL even when nothing else
+   * ever happens — and after a decline, nothing else happening is
+   * exactly the case (no token, no navigation, no settle).
+   */
+  const [tapHeld, setTapHeld] = useState(false);
+
+  /** Drop the held toggle, cancel its expiry timer, and release the
+   *  playback pause with it. */
   const clearStashedToggle = useCallback((): void => {
     stashedToggleRef.current = null;
     if (stashTimerRef.current) {
       clearTimeout(stashTimerRef.current);
       stashTimerRef.current = null;
     }
+    setTapHeld(false);
   }, []);
 
   // The expiry timer must not outlive the view (a fired timer on an
@@ -416,16 +441,30 @@ export function CollectionViewer(props: CollectionViewerProps) {
         marker: reactTokenEpochRef.current,
         heldAt: Date.now(),
       };
+      setTapHeld(true);
       stashTimerRef.current = setTimeout(clearStashedToggle, STASHED_TOGGLE_TTL_MS);
     },
     [clearStashedToggle],
   );
 
-  // 🔴 NAVIGATION DROPS THE HELD TAP. The stash belongs to the item it was
+  // 🔴 NAVIGATION DROPS THE HELD TAP, AND THIS EFFECT IS THE ONLY ITEM
+  // GUARD (round-2 audit — it used to have a twin, a fire-time item
+  // re-check in the retry effect; two guards that overlap either both do
+  // work or one is decoration, so the twin was deleted and this one is
+  // pinned by tests that remove IT). The stash belongs to the item it was
   // made on; the moment a different item is on screen it is dead, whatever
-  // grant arrives later. (The retry effect re-checks the item at fire time
-  // too — this effect is what makes "held" mean "held for THIS item" at
-  // every instant, not just at the instant a token lands.)
+  // grant arrives later — and it stays dead if the viewer navigates BACK:
+  // A→B→A + grant sends nothing, because a tap the viewer moved away from
+  // was abandoned, and resurrecting it on return would be the round-1
+  // stale-intent defect in miniature.
+  //
+  // Why one guard provably covers the fire path: the stash can only fire
+  // in the retry effect, whose trigger is a token-epoch/scope change. A
+  // different current item reaches this component ONLY as a new
+  // `currentItemId` in a render commit, and that change runs THIS effect —
+  // declared above the retry effect, so within a commit that changes both
+  // the item and the epoch, this effect flushes first and the stash is
+  // already gone when the retry effect reads it.
   const currentItemId = currentItem?.mediaId;
   useEffect(() => {
     const stash = stashedToggleRef.current;
@@ -504,20 +543,21 @@ export function CollectionViewer(props: CollectionViewerProps) {
   //   - the mint lacks it (a re-mint for some other cause — a DECLINE
   //     produces no mint at all, see the stash doc) → the intent is
   //     DROPPED with the token that answered the ask.
-  // Two fire-time re-checks guard the gap the settle cannot see — a tap
-  // whose token never came is dropped by navigation/expiry instead (see
-  // the stash doc), and those drops are effects of their own; these checks
-  // are the same two facts read again at the one moment that matters, so
-  // no ordering of effects can fire a stale tap:
-  //   - EXPIRED while held → dropped silently;
-  //   - its ITEM is no longer on screen → dropped silently.
+  // ONE fire-time re-check remains: the stash's AGE. The stash's own
+  // timer is the expected expiry path, but it is not a guarantee — a
+  // backgrounded iframe's timers can be throttled minutes past their
+  // deadline, so when a token DOES arrive the wall clock is read again
+  // here, at the one moment that matters, before anything fires. (Its
+  // round-1 twin, the fire-time ITEM re-check, was deleted in round 2:
+  // the navigation drop above has already emptied the stash in the
+  // commit that moved the item — see its comment for the ordering
+  // argument — so an item re-check here could only ever agree with it.)
   useEffect(() => {
     const stash = stashedToggleRef.current;
     if (!stash) return;
     if (reactTokenEpoch === stash.marker) return; // still the token that could not send it
     clearStashedToggle();
     if (Date.now() - stash.heldAt > STASHED_TOGGLE_TTL_MS) return; // expired while held
-    if (currentItemRef.current?.mediaId !== stash.id) return; // its item moved on
     if (hasReactScope) void runReactionToggle(stash.id, stash.reaction, stash.reacted);
   }, [hasReactScope, reactTokenEpoch, runReactionToggle, clearStashedToggle]);
 
@@ -545,11 +585,19 @@ export function CollectionViewer(props: CollectionViewerProps) {
    *     post-grant write into an un-react. An ungranted tap can only mean
    *     "add this reaction".
    *   - THE ELEMENT IS RESET to unpressed right here (see the code): it
-   *     flipped itself on click, and this path writes only refs, so no
-   *     re-render follows to rebind the truth — and the binding would not
-   *     repair it anyway, since it re-sets a property only when the bound
-   *     value CHANGES, and the ungranted bound value is `false` before
-   *     and after the tap.
+   *     flipped itself on click. Do not talk yourself out of this line
+   *     with "the binding will rebind it": `@lit/react`'s real build DOES
+   *     re-assign bound properties on every commit — so on the STASHING
+   *     path, where holding the tap flips the pause state and a re-render
+   *     follows, the binding would repair the flip on its own. But the
+   *     TICKETLESS and ANONYMOUS branches below stash nothing and change
+   *     no state: no re-render follows, no re-assignment happens, and
+   *     without this reset the element sits pressed claiming a state the
+   *     app does not hold. The reset lives in the handler so that EVERY
+   *     ungranted path is covered by the handler, not by whether a
+   *     re-render happens to follow the tap. (Round-2 audit: the browser
+   *     tier pins the asymmetry — no-op this line and the ticketless
+   *     click test goes red while the ticketed one stays green.)
    *   - A TICKETLESS ITEM'S TAP IS A NO-OP: no stash, no consent ask. Even
    *     granted, a write for it can never be sent (the hook refuses a
    *     ticketless toggle locally), so the ask would buy a dialog whose
@@ -1199,7 +1247,10 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onPositionChange={onClassicPosition}
             onCurrentItemChange={setSurfaceItem}
             showSettingsControl={false}
-            pickerOpen={pickerOpen}
+            // A held reaction tap pauses too, through the picker's own
+            // prop: the consent dialog is a dialog, and the item must not
+            // move under it (round-2 audit — see `tapHeld`).
+            pickerOpen={pickerOpen || tapHeld}
             holdPaused={outstandingTip}
             cast={cast}
             reducedMotion={reducedMotion}
@@ -1221,7 +1272,9 @@ export function CollectionViewer(props: CollectionViewerProps) {
             // the wall keeps scrolling under an open picker: the money is still
             // right (the recipients are frozen at press time), but the viewer is
             // reading a preview naming a creator whose tile has left the screen.
-            paused={paused || pickerOpen || outstandingTip}
+            // A held reaction tap joins the same expression (round-2 audit):
+            // the drift moving the item mid-consent would drop the tap.
+            paused={paused || pickerOpen || outstandingTip || tapHeld}
             autoplayCap={autoplayCap}
             c={c}
             onTapItem={openLightbox}
@@ -1301,7 +1354,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
             muted={prefs.muted}
             initialItemIndex={lightboxIndex}
             onCurrentItemChange={setLightboxItem}
-            pickerOpen={pickerOpen}
+            pickerOpen={pickerOpen || tapHeld}
             holdPaused={outstandingTip}
             isMobile={isMobile}
             c={c}

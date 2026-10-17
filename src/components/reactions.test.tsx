@@ -89,6 +89,10 @@ interface HostProps {
   viewerUserId?: number | null;
   onRequestReactConsent?: () => void;
   onReactionNotice?: (kind: 'error' | 'info', message: string) => void;
+  /** Defaults to the suite-wide 600s pin; the fast-pacing test overrides
+   *  it — at 600s auto-advance can never fire inside a test, which is
+   *  exactly the blind spot the round-2 audit's probe (1s pacing) found. */
+  settings?: PlayerSettings;
 }
 
 /** The viewer mounted the way tip-affordance.test.tsx mounts it (bare, no
@@ -104,7 +108,7 @@ function Host(p: HostProps): ReactElement {
       buzzBalance={null}
       followed={followed}
       onFollowChange={(_id, next) => setFollowed(next)}
-      settings={SETTINGS}
+      settings={p.settings ?? SETTINGS}
       onSecondsPerImageChange={() => {}}
       onVideoLoopCountChange={() => {}}
       storage={memStorage()}
@@ -634,7 +638,13 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
       // Decline (no token) and the viewer simply leaves it. The held tap's
       // TTL is a minute; ten minutes is past any reading of "short" — the
       // age is read off the wall clock at fire time, which is what the spy
-      // moves. The stash's own real-time timer is the hygiene twin.
+      // moves. This test pins the AGE CHECK, the guarantee for a token
+      // that arrives after the TTL (the stash's own timer is the expected
+      // path, but a throttled timer cannot be what stands between a late
+      // grant and a stale tap): remove the age check and the grant below
+      // sends the write and this test goes red. The timer's own pin is
+      // the pause-bound test below — it is the death that arrives in
+      // silence, with no token at all.
       now = t0 + 10 * 60_000;
       rerender(
         <Host items={[item(2001)]} hasReactScope reactTokenEpoch="epoch-2" onRequestReactConsent={onRequestReactConsent} />,
@@ -706,6 +716,176 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
     );
     await new Promise((r) => setTimeout(r, 50));
     expect(writes()).toHaveLength(0);
+  });
+
+  it('A→B→A: navigating away kills the held tap — coming back does not resurrect it', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({
+      reactionStates: { 2001: { counts: { Like: 7 } }, 2002: { counts: { Like: 1 } } },
+    });
+    const { rerender } = render(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+
+    // Away to B, then BACK to A. The semantics are decided, not emergent
+    // (round-2 audit): the tap died at the first navigation — it was
+    // abandoned — and the item being on screen again at grant time does
+    // not revive it. This test is what makes the navigation drop the SOLE
+    // item guard honestly: a fire-time-only item check would FIRE here
+    // (A is current again), and with the drop effect removed this test
+    // goes red.
+    fireEvent.click(screen.getByTestId('ctrl-next'));
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 2'));
+    fireEvent.click(screen.getByTestId('ctrl-prev'));
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2'));
+
+    rerender(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('fast pacing: auto-advance is PAUSED while a tap is held — tap, time passes, grant → exactly one write', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({
+      reactionStates: {
+        2001: { counts: { Like: 7 } },
+        2002: { counts: { Like: 1 } },
+        2003: { counts: { Like: 3 } },
+      },
+    });
+    const items = [item(2001), item(2002), item(2003)];
+    const fast: PlayerSettings = { secondsPerImage: 1, videoLoopCount: 1 };
+    const { rerender } = render(
+      <Host
+        items={items}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        settings={fast}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
+
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+
+    // 🔴 THE ROUND-2 PROBE, AS A TEST. At 1s pacing the slideshow advances
+    // every second, and a consent dialog outlasts that easily. Pre-fix the
+    // item moved at 1s, the (correct) navigation drop killed the held tap,
+    // and the grant below sent ZERO writes, silently — the audit measured
+    // exactly that at 3bbd4e3f against 1 write pre-round-1. The whole
+    // suite missed it because every other test here pins
+    // `secondsPerImage: 600`, where auto-advance can never fire. Three
+    // items, so a wrap cannot disguise an advance as stillness.
+    await new Promise((r) => setTimeout(r, 1600));
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
+    expect(writes()).toHaveLength(0);
+
+    // The grant lands with the SAME item still on screen: the held tap
+    // fires, exactly once, on the item it was made on.
+    rerender(
+      <Host
+        items={items}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+        settings={fast}
+      />,
+    );
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0].payload).toMatchObject({
+      entityId: 2001,
+      reaction: 'Like',
+      reacted: true,
+      ticket: 'ticket-2001',
+    });
+
+    // And the pause RELEASED when the tap resolved: playback resumes on
+    // its own (it was playing when the hold began) and the slideshow
+    // moves on — the hold belonged to the dialog, it is not a new
+    // resting state.
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 3'), {
+      timeout: 3500,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(1);
+  });
+
+  it('the pause is BOUNDED in silence: the stash timer drops a declined tap at the TTL — no token, no navigation', async () => {
+    // Fake timers that still advance with real time — the suite's only
+    // way to reach a 60s TTL inside a test, while keeping findBy/waitFor
+    // and the ordinary short awaits alive.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const onRequestReactConsent = vi.fn();
+      installHost({
+        reactionStates: {
+          2001: { counts: { Like: 7 } },
+          2002: { counts: { Like: 1 } },
+          2003: { counts: { Like: 3 } },
+        },
+      });
+      const items = [item(2001), item(2002), item(2003)];
+      const fast: PlayerSettings = { secondsPerImage: 1, videoLoopCount: 1 };
+      render(
+        <Host
+          items={items}
+          hasReactScope={false}
+          reactTokenEpoch="epoch-1"
+          onRequestReactConsent={onRequestReactConsent}
+          settings={fast}
+        />,
+      );
+      await screen.findByTestId('viewer-reactions');
+      fireReact('like', true);
+      await vi.waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+
+      // Held and paused: time passes, the item does not move. (The
+      // fast-pacing test above proves the pause at real pacing; here the
+      // fake clock is the instrument.)
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
+
+      // 🔴 THE TIMER'S OWN PIN (round 2). The viewer declines: NO token
+      // arrives, no navigation happens, nothing settles the stash — and
+      // the TTL passes in that silence. The stash timer is the only
+      // mechanism that can fire: it drops the tap, the pause releases,
+      // playback resumes and the slideshow moves on by itself. Delete the
+      // timer and the walk below never leaves '1 / 3' — the pause the
+      // round-2 RED fix added would be bounded by nothing a declining
+      // viewer ever does. (The fire-time age check cannot substitute:
+      // it runs only when a token arrives, and none does.)
+      await vi.advanceTimersByTimeAsync(58_000);
+      expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3'); // still held, just inside the TTL
+      let label = '';
+      for (let step = 0; step < 40 && label !== '2 / 3'; step++) {
+        await vi.advanceTimersByTimeAsync(250);
+        label = screen.getByTestId('progress-label').textContent ?? '';
+        expect(['1 / 3', '2 / 3']).toContain(label);
+      }
+      expect(label).toBe('2 / 3');
+      expect(writes()).toHaveLength(0);
+      expect(onRequestReactConsent).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
