@@ -200,6 +200,17 @@ const HOOK_REQUIRED_SCOPES: Readonly<Record<string, readonly BlockScope[]>> = {
   // without it) and the hook "does not prompt for the scope". Same scope as
   // `useCreatePostFromApp` above; this app uploads nothing and calls neither.
   useUploadImageBytes: [BLOCK_SCOPES.POSTS_WRITE_SELF],
+  // ── Arrived with the reactions bump (app-sdk 0.74.0 / blocks-react 0.75.0,
+  // 2026-10-17) ──────────────────────────────────────────────────────────
+  // d.ts (`hooks/useReactions.d.ts`): "Read and set the VIEWER'S reactions on
+  // images this app was served, through the host's `GET_ENTITY_REACTIONS` and
+  // `SET_ENTITY_REACTION` bridge (scope `social:react:self`)", and the scope
+  // "IS CONSENT-GATED AND SENSITIVE. Declare `social:react:self` in the
+  // manifest with a `scopeJustifications` entry; until the viewer grants it,
+  // every call rejects with `needs-consent`". The scope is established from
+  // the hook's own typing, which is all ledger membership asks. Classified on
+  // the bump; the app calls the hook from the player wiring that follows it.
+  useReactions: [BLOCK_SCOPES.SOCIAL_REACT_SELF],
 } as const;
 
 // ---------------------------------------------------------------------------
