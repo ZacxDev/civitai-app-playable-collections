@@ -150,7 +150,7 @@ describe('reaction tickets (the fake models the endpoint’s per-item attach)', 
   it('attaches a ticket to every item when reactTickets is on', async () => {
     const api = createFakeApi({ viewerUserId: 99, collections: coll(), reactTickets: true });
     const page = await api.getCollection(401);
-    expect(page.items.map((i) => i.reactTicket)).toEqual(['fake-ticket-2001-g1', 'fake-ticket-2002-g1']);
+    expect(page.items.map((i) => i.reactTicket)).toEqual(['fake-ticket-2001', 'fake-ticket-2002']);
     // The seed's own objects are not mutated under their holder.
     expect(coll()[0].items[0].reactTicket).toBeUndefined();
   });
@@ -159,14 +159,5 @@ describe('reaction tickets (the fake models the endpoint’s per-item attach)', 
     const api = createFakeApi({ viewerUserId: 99, collections: coll() });
     const page = await api.getCollection(401);
     expect(page.items.every((i) => i.reactTicket === undefined)).toBe(true);
-  });
-
-  it('a rotation makes the next fetch carry a fresh generation of tickets', async () => {
-    const api = createFakeApi({ viewerUserId: 99, collections: coll(), reactTickets: true });
-    const first = await api.getCollection(401);
-    api.__rotateReactTickets();
-    const second = await api.getCollection(401);
-    expect(second.items[0].reactTicket).toBe('fake-ticket-2001-g2');
-    expect(second.items[0].reactTicket).not.toBe(first.items[0].reactTicket);
   });
 });

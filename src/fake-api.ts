@@ -57,10 +57,6 @@ export interface FakeApiOptions {
    * the fake cannot sign an HMAC and does not pretend to; the mock HOST
    * accepts any well-formed ticket, and production verification of a real
    * one is the live host's job, not this double's.
-   *
-   * Pair with `__rotateReactTickets()` to model expiry: the next fetch
-   * attaches a NEW generation of tickets, which is what a refetch after a
-   * ticket's 24h life hands the app.
    */
   reactTickets?: boolean;
   /**
@@ -104,12 +100,6 @@ export interface FakeApi extends ApiClient {
   __tips(): TipInput[];
   /** Buzz this fake has recorded against today's allowance. */
   __tipSpentToday(): number;
-  /**
-   * Rotate the reaction-ticket generation: items the NEXT `getCollection`
-   * returns carry fresh `reactTicket`s (only when `reactTickets` is on).
-   * Models a ticket expiring and a refetch replacing it.
-   */
-  __rotateReactTickets(): void;
 }
 
 function makeSeed(): SeedCollection[] {
@@ -175,8 +165,6 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
   const tipsByKey = new Map<string, TipResult>();
   const tipDailyCap = opts.tipDailyCap ?? 25000;
   let tipSpentToday = opts.tipSpentToday ?? 0;
-  /** Reaction-ticket generation; bumped by `__rotateReactTickets()`. */
-  let ticketGeneration = 1;
   const fail = opts.failMode ?? 'none';
   const privateGranted = opts.collectionsPrivateGranted ?? (() => true);
 
@@ -302,7 +290,7 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
         // under its holder), so the ticket rides on a copy. Off: the seed
         // items pass through untouched, tickets and all.
         items: opts.reactTickets
-          ? s.items.map((it) => ({ ...it, reactTicket: `fake-ticket-${it.mediaId}-g${ticketGeneration}` }))
+          ? s.items.map((it) => ({ ...it, reactTicket: `fake-ticket-${it.mediaId}` }))
           : s.items,
       };
     },
@@ -339,9 +327,6 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
       return { cap: tipDailyCap, spent: tipSpentToday, remaining: Math.max(0, tipDailyCap - tipSpentToday) };
     },
 
-    __rotateReactTickets: () => {
-      ticketGeneration += 1;
-    },
     __balance: () => balance,
     __tipSpentToday: () => tipSpentToday,
     __isFollowed: (id: number) => followed.get(id) ?? false,

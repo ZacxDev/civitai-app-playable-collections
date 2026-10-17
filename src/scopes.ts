@@ -104,13 +104,19 @@ export function defaultHasDocStoreScope(tokenScopes: readonly string[]): boolean
 // the host consent UI (so an approved build's token carries it only for a
 // viewer who said yes).
 //
-// The predicate is therefore the player's reaction switch, in both senses:
-//   - token lacks it → render NO reaction UI and issue NO reaction reads
-//     (a read without the grant is refused `needs-consent` by the host, and
-//     spending the attempt teaches nothing the predicate doesn't already say);
-//   - token carries it → the controls render and the hook reads.
-// A grant mid-session re-mints the token, the snapshot flips this predicate,
-// and the UI appears — the same shape as `hasPrivateScope` / `hasTipScope`.
+// The predicate is therefore the player's reaction READ switch:
+//   - token lacks it → issue NO reaction reads (a read without the grant is
+//     refused `needs-consent` by the host, and spending the attempt teaches
+//     nothing the predicate doesn't already say) and render no counts;
+//   - token carries it → the hook reads and the controls bind real state.
+// Rendering the CONTROLS is a separate, wider decision — the tips pattern:
+// a signed-in viewer without the scope still sees the buttons (count-less)
+// and a tap asks for this grant, so a viewer who installed an earlier
+// version is not staring at a surface that silently doesn't exist. Only
+// anonymous viewers see no reaction UI at all. A grant mid-session
+// re-mints the token, the snapshot flips this predicate, and the reads
+// (and any tap held for the grant) proceed — the same shape as
+// `hasPrivateScope` / `hasTipScope`.
 export const SOCIAL_REACT_SELF = 'social:react:self';
 
 /** Default predicate: may this token read or set the viewer's reactions? */

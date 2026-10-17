@@ -123,14 +123,16 @@
     white-space: nowrap;
   }
 
-  /* Reaction counts under `statsUnknown` (Phase 3): when the metric store
-     could not answer for an item, the reaction state carries zero counts
-     that must not be READ as "nobody reacted". The <civitai-reaction>
-     element renders its count span unconditionally, so the app hides the
-     part for exactly that state (the toggles stay live — `viewerReactions`
-     is not part of what is unknown). ::part(count) is the element's
-     sanctioned hook for it, and the class is applied only in that state
-     (see CollectionViewer). */
+  /* Reaction counts the app does not hold (Phase 3): granted with
+     `statsUnknown` (the metric store could not answer, so the state
+     carries zero counts that must not be READ as "nobody reacted"), and
+     signed-in UNGRANTED (no read was ever issued, so there are no counts
+     to show at all). The <civitai-reaction> element renders its count
+     span unconditionally, so the app hides the part for exactly those
+     states (the toggles stay live in both — `viewerReactions` is not
+     part of what is unknown, and an ungranted tap is the consent ask).
+     ::part(count) is the element's sanctioned hook for it (see
+     CollectionViewer). */
   civitai-reaction.pc-reaction-unknown::part(count) {
     display: none;
   }

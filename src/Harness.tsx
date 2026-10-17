@@ -2,8 +2,6 @@ import type { ReactNode } from 'react';
 
 import { Harness as SdkHarness } from '@civitai/blocks-react/testing';
 
-import { REACTION_ERROR_CODES } from '@civitai/blocks-react';
-
 import manifest from '../block.manifest.json';
 
 /**
@@ -24,16 +22,6 @@ export function Harness({ children }: { children: ReactNode }) {
   // theme so both themes can be exercised (and screenshotted) with no code change.
   const params = new URLSearchParams(window.location.search);
   const theme = params.get('theme') === 'light' ? 'light' : 'dark';
-  // `?reactionError=<code>` forces the mock host to refuse every reaction
-  // call with that code (same idiom as `?theme=` above: a dev-only knob on
-  // the wrapper, never read by the app). Note it refuses READS too, so a
-  // forced load renders no reaction UI at all — the revert-after-a-good-read
-  // path is exercised in the test tiers, not here.
-  const forced = params.get('reactionError');
-  const reactionError =
-    forced != null && REACTION_ERROR_CODES.some((code) => code === forced)
-      ? (forced as (typeof REACTION_ERROR_CODES)[number])
-      : undefined;
   return (
     // `declaredScopes` is the mock host's picture of the MANIFEST — its
     // reaction gate refuses every call `needs-consent` unless
@@ -55,7 +43,6 @@ export function Harness({ children }: { children: ReactNode }) {
         1002: { counts: { Like: 3, Heart: 1, Laugh: 0, Cry: 0 } },
         1003: { counts: { Like: 0, Heart: 0, Laugh: 0, Cry: 1 } },
       }}
-      {...(reactionError ? { reactionError } : {})}
     >
       {children}
     </SdkHarness>

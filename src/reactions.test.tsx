@@ -14,19 +14,21 @@ import { configureSdkRuntime } from './lib/sdk-runtime.js';
 // behaviour lives in `components/reactions.test.tsx`; this file proves the
 // App-side half of the contract:
 //
-//   - the token predicate is the switch: a token carrying
+//   - the token predicate switches the READS: a token carrying
 //     `social:react:self` (granted here through the `isReactGranted` seam,
 //     because the mock host's BLOCK_INIT token carries no app scopes) gets
-//     reaction controls in the player AND exactly one windowed read behind
-//     them — with the tickets the fake collection endpoint attached riding
-//     through App's own data path (fake API → loader → viewer);
-//   - a token without it — the pre-approval build, the not-yet-consented
-//     viewer, the anonymous viewer — gets NO controls and issues NO reads.
-//     Inert by design, not broken by accident.
+//     reaction controls bound to real state AND exactly one windowed read
+//     behind them — with the tickets the fake collection endpoint attached
+//     riding through App's own data path (fake API → loader → viewer);
+//   - a signed-in token WITHOUT it (the not-yet-consented viewer, a viewer
+//     who installed an earlier version) gets the buttons WITHOUT counts
+//     and issues NO reads — the tips pattern: show the surface, ask on
+//     press. Reads stay inert by design, not broken by accident;
+//   - an anonymous viewer gets no reaction UI at all.
 //
 // The mock host is seeded with reaction state for the fake collection's
-// first item (mediaId 1001), so the group rendering at all proves the read
-// answered for the item on screen.
+// first item (mediaId 1001), so the granted group rendering at all proves
+// the read answered for the item on screen.
 // ============================================================================
 
 interface RenderOpts {
@@ -71,20 +73,25 @@ describe('App — reactions token gate', () => {
     // The ticket on the wire is the one the fake endpoint attached — proof
     // the plumbing runs endpoint payload → MediaItem → hook, not a fixture
     // shortcut inside the viewer.
-    expect((reads[0].payload as { tickets: Record<string, string> }).tickets['1001']).toBe('fake-ticket-1001-g1');
+    expect((reads[0].payload as { tickets: Record<string, string> }).tickets['1001']).toBe('fake-ticket-1001');
   });
 
-  it('not granted: no controls, no reads — the pre-approval state is inert', async () => {
+  it('not granted: the buttons render count-less, and no read is issued', async () => {
     const outbound: { type: string; payload?: unknown }[] = [];
     const api = createFakeApi({ viewerUserId: 99, reactTickets: true });
     renderApp({ api, onOutbound: (m) => outbound.push(m) });
     await openFirstCollection();
 
-    // The player is fully up (the tip chrome proves the action row rendered)…
-    await screen.findByTestId('chrome-tip');
-    // …but there is no reaction group, and nothing was read.
-    expect(screen.queryByTestId('viewer-reactions')).toBeNull();
+    // The signed-in viewer SEES the surface (the tips pattern)…
+    await screen.findByTestId('viewer-reactions');
+    // …bound from no state: the count-hiding class marks every element,
+    // because no read stands behind them.
+    for (const name of ['like', 'heart', 'laugh', 'cry']) {
+      expect(screen.getByTestId(`reaction-${name}`).classList.contains('pc-reaction-unknown')).toBe(true);
+    }
+    // And nothing was read: reads are the granted-only half of the gate.
     await waitFor(() => expect(outbound.filter((m) => m.type === 'GET_ENTITY_REACTIONS')).toHaveLength(0));
+    expect(outbound.filter((m) => m.type === 'SET_ENTITY_REACTION')).toHaveLength(0);
   });
 
   it('anonymous viewer: no tickets exist, so no controls and no sign-in nag', async () => {

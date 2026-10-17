@@ -86,9 +86,9 @@ interface HostProps {
   items: MediaItem[];
   hasReactScope?: boolean;
   reactTokenEpoch?: string;
+  viewerUserId?: number | null;
   onRequestReactConsent?: () => void;
   onReactionNotice?: (kind: 'error' | 'info', message: string) => void;
-  onRefreshItems?: () => Promise<readonly MediaItem[] | null>;
 }
 
 /** The viewer mounted the way tip-affordance.test.tsx mounts it (bare, no
@@ -100,7 +100,7 @@ function Host(p: HostProps): ReactElement {
     <CollectionViewer
       detail={detail}
       items={p.items}
-      viewerUserId={VIEWER_ID}
+      viewerUserId={p.viewerUserId === undefined ? VIEWER_ID : p.viewerUserId}
       buzzBalance={null}
       followed={followed}
       onFollowChange={(_id, next) => setFollowed(next)}
@@ -127,7 +127,6 @@ function Host(p: HostProps): ReactElement {
       reactTokenEpoch={p.reactTokenEpoch}
       onRequestReactConsent={p.onRequestReactConsent}
       onReactionNotice={p.onReactionNotice}
-      onRefreshItems={p.onRefreshItems}
     />
   );
 }
@@ -195,9 +194,28 @@ function fireReact(name: 'like' | 'heart' | 'laugh' | 'cry', reacted: boolean): 
 }
 
 describe('reactions — gate and binding', () => {
-  it('gate OFF: no reaction UI and no reaction reads are issued', async () => {
+  it('ungranted signed-in: the buttons render count-less and NO read is sent', async () => {
     installHost({ reactionStates: { 2001: { counts: { Like: 5 } } } });
     render(<Host items={[item(2001)]} hasReactScope={false} />);
+    // The tips pattern: the surface EXISTS for a signed-in viewer who has
+    // not granted — all four elements, with the counts hidden (the app
+    // holds no counts to show: the count-less class is the marker here,
+    // the ::part rule it drives is asserted in the browser tier).
+    await screen.findByTestId('viewer-reactions');
+    for (const name of ['like', 'heart', 'laugh', 'cry']) {
+      const el = screen.getByTestId(`reaction-${name}`);
+      expect(el.classList.contains('pc-reaction-unknown')).toBe(true);
+    }
+    // …and the hook's inputs stay empty, so no read is EVER sent for this
+    // viewer: a read without the grant would be refused AND billed.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(reads()).toHaveLength(0);
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('anonymous: no reaction UI at all — there is no grant to ask for', async () => {
+    installHost({ reactionStates: { 2001: { counts: { Like: 5 } } } });
+    render(<Host items={[item(2001)]} hasReactScope={false} viewerUserId={null} />);
     // The row (Follow/Tip) proves the viewer mounted and reported its item.
     await screen.findByTestId('chrome-tip');
     expect(screen.queryByTestId('viewer-reactions')).toBeNull();
@@ -398,44 +416,126 @@ describe('reactions — refusals', () => {
     expect(writes()).toHaveLength(1);
   });
 
-  it('an expired ticket: ONE refetch, ONE retry, and the retry carries the fresh ticket', async () => {
+  it('entity-unavailable: the honest toast, exactly one write, no refetch and no retry', async () => {
     const notice = vi.fn();
     const h = installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
-    const stale = { ...item(2001), reactTicket: 'ticket-STALE' };
-    const fresh = { ...item(2001), reactTicket: 'ticket-FRESH' };
-    const onRefreshItems = vi.fn(async () => {
-      // The refetch answers with a fresh ticket; the host accepts writes
-      // again (the refusal WAS the stale ticket).
-      h.setScenario({ reactionError: null });
-      return [fresh] as readonly MediaItem[];
-    });
-    const { rerender } = render(<Host items={[stale]} onRefreshItems={onRefreshItems} onReactionNotice={notice} />);
-    await screen.findByTestId('viewer-reactions');
-
-    h.setScenario({ reactionError: 'entity-unavailable' });
-    fireReact('like', true);
-    // The refusal triggered exactly one refetch…
-    await waitFor(() => expect(onRefreshItems).toHaveBeenCalledTimes(1));
-    // …and once App hands the refreshed items down, exactly one retry, and
-    // it went out under the FRESH ticket.
-    rerender(<Host items={[fresh]} onRefreshItems={onRefreshItems} onReactionNotice={notice} />);
-    await waitFor(() => expect(writes()).toHaveLength(2));
-    expect(writes()[0].payload.ticket).toBe('ticket-STALE');
-    expect(writes()[1].payload.ticket).toBe('ticket-FRESH');
-    expect(notice).not.toHaveBeenCalled();
-  });
-
-  it('entity-unavailable with NO fresh ticket after refetch: honest toast, no retry', async () => {
-    const notice = vi.fn();
-    const h = installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
-    const onRefreshItems = vi.fn(async () => null);
-    render(<Host items={[item(2001)]} onRefreshItems={onRefreshItems} onReactionNotice={notice} />);
+    render(<Host items={[item(2001)]} onReactionNotice={notice} />);
     await screen.findByTestId('viewer-reactions');
 
     h.setScenario({ reactionError: 'entity-unavailable' });
     fireReact('like', true);
     await waitFor(() => expect(notice).toHaveBeenCalledWith('error', expect.stringContaining('not available')));
-    expect(onRefreshItems).toHaveBeenCalledTimes(1);
+    // The toast stands alone: the write that was refused is the only one
+    // ever sent. (The deleted refetch-and-retry loop is why this asserts a
+    // count at all: a ticket's per-second expiry made every refetch look
+    // "fresh", so the retry could never be told apart from a loop.)
+    await new Promise((r) => setTimeout(r, 50));
     expect(writes()).toHaveLength(1);
+    expect(reads()).toHaveLength(1); // the mount read; no refetch traffic
+    expect(notice).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reactions — the ungranted consent path (show the buttons, ask on press)', () => {
+  it('a tap asks for consent — and sends no write before it', async () => {
+    const onRequestReactConsent = vi.fn();
+    const notice = vi.fn();
+    installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
+    render(
+      <Host
+        items={[item(2001)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        onReactionNotice={notice}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+    // The tap went to the consent ask, NOT the bridge: no write, no read,
+    // no toast (the host's consent UI is the surface now).
+    expect(writes()).toHaveLength(0);
+    expect(reads()).toHaveLength(0);
+    expect(notice).not.toHaveBeenCalled();
+  });
+
+  it('after the grant lands, the stashed tap is sent exactly once', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
+    const { rerender } = render(
+      <Host
+        items={[item(2001)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    fireReact('heart', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+    expect(writes()).toHaveLength(0);
+
+    // The grant lands: the host re-mints (epoch flips, scope now carried).
+    rerender(
+      <Host items={[item(2001)]} hasReactScope reactTokenEpoch="epoch-2" onRequestReactConsent={onRequestReactConsent} />,
+    );
+    // The ONE held tap goes out, under the item's ticket, with set
+    // semantics — not zero times (lost) and not two (double-applied).
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0].payload).toMatchObject({
+      entityId: 2001,
+      reaction: 'Heart',
+      reacted: true,
+      ticket: 'ticket-2001',
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(1);
+    expect(onRequestReactConsent).toHaveBeenCalledTimes(1);
+  });
+
+  it('a declined grant changes nothing — no write then, none on a later grant either', async () => {
+    const onRequestReactConsent = vi.fn();
+    const notice = vi.fn();
+    installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
+    const { rerender } = render(
+      <Host
+        items={[item(2001)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        onReactionNotice={notice}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+
+    // The consent round concludes WITHOUT the grant: a fresh token whose
+    // scopes still lack the scope. The held tap is settled by that mint —
+    // dropped, not kept.
+    rerender(
+      <Host
+        items={[item(2001)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+        onReactionNotice={notice}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
+    expect(notice).not.toHaveBeenCalled();
+
+    // Proof the stash is empty rather than dormant: when the grant DOES
+    // land later, the declined tap does not ride it. (Reads now flow —
+    // that is the granted state working, not the stale intent.)
+    rerender(
+      <Host items={[item(2001)]} hasReactScope reactTokenEpoch="epoch-3" onRequestReactConsent={onRequestReactConsent} />,
+    );
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
   });
 });

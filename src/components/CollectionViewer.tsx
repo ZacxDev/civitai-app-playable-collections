@@ -91,15 +91,18 @@ export interface CollectionViewerProps {
    * Does the viewer's token carry `social:react:self`?
    *
    * 🔴 DEFAULTS TO `false` — THE OPPOSITE TRADE FROM `hasTipScope` ABOVE, AND
-   * DELIBERATELY. A tip press with the guard off can only walk a viewer into a
-   * picker the server then refuses; a reaction surface with the guard off
-   * ISSUES READS (each billed to the app's shared catalog rate limit) and
-   * renders controls whose every write the host refuses `needs-consent`. The
-   * failure this default buys protection against is worse, so the safe state
-   * is the default: no scope on the token → no reaction UI and no reaction
-   * reads, which is also exactly the pre-approval state (the mint builds the
-   * token from the approved manifest, and this scope is consent-gated on top
-   * of that). `App` always passes the real predicate.
+   * DELIBERATELY. The failure this default buys protection against is READS:
+   * every reaction read is billed to the app's shared catalog rate limit, so
+   * reads (and counts, which only a read can supply) flow only while the
+   * token carries the scope. `App` always passes the real predicate.
+   *
+   * 🔴 THE SCOPE GATES READS, NOT RENDERING — the tips pattern ("show the
+   * button, ask on press"). A SIGNED-IN viewer without the scope still sees
+   * the four reaction elements, rendered without counts, and their tap asks
+   * for the grant instead of sending anything (see the tap path below).
+   * ANONYMOUS viewers see no reaction UI at all: there is no grant to ask
+   * them for. Signed-in-ness comes from `viewerUserId`, which App always
+   * passes; this prop only ever answers "may the hook read".
    */
   hasReactScope?: boolean;
   /** Ask the host to open its consent UI for `social:react:self`. */
@@ -114,14 +117,6 @@ export interface CollectionViewerProps {
   reactTokenEpoch?: string;
   /** Toast channel for reaction outcomes an element state cannot express. */
   onReactionNotice?: (kind: 'error' | 'info', message: string) => void;
-  /**
-   * Refetch the open collection's first page and resolve with the merged
-   * items (App owns them). The reaction retry uses it ONCE after an
-   * `entity-unavailable` refusal on a ticketed item — an expired ticket
-   * (24h) is one of that code's causes, and a refetch is how a fresh one
-   * arrives. Resolves `null` when the refetch failed or is unavailable.
-   */
-  onRefreshItems?: () => Promise<readonly MediaItem[] | null>;
   tipping: boolean;
   /**
    * The viewer's REAL remaining daily tip allowance, read once per view from the
@@ -188,7 +183,6 @@ export function CollectionViewer(props: CollectionViewerProps) {
     onRequestReactConsent,
     reactTokenEpoch,
     onReactionNotice,
-    onRefreshItems,
     tipping,
     dailyTipRemaining,
     splitPlans,
@@ -305,6 +299,11 @@ export function CollectionViewer(props: CollectionViewerProps) {
   // viewer may never reach; the window instead reads a new id only when the
   // viewer actually arrives near it, and the hook's incrementality means a
   // slide of the window re-reads only the ids that entered it.
+  //
+  // 🔴 THE HOOK'S INPUTS ARE GRANTED-ONLY (below): without the scope the id
+  // list and ticket map are empty, so the hook issues no reads at all. The
+  // ungranted signed-in viewer's buttons (rendered further down) are NOT
+  // fed by this hook — they are the consent ask's surface, not a read's.
   const currentItemRef = useRef(currentItem);
   currentItemRef.current = currentItem;
   const reactionAnchor = useMemo(() => {
@@ -335,32 +334,42 @@ export function CollectionViewer(props: CollectionViewerProps) {
   // is itself stable, the rest are props that change identity per render.
   const toggleRef = useRef(reactions.toggle);
   toggleRef.current = reactions.toggle;
-  const ticketsRef = useRef(reactionTickets);
-  ticketsRef.current = reactionTickets;
   const noticeRef = useRef(onReactionNotice);
   noticeRef.current = onReactionNotice;
   const requestReactConsentRef = useRef(onRequestReactConsent);
   requestReactConsentRef.current = onRequestReactConsent;
-  const refreshItemsRef = useRef(onRefreshItems);
-  refreshItemsRef.current = onRefreshItems;
   const reactTokenEpochRef = useRef(reactTokenEpoch);
   reactTokenEpochRef.current = reactTokenEpoch;
+  const hasReactScopeRef = useRef(hasReactScope);
+  hasReactScopeRef.current = hasReactScope;
+  const viewerUserIdRef = useRef(viewerUserId);
+  viewerUserIdRef.current = viewerUserId;
 
   /**
-   * A toggle that could not complete but has ONE defined retry: a consent
-   * refusal (retry when a fresh token lands — the grant rides the re-mint)
-   * or a possible expired ticket (retry once the refetched ticket reaches
-   * the hook). Anything else is reported, never stashed. At most one stash
-   * exists; a newer refused toggle replaces it (the latest intent wins).
+   * A toggle held for its ONE defined retry: the CONSENT retry. It is
+   * written from exactly two places — an ungranted signed-in viewer's tap
+   * (the main path: the tap IS the consent ask) and a granted write the
+   * host still refused `needs-consent` (the backstop: the grant lapsed
+   * after the mint) — and it fires once when a fresh token lands, because
+   * the grant, if given, rides that re-mint. Anything else is reported,
+   * never stashed. At most one stash exists; a newer held toggle replaces
+   * it (the latest intent wins). `marker` is the token epoch current when
+   * the toggle was held — the epoch that could not send it.
    */
   const stashedToggleRef = useRef<{
     id: number;
     reaction: BlockAppReaction;
     reacted: boolean;
-    kind: 'consent' | 'ticket';
-    /** consent: the token epoch that was refused. ticket: the ticket refused. */
     marker: string | undefined;
   } | null>(null);
+
+  /** Hold a toggle for the consent retry (see `stashedToggleRef`). */
+  const stashConsentToggle = useCallback(
+    (id: number, reaction: BlockAppReaction, reacted: boolean): void => {
+      stashedToggleRef.current = { id, reaction, reacted, marker: reactTokenEpochRef.current };
+    },
+    [],
+  );
 
   const runReactionToggle = useCallback(
     async (id: number, reaction: BlockAppReaction, reacted: boolean): Promise<void> => {
@@ -382,7 +391,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
           // the tip consent) and stash the intent: the retry effect fires it
           // once when a fresh token lands. NO toast — the host's consent UI
           // is the surface the viewer is looking at now.
-          stashedToggleRef.current = { id, reaction, reacted, kind: 'consent', marker: reactTokenEpochRef.current };
+          stashConsentToggle(id, reaction, reacted);
           requestReactConsentRef.current?.();
           return;
         }
@@ -398,23 +407,17 @@ export function CollectionViewer(props: CollectionViewerProps) {
           return;
         }
         if (err.code === 'entity-unavailable') {
-          // 🔴 ONE CODE, MANY CAUSES — an expired ticket (24h) is one of
-          // them, alongside an item the viewer may not react to, a block, the
-          // kill switch and a network failure, and the taxonomy cannot tell
-          // them apart. What CAN be told apart: whether the item HAD a ticket
-          // (a no-ticket refusal is local and final — nothing to refresh) and
-          // whether a refetch returns a DIFFERENT one. Only then is a retry
-          // meaningful, and it is attempted exactly once.
-          const used = ticketsRef.current[id];
-          const refresh = refreshItemsRef.current;
-          if (used && refresh) {
-            const fresh = await refresh().catch(() => null);
-            const freshTicket = fresh?.find((it) => it.mediaId === id)?.reactTicket;
-            if (freshTicket && freshTicket !== used) {
-              stashedToggleRef.current = { id, reaction, reacted, kind: 'ticket', marker: used };
-              return;
-            }
-          }
+          // 🔴 THE HONEST TOAST IS THE WHOLE RESPONSE — NO REFETCH, NO
+          // RETRY. An earlier build refetched the item and retried when the
+          // ticket "changed", reasoning that an expired ticket (24h) is one
+          // of this code's causes. The audit killed it: a react ticket is
+          // `v1.<exp>.<sig>` with a PER-SECOND exp, so every refetch mints a
+          // different ticket and a changed-ticket test can never
+          // discriminate an expiry from the code's other causes (an item
+          // the viewer may not react to, a block, the kill switch, a
+          // network failure) — and an item that STAYS unavailable would
+          // loop refuse → refetch → retry against the app's shared rate
+          // limit. So: say it plainly, once, and stop.
           noticeRef.current?.('error', 'Reactions are not available for this media.');
           return;
         }
@@ -432,26 +435,22 @@ export function CollectionViewer(props: CollectionViewerProps) {
     [],
   );
 
-  // 🔴 THE TWO RETRIES, EACH EXACTLY ONCE. The stash is cleared BEFORE the
-  // retry fires, so a retry that is refused again writes a NEW stash (keyed
-  // on the then-current epoch/ticket) and waits for the NEXT change — there
-  // is no path that loops within one token or one ticket.
+  // 🔴 THE CONSENT RETRY, EXACTLY ONCE PER GRANT. A fresh token SETTLES
+  // the stash either way, and the stash is cleared BEFORE anything fires:
+  //   - the mint carries the scope → the held toggle fires once (a retry
+  //     refused again writes a NEW stash keyed on the new epoch and waits
+  //     for the NEXT mint — no loop within one token);
+  //   - the mint lacks it (the viewer declined, or the re-mint was for
+  //     something else) → the intent is DROPPED with the token that
+  //     answered the ask. A declined grant changes nothing: no late write
+  //     rides some unrelated future grant.
   useEffect(() => {
     const stash = stashedToggleRef.current;
     if (!stash) return;
-    if (stash.kind === 'consent') {
-      if (!hasReactScope) return;
-      if (reactTokenEpoch === stash.marker) return; // still the refused token
-      stashedToggleRef.current = null;
-      void runReactionToggle(stash.id, stash.reaction, stash.reacted);
-      return;
-    }
-    const now = reactionTickets[stash.id];
-    if (now && now !== stash.marker) {
-      stashedToggleRef.current = null;
-      void runReactionToggle(stash.id, stash.reaction, stash.reacted);
-    }
-  }, [hasReactScope, reactTokenEpoch, reactionTickets, runReactionToggle]);
+    if (reactTokenEpoch === stash.marker) return; // still the token that could not send it
+    stashedToggleRef.current = null;
+    if (hasReactScope) void runReactionToggle(stash.id, stash.reaction, stash.reacted);
+  }, [hasReactScope, reactTokenEpoch, runReactionToggle]);
 
   /**
    * The elements' `react` event. `detail.reaction` names WHICH reaction —
@@ -460,15 +459,29 @@ export function CollectionViewer(props: CollectionViewerProps) {
    * exactly the hook's set-semantics input. The item is read from the ref:
    * the element that fired belongs to the item on screen at fire time, not
    * at the render that bound this callback.
+   *
+   * 🔴 AN UNGRANTED TAP NEVER REACHES THE HOOK. Without the scope there is
+   * nothing the hook could send (a write needs the grant, and the ids were
+   * never read), so the tap takes the tips path instead: hold the one
+   * intent in the consent stash and ask for the grant; the retry effect
+   * fires it exactly once if the new token carries the scope. Anonymous
+   * viewers render no elements, so a tap here is a signed-in viewer by
+   * construction — the `viewerUserId` check is the belt on that brace.
    */
   const onReact = useCallback(
     (e: CustomEvent<ReactionDetail>) => {
       if (!isAppReaction(e.detail.reaction)) return;
       const item = currentItemRef.current;
       if (!item) return;
+      if (!hasReactScopeRef.current) {
+        if (viewerUserIdRef.current == null) return;
+        stashConsentToggle(item.mediaId, e.detail.reaction, e.detail.reacted);
+        requestReactConsentRef.current?.();
+        return;
+      }
       void runReactionToggle(item.mediaId, e.detail.reaction, e.detail.reacted);
     },
-    [runReactionToggle],
+    [runReactionToggle, stashConsentToggle],
   );
 
   // 🔴 THE EVENT IS WIRED WITH A NATIVE LISTENER, NOT THE BINDING'S `onReact`
@@ -497,15 +510,29 @@ export function CollectionViewer(props: CollectionViewerProps) {
   );
 
   /**
-   * The current item's reaction state, or `undefined` when no reaction UI
-   * may render: gate off, no item on screen, the read has not answered yet,
-   * or the host listed the id in `unavailable` (no ticket — an anonymous
-   * viewer, an item that arrived unticketed). 🔴 UNANSWERED IS NOT "NOT
-   * REACTED": rendering a fresh control on the assumption of no state is
-   * exactly what the contract forbids, so absence renders nothing.
+   * The current item's reaction state AS READ, or `undefined`: the read
+   * has not answered yet, the host listed the id in `unavailable` (no
+   * ticket — an item that arrived unticketed), or reads are not running
+   * at all. 🔴 UNANSWERED IS NOT "NOT REACTED": for a GRANTED viewer,
+   * rendering a fresh control on the assumption of no state is exactly
+   * what the contract forbids, so absence renders nothing.
    */
   const currentReactionState =
     hasReactScope && currentItem ? reactions.byId[currentItem.mediaId] : undefined;
+
+  /**
+   * May the reaction group render WITHOUT read state? Exactly one case:
+   * a SIGNED-IN viewer whose token lacks the scope. They get the four
+   * elements with no counts and no pressed state — there is no state to
+   * show, and the elements are not claiming any: the count part is hidden
+   * (the same `pc-reaction-unknown` treatment as `statsUnknown`) and a tap
+   * asks for the grant instead of writing (see `onReact`). This is not
+   * the forbidden "assume not reacted" render above: nothing here is
+   * bound from a state the app does not hold, and the first thing a tap
+   * does is go and get the real one. Anonymous viewers get neither form —
+   * no grant exists to ask them for.
+   */
+  const showUngrantedReactions = !hasReactScope && viewerUserId != null && currentItem != null;
 
   // Report {mode, index} up so App can keep the shareable URL hash in sync (#6).
   const onViewStateChangeRef = useRef(props.onViewStateChange);
@@ -822,17 +849,24 @@ export function CollectionViewer(props: CollectionViewerProps) {
       {/* Reactions on the item on screen — the same "one row, rendered from
           one function" discipline as Follow/Tip above, so the lightbox's
           copy of this row is the only one while it is up and ambient mode
-          hides reactions with the rest of the chrome. Rendered only when
-          the current item's state is KNOWN (see `currentReactionState`):
-          an unanswered id gets no controls at all.
+          hides reactions with the rest of the chrome. Two render forms
+          (see `currentReactionState` / `showUngrantedReactions`):
 
-          🔴 BOUND FROM `byId` ON EVERY RENDER, AND THAT BINDING IS THE
-          REVERT. The element toggles itself optimistically on click; the
-          hook moves `byId` optimistically too and moves it BACK when the
-          write fails, and the re-render that follows re-sets the element's
-          `reacted`/`count` from the truth. There is no local reaction
-          state anywhere in this component to disagree with it. */}
-      {currentReactionState && currentItem && (
+          GRANTED — rendered only when the current item's state is KNOWN:
+          an unanswered id gets no controls at all. 🔴 BOUND FROM `byId`
+          ON EVERY RENDER, AND THAT BINDING IS THE REVERT. The element
+          toggles itself optimistically on click; the hook moves `byId`
+          optimistically too and moves it BACK when the write fails, and
+          the re-render that follows re-sets the element's `reacted`/
+          `count` from the truth. There is no local reaction state
+          anywhere in this component to disagree with it.
+
+          UNGRANTED (signed-in, no scope) — the same four elements bound
+          from NOTHING: unpressed, count hidden (the `pc-reaction-unknown`
+          ::part treatment — a zero count here would be a claim the app
+          cannot make), never disabled, because a tap is live: it asks for
+          the grant (see `onReact`). */}
+      {(currentReactionState || showUngrantedReactions) && currentItem && (
         <span style={reactionGroupStyle} data-testid="viewer-reactions" ref={reactionGroupRef}>
           {REACTIONS.map((r) => (
             <CivitaiReaction
@@ -840,14 +874,15 @@ export function CollectionViewer(props: CollectionViewerProps) {
               reaction={r}
               emoji={REACTION_EMOJI[r]}
               label={r}
-              reacted={currentReactionState.viewerReactions.includes(r)}
-              count={currentReactionState.statsUnknown ? 0 : currentReactionState.counts[r]}
-              disabled={reactions.pending(currentItem.mediaId, r)}
-              // `statsUnknown`: the metric store could not answer, so the
-              // counts are zeros that must not be SHOWN as "nobody reacted".
-              // The count is hidden via ::part(count) (index.css); the
-              // toggles themselves stay live and truthful.
-              className={currentReactionState.statsUnknown ? 'pc-reaction-unknown' : undefined}
+              reacted={currentReactionState ? currentReactionState.viewerReactions.includes(r) : false}
+              count={currentReactionState && !currentReactionState.statsUnknown ? currentReactionState.counts[r] : 0}
+              disabled={currentReactionState ? reactions.pending(currentItem.mediaId, r) : false}
+              // Counts the app does not hold must not be SHOWN: granted
+              // with `statsUnknown` (the metric store could not answer, so
+              // the zeros are not "nobody reacted"), or ungranted (no read
+              // was ever issued). The count is hidden via ::part(count)
+              // (index.css); the toggles themselves stay live.
+              className={!currentReactionState || currentReactionState.statsUnknown ? 'pc-reaction-unknown' : undefined}
               data-testid={`reaction-${r.toLowerCase()}`}
             />
           ))}
