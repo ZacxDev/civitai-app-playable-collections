@@ -463,16 +463,21 @@ export interface PopularRailProps {
 
 export function PopularRail({ entries, onOpen, c, onFollowChange }: PopularRailProps) {
   const register = useCoverObserver();
-  // 🔴 THE RAIL FILTERS ITSELF rather than trusting its caller. The heading makes
-  // a claim ("Popular right now") that only the data can honour, so the component
-  // that renders the claim is the one that checks it — a caller cannot forget.
-  // See `popularRailEntries` for the two thresholds and why one is not enough.
+  // 🔴 THE RAIL FILTERS ITSELF rather than trusting its caller. The rail's
+  // premise is a claim ("popular right now") that only the data can honour,
+  // so the component that renders the rail is the one that checks it — a
+  // caller cannot forget. See `popularRailEntries` for the two thresholds
+  // and why one is not enough.
+  //
+  // The visible "🔥 Popular right now" heading is GONE (Zacx, 2026-10-17 —
+  // the "Popular" copy is hidden with the sort rework); the rail itself, its
+  // thresholds and its cards are unchanged, and the section keeps its
+  // accessible name for screen readers.
   const shown = popularRailEntries(entries);
   if (shown.length === 0) return null;
   return (
     <CoverObserverContext.Provider value={register}>
       <section aria-label="Popular collections" data-testid="popular-rail" style={{ display: 'grid', gap: 8 }}>
-        <h2 style={railHeading}>🔥 Popular right now</h2>
         <div style={railScroller}>
           {shown.map(({ collection, count }) => (
             <div key={collection.id} style={railCard}>

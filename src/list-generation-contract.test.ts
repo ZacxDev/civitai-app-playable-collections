@@ -45,7 +45,10 @@ const APP = readFileSync(fileURLToPath(new URL('./App.tsx', import.meta.url)), '
  * second kind invalidates an in-flight append.
  */
 const REPLACE_WRITES: ReadonlyArray<{ write: string; bump: string; why: string }> = [
-  { write: 'setDiscover({\n        items: page.items,', bump: 'discoverAppliedRef.current++;', why: "loadDiscover success" },
+  // The Discover write filters the official accounts out as it lands
+  // (2026-10-17): the write's shape changed, the contract did not — the bump
+  // still immediately precedes it, which is all this ledger pins.
+  { write: 'setDiscover({\n        items: withoutOfficial(page.items),', bump: 'discoverAppliedRef.current++;', why: "loadDiscover success" },
   { write: 'setDiscover({ ...EMPTY_LIST, error: errMessage(err) });', bump: 'discoverAppliedRef.current++;', why: 'loadDiscover error' },
   { write: 'setMine({\n        items: page.items,', bump: 'mineAppliedRef.current++;', why: 'loadMine success' },
   { write: 'setMine({ ...EMPTY_LIST, error: errMessage(err) });', bump: 'mineAppliedRef.current++;', why: 'loadMine error' },

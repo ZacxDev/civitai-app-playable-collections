@@ -198,6 +198,15 @@
      <civitai-toast> element, which owns its shadow. A token with no
      consumer is a lie about where a value lives, so it left with the
      Alert it was styling.) */
+
+  /* overlay-*   the browse chrome's floating surfaces (2026-10-17): the
+     navigation drawer's scrim and edge shadow, and the sort/filter
+     dropdown's drop shadow. Black-based and theme-invariant like the stage
+     values above — a scrim dims whatever sits under it in either theme,
+     and a shadow's job is depth, not hue. */
+  --pc-overlay-scrim: rgba(0, 0, 0, 0.5);
+  --pc-overlay-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --pc-drawer-shadow: 0 0 24px rgba(0, 0, 0, 0.35);
 }
 
 /* LIGHT — same key set, asserted (skin.test.ts fails if the two blocks diverge,

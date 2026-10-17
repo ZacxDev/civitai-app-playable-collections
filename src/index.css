@@ -104,6 +104,9 @@
     .pc-skeleton {
       animation: none;
     }
+    .pc-sidebar {
+      animation: none;
+    }
   }
 
   /* Settings switches (Phase 2 surface 4): the settings row already shows
@@ -121,6 +124,13 @@
     overflow: hidden;
     clip-path: inset(50%);
     white-space: nowrap;
+  }
+
+  /* The navigation drawer's slide-in (App.tsx renders `.pc-sidebar`).
+     Keyframes live outside the layer (see pc-shimmer below); the animation
+     assignment is a rule like any other and stays inside it. */
+  .pc-sidebar {
+    animation: pc-slide-in 0.18s ease-out;
   }
 
   /* Reaction counts the app does not hold (Phase 3): granted with
@@ -151,5 +161,14 @@
   }
   100% {
     opacity: 0.55;
+  }
+}
+
+@keyframes pc-slide-in {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
   }
 }

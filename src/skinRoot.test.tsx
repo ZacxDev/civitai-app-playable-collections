@@ -39,7 +39,7 @@ describe('the skin switch is actually on the committed root', () => {
   it.each(['dark', 'light'] as const)('%s: the app root carries data-pc-skin AND data-theme', async (theme) => {
     const { container } = renderApp(theme);
     // Wait for the post-BLOCK_INIT commit so this is the browse root, not boot.
-    await waitFor(() => expect(screen.getByTestId('tab-discover')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('nav-open')).toBeInTheDocument());
 
     const roots = container.querySelectorAll('[data-theme]');
     expect(roots.length).toBeGreaterThan(0); // positive control: we found a root
