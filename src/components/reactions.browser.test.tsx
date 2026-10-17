@@ -248,9 +248,15 @@ describe('<civitai-reaction> — the ungranted reset in the mounted viewer', () 
       // A REAL click on the shadow button: the element flips itself to
       // pressed and dispatches `react` (the two element tests above pin
       // both halves). The ungranted path then holds the intent and asks
-      // for consent — and must leave NO pressed state behind, because the
-      // binding cannot repair it (the ungranted bound value is `false`
-      // before and after, so no property diff ever re-renders it away).
+      // for consent — and must leave NO pressed state behind. On THIS
+      // ticketed path two mechanisms would each repair the flip on their
+      // own: the app's explicit reset in the tap handler, and the binding
+      // re-assigning `reacted={false}` on the re-render the stash causes
+      // (`@lit/react`'s real build re-assigns every bound property on
+      // every commit — the corrected story in CollectionViewer's `onReact`
+      // doc). So this test pins the OUTCOME both mechanisms owe, not the
+      // reset itself; the reset's own pin is the ticketless test below,
+      // where no stash and no re-render follow the tap.
       btn.click();
       await el.updateComplete;
       await new Promise((r) => setTimeout(r, 50));

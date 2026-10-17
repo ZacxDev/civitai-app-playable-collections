@@ -397,17 +397,25 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
   /**
    * 🔴 WHILE A TAP IS HELD, PLAYBACK IS PAUSED (round-2 audit). The stash
-   * above is a ref; this is its render-visible twin, fed into the SAME
-   * pause composition the tip picker uses (the classic and lightbox
-   * Players' `pickerOpen`, ContinuousView's `paused`). Without it the
-   * slideshow's auto-advance (5s by default) moves the current item while
-   * the host's consent dialog is still open — and the navigation drop
-   * (correctly) kills the held tap, so the grant lands, sends nothing,
-   * and says nothing: no toast, the button already reset, the viewer's
-   * tap silently eaten by the pacing. The pause's bound is the stash's
-   * own expiry timer: it drops the tap at the TTL even when nothing else
-   * ever happens — and after a decline, nothing else happening is
-   * exactly the case (no token, no navigation, no settle).
+   * above is a ref; this is its render-visible twin, fed to each surface's
+   * own pause input: ContinuousView's `paused`, and the Players'
+   * `consentHold` — the dedicated input round 3 carved out for it. It
+   * originally rode the Players' `pickerOpen`, the tip picker's prop, and
+   * that muted every player shortcut for the hold's whole life:
+   * `pickerOpen` swallows keys because a money modal is up, but a held
+   * tap OUTLIVES its dialog (a decline closes the dialog and mints
+   * nothing), leaving up to a TTL of dead arrows/Space/f/Escape on a
+   * screen with no modal on it. `consentHold` pauses and auto-resumes
+   * exactly as the picker path does and swallows nothing — see Player's
+   * prop doc. Without the pause at all, the slideshow's auto-advance (5s
+   * by default) moves the current item while the host's consent dialog is
+   * still open — and the navigation drop (correctly) kills the held tap,
+   * so the grant lands, sends nothing, and says nothing: no toast, the
+   * button already reset, the viewer's tap silently eaten by the pacing.
+   * The pause's bound is the stash's own expiry timer: it drops the tap
+   * at the TTL even when nothing else ever happens — and after a decline,
+   * nothing else happening is exactly the case (no token, no navigation,
+   * no settle).
    */
   const [tapHeld, setTapHeld] = useState(false);
 
@@ -430,9 +438,29 @@ export function CollectionViewer(props: CollectionViewerProps) {
     };
   }, []);
 
-  /** Hold a toggle for the consent retry (see `stashedToggleRef`). */
+  /**
+   * Hold a toggle for the consent retry (see `stashedToggleRef`). Returns
+   * whether the toggle was actually held — the callers ask for consent only
+   * when it was, so a refused stash buys no dialog.
+   *
+   * 🔴 THE STASH REFUSES AN ITEM THAT IS NO LONGER ON SCREEN (round-3
+   * audit). The two writers reach this function at very different moments:
+   * the ungranted tap is synchronous with the item on screen, but the
+   * needs-consent backstop writes from the far side of an `await` — the
+   * write was in flight while the viewer navigated away. The navigation
+   * drop cannot catch that case: at navigation time nothing was stashed
+   * yet, so there was nothing to drop. Stashing the late intent anyway
+   * parked it under the NEW item, and the next grant — any grant — fired
+   * the Like on the item the viewer had left (the audit's probe: writes
+   * [2001, 2001] with `2 / 2` on screen). So the guard sits at the stash's
+   * entry point, the one place both writers pass: an id that is not the
+   * current item's is not held, and the tap simply ends — its write was
+   * already refused, and a consent dialog for a dead tap would grant a
+   * scope whose held purpose cannot be served.
+   */
   const stashConsentToggle = useCallback(
-    (id: number, reaction: BlockAppReaction, reacted: boolean): void => {
+    (id: number, reaction: BlockAppReaction, reacted: boolean): boolean => {
+      if (id !== currentItemRef.current?.mediaId) return false;
       if (stashTimerRef.current) clearTimeout(stashTimerRef.current);
       stashedToggleRef.current = {
         id,
@@ -443,6 +471,7 @@ export function CollectionViewer(props: CollectionViewerProps) {
       };
       setTapHeld(true);
       stashTimerRef.current = setTimeout(clearStashedToggle, STASHED_TOGGLE_TTL_MS);
+      return true;
     },
     [clearStashedToggle],
   );
@@ -490,9 +519,14 @@ export function CollectionViewer(props: CollectionViewerProps) {
           // Ask for the grant (App owns the request, fire-and-forget like
           // the tip consent) and stash the intent: the retry effect fires it
           // once when a fresh token lands. NO toast — the host's consent UI
-          // is the surface the viewer is looking at now.
-          stashConsentToggle(id, reaction, reacted);
-          requestReactConsentRef.current?.();
+          // is the surface the viewer is looking at now. The ask rides the
+          // stash: if the stash refused the intent (the write was in flight
+          // while the viewer navigated — round-3 audit, see
+          // `stashConsentToggle`), the tap has already ended and there is
+          // nothing to ask FOR.
+          if (stashConsentToggle(id, reaction, reacted)) {
+            requestReactConsentRef.current?.();
+          }
           return;
         }
         if (err.signInRequired) {
@@ -621,8 +655,13 @@ export function CollectionViewer(props: CollectionViewerProps) {
         if (el) el.reacted = false;
         if (viewerUserIdRef.current == null) return;
         if (!item.reactTicket) return;
-        stashConsentToggle(item.mediaId, e.detail.reaction, true);
-        requestReactConsentRef.current?.();
+        // The ask rides the stash, here as in the needs-consent backstop:
+        // this tap is synchronous with the item on screen, so the stash's
+        // current-item guard passes by construction — the gate is what
+        // keeps the invariant (no stash, no dialog) in exactly one place.
+        if (stashConsentToggle(item.mediaId, e.detail.reaction, true)) {
+          requestReactConsentRef.current?.();
+        }
         return;
       }
       void runReactionToggle(item.mediaId, e.detail.reaction, e.detail.reacted);
@@ -1247,10 +1286,13 @@ export function CollectionViewer(props: CollectionViewerProps) {
             onPositionChange={onClassicPosition}
             onCurrentItemChange={setSurfaceItem}
             showSettingsControl={false}
-            // A held reaction tap pauses too, through the picker's own
-            // prop: the consent dialog is a dialog, and the item must not
-            // move under it (round-2 audit — see `tapHeld`).
-            pickerOpen={pickerOpen || tapHeld}
+            // A held reaction tap pauses through the player's DEDICATED
+            // hold input — NOT `pickerOpen`: the picker's prop swallows
+            // every shortcut, which is right under a money modal and wrong
+            // for a hold that outlives its consent dialog (round-3 audit —
+            // see `tapHeld`).
+            pickerOpen={pickerOpen}
+            consentHold={tapHeld}
             holdPaused={outstandingTip}
             cast={cast}
             reducedMotion={reducedMotion}
@@ -1354,7 +1396,10 @@ export function CollectionViewer(props: CollectionViewerProps) {
             muted={prefs.muted}
             initialItemIndex={lightboxIndex}
             onCurrentItemChange={setLightboxItem}
-            pickerOpen={pickerOpen || tapHeld}
+            // The lightbox player takes the same dedicated hold input as
+            // the classic surface (round-3 audit — see the classic site).
+            pickerOpen={pickerOpen}
+            consentHold={tapHeld}
             holdPaused={outstandingTip}
             isMobile={isMobile}
             c={c}

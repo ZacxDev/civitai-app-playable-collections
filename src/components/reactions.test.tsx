@@ -9,6 +9,7 @@ import { CollectionViewer } from './CollectionViewer.js';
 import { palette } from '../theme.js';
 import type { CollectionDetail, MediaItem } from '../types.js';
 import type { PlayerSettings } from '../settings.js';
+import type { ViewMode } from '../view-modes.js';
 
 // ============================================================================
 // 🔴 REACTIONS, DRIVEN AT THE BRIDGE — the same level as every other social
@@ -93,6 +94,12 @@ interface HostProps {
    *  it — at 600s auto-advance can never fire inside a test, which is
    *  exactly the blind spot the round-2 audit's probe (1s pacing) found. */
   settings?: PlayerSettings;
+  /** Mount straight into a surface (the lightbox and continuous pins). */
+  initialMode?: ViewMode;
+  /** Defaults to true (the viewer's own pin); the continuous-drift pin
+   *  needs it false — reduced motion is an independent auto-scroll gate,
+   *  and leaving it on would make that test pass with the pause unwired. */
+  reducedMotion?: boolean;
 }
 
 /** The viewer mounted the way tip-affordance.test.tsx mounts it (bare, no
@@ -112,7 +119,8 @@ function Host(p: HostProps): ReactElement {
       onSecondsPerImageChange={() => {}}
       onVideoLoopCountChange={() => {}}
       storage={memStorage()}
-      reducedMotion
+      initialMode={p.initialMode}
+      reducedMotion={p.reducedMotion ?? true}
       c={c}
       onExit={() => {}}
       onTip={async () => true}
@@ -438,6 +446,65 @@ describe('reactions — refusals', () => {
     expect(reads()).toHaveLength(1); // the mount read; no refetch traffic
     expect(notice).toHaveBeenCalledTimes(1);
   });
+
+  it('needs-consent refused AFTER navigation: the late stash is refused too — a later grant sends nothing more', async () => {
+    const onRequestReactConsent = vi.fn();
+    const notice = vi.fn();
+    const h = installHost({
+      reactionStates: { 2001: { counts: { Like: 7 } }, 2002: { counts: { Like: 1 } } },
+    });
+    const { rerender } = render(
+      <Host
+        items={[item(2001), item(2002)]}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        onReactionNotice={notice}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+
+    h.setScenario({ reactionError: 'needs-consent' });
+    // 🔴 THE ROUND-3 PATH, EXACTLY. A GRANTED viewer taps Like on item
+    // 2001; the write goes out — and its refusal can only be processed
+    // when this synchronous stretch yields (the toggle's rejection is a
+    // promise continuation), so the navigation below lands FIRST, while
+    // the write is still in flight. NOTHING MAY BE AWAITED between the
+    // tap and the click: that synchrony is the test. At the pre-fix code
+    // the refusal then stashed 2001's tap under item 2002, and the grant
+    // below fired it — writes [2001, 2001] with `2 / 2` on screen.
+    fireReact('like', true);
+    fireEvent.click(screen.getByTestId('ctrl-next'));
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 2'));
+
+    // The refusal settles now, against an item no longer on screen. The
+    // navigation drop could not catch it (nothing was stashed at
+    // navigation time); the stash's own entry guard refuses it instead —
+    // so nothing is held, and nothing is ASKED either: a consent dialog
+    // for a dead tap would grant a scope whose held purpose is gone.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(1); // the refused original, and only it
+    expect(onRequestReactConsent).not.toHaveBeenCalled();
+    expect(notice).not.toHaveBeenCalled();
+
+    // The grant lands anyway (any later consent re-mints carrying the
+    // scope): there is no stash to fire, so the write count for 2001
+    // stays at the one refused attempt. Remove the stash-entry guard and
+    // this is where the second write appears.
+    h.setScenario({ reactionError: null });
+    rerender(
+      <Host
+        items={[item(2001), item(2002)]}
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+        onReactionNotice={notice}
+      />,
+    );
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0].payload).toMatchObject({ entityId: 2001, reaction: 'Like', reacted: true });
+    expect(onRequestReactConsent).not.toHaveBeenCalled();
+  });
 });
 
 describe('reactions — the ungranted consent path (show the buttons, ask on press)', () => {
@@ -760,6 +827,49 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
     expect(writes()).toHaveLength(0);
   });
 
+  it('while a tap is held after a decline, the KEYS still work: ArrowRight navigates — and drops the tap', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({
+      reactionStates: { 2001: { counts: { Like: 7 } }, 2002: { counts: { Like: 1 } } },
+    });
+    const { rerender } = render(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2');
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+
+    // The viewer declines: no new token (nothing rerenders — the decline
+    // test above models why), so the tap sits HELD. At round 2 the hold
+    // rode the Players' `pickerOpen`, whose keyboard gate swallows EVERY
+    // shortcut — arrows, Space/k, f, Escape — for the hold's whole life
+    // (up to the 60s TTL), on a screen with no dialog on it (round-3
+    // audit). The hold now has its own pause input, which pauses and
+    // auto-resumes but gates no keys: ArrowRight must navigate.
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 2'));
+
+    // …and navigating dropped the held tap (the round-1 rule), so when a
+    // later grant lands there is nothing left to fire.
+    rerender(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
+  });
+
   it('fast pacing: auto-advance is PAUSED while a tap is held — tap, time passes, grant → exactly one write', async () => {
     const onRequestReactConsent = vi.fn();
     installHost({
@@ -886,6 +996,151 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('reactions — the held-tap pause on EVERY surface (round-3 pins)', () => {
+  // 🔴 WHY THESE TWO TESTS EXIST. Round 2 wired the held-tap pause into
+  // three surfaces, but only the CLASSIC Player's wiring was pinned (the
+  // fast-pacing test above): deleting the hold from the lightbox Player or
+  // from ContinuousView left the whole suite green (round-3 audit, by
+  // mutation). Each test below is the fast-pacing shape on its own
+  // surface — hold → time passes → no advance THERE → grant → exactly one
+  // write — and each was verified to go red when only its own surface's
+  // wiring is removed.
+  const threeItems = () => [item(2001), item(2002), item(2003)];
+  const threeStates = () => ({
+    reactionStates: {
+      2001: { counts: { Like: 7 } },
+      2002: { counts: { Like: 1 } },
+      2003: { counts: { Like: 3 } },
+    },
+  });
+  const fast: PlayerSettings = { secondsPerImage: 1, videoLoopCount: 1 };
+
+  it('LIGHTBOX: the pause holds the lightbox player — tap in the lightbox, time passes, grant → one write', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost(threeStates());
+    const items = threeItems();
+    const { rerender } = render(
+      <Host
+        items={items}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        settings={fast}
+        initialMode="continuous-horizontal"
+      />,
+    );
+    // Open the lightbox on the first tile; the action row (and its
+    // reaction group) renders INSIDE the dialog while it is up.
+    await waitFor(() => expect(screen.getAllByTestId('continuous-tile')).toHaveLength(3));
+    fireEvent.click(screen.getAllByTestId('continuous-tile')[0]);
+    const lightbox = await screen.findByTestId('lightbox');
+    await screen.findByTestId('viewer-reactions');
+    expect(lightbox.contains(screen.getByTestId('viewer-reactions'))).toBe(true);
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
+
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+
+    // At 1s pacing the lightbox's own player would advance every second.
+    // The hold must reach THIS Player instance: with its `consentHold`
+    // removed, the label moves to `2 / 3` inside this window and the
+    // navigation drop eats the tap before the grant.
+    await new Promise((r) => setTimeout(r, 1600));
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 3');
+    expect(writes()).toHaveLength(0);
+
+    rerender(
+      <Host
+        items={items}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+        settings={fast}
+        initialMode="continuous-horizontal"
+      />,
+    );
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0].payload).toMatchObject({
+      entityId: 2001,
+      reaction: 'Like',
+      reacted: true,
+      ticket: 'ticket-2001',
+    });
+    // Released with the tap: the lightbox player resumes and moves on.
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 3'), {
+      timeout: 3500,
+    });
+  });
+
+  it('CONTINUOUS: the pause holds the drift — the track stops moving while a tap is held, grant → one write', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost(threeStates());
+    const items = threeItems();
+    const { rerender } = render(
+      <Host
+        items={items}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        settings={fast}
+        initialMode="continuous-horizontal"
+        reducedMotion={false}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    await screen.findByTestId('continuous-track');
+
+    // The drift's fuel is the track's measured length, which jsdom
+    // reports as 0 — with a 0 the scroll engine quite correctly never
+    // moves, paused or not, and this test would pass with the wiring
+    // deleted. Stub the length so the surface is genuinely live: 2400px
+    // of track (1200 per copy) at the default 40px/s.
+    const track = screen.getByTestId('continuous-track');
+    Object.defineProperty(track, 'scrollWidth', { configurable: true, value: 2400 });
+    // Prove the surface IS drifting before the tap — a "stillness" claim
+    // about a surface that never moved would be vacuous.
+    await waitFor(() => expect(track.style.transform).not.toBe('translateX(0px)'), { timeout: 3000 });
+    expect(screen.getByTestId('continuous-view').getAttribute('data-autoscroll')).toBe('on');
+
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+    const frozen = track.style.transform;
+    expect(frozen).not.toBe('translateX(0px)');
+    expect(screen.getByTestId('continuous-view').getAttribute('data-autoscroll')).toBe('off');
+
+    // Held: the drift stops dead, mid-scroll. Remove `tapHeld` from the
+    // viewer's `paused` composition and the transform keeps walking
+    // through this whole window.
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(track.style.transform).toBe(frozen);
+    expect(writes()).toHaveLength(0);
+
+    // The grant fires the held tap exactly once, on the item it was made
+    // on (the wall's current item never changed — the drift that would
+    // have moved it was the thing being held).
+    rerender(
+      <Host
+        items={items}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+        settings={fast}
+        initialMode="continuous-horizontal"
+        reducedMotion={false}
+      />,
+    );
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0].payload).toMatchObject({
+      entityId: 2001,
+      reaction: 'Like',
+      reacted: true,
+      ticket: 'ticket-2001',
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(1);
   });
 });
 
