@@ -156,6 +156,26 @@ describe('getCollection', () => {
     const { api } = makeClient([jsonResponse(404, { error: 'gone' })]);
     await expect(api.getCollection(99)).rejects.toMatchObject({ code: 'not_found' });
   });
+
+  it('carries an item’s reactTicket through from the wire payload', async () => {
+    // The client parses the body as the domain shape — no field is picked or
+    // dropped — so the ticket the collection endpoint attaches per item
+    // (signed-in viewer only) reaches `MediaItem.reactTicket` untouched, and
+    // an item the payload did not ticket stays ticketless (which the player
+    // reads as unreactable, never as "not reacted").
+    const { api } = makeClient([
+      jsonResponse(200, {
+        collection: { id: 5, name: 'X', curator: { userId: 1, username: 'a' }, isPublic: true, followed: false },
+        items: [
+          { mediaId: 9, type: 'image', url: 'u', width: 1, height: 1, creator: { userId: 2, username: 'b' }, nsfwLevel: 1, reactTicket: 'ticket-for-9' },
+          { mediaId: 10, type: 'image', url: 'u', width: 1, height: 1, creator: { userId: 2, username: 'b' }, nsfwLevel: 1 },
+        ],
+      }),
+    ]);
+    const res = await api.getCollection(5);
+    expect(res.items[0].reactTicket).toBe('ticket-for-9');
+    expect(res.items[1].reactTicket).toBeUndefined();
+  });
 });
 
 // 🔴 THE `setFollow` SUITE IS GONE BECAUSE THE METHOD IS (0.2.10), not because

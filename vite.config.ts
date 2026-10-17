@@ -125,6 +125,21 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'browser',
+          // 🔴 `@civitai/blocks-react` is EXCLUDED from the dep optimizer in
+          // this project only. Pre-bundled, it carries its OWN React copy, so
+          // a `blocks-react/ui` component rendered here dies with `Cannot read
+          // properties of null (reading 'useEffect')` — a null dispatcher from
+          // the second React — the exact failure `resolve.dedupe` above exists
+          // to prevent, and dedupe cannot reach inside a pre-bundle. Served
+          // through the ordinary pipeline instead, its `react` import resolves
+          // through dedupe to the one React the renderer uses. (Specs that
+          // mount host-coupled components — CollectionViewer — need this;
+          // element-only specs never did, because Lit has no dispatcher.)
+          deps: {
+            optimizer: {
+              client: { exclude: ['@civitai/blocks-react'] },
+            },
+          },
           include: ['src/**/*.browser.test.tsx'],
           browser: {
             enabled: true,

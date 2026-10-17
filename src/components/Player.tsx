@@ -90,6 +90,34 @@ export interface PlayerProps {
    * to the same media re-engages this hold and offers the Retry again.
    */
   holdPaused?: boolean;
+  /**
+   * A reaction tap is held, waiting on the owner's consent round-trip.
+   *
+   * 🔴 PAUSES AND AUTO-RESUMES LIKE `pickerOpen`, BUT DOES NOT SWALLOW KEYS —
+   * and the second half is why this is its own input rather than a second
+   * caller of either existing one. The pause half is the picker's: the item
+   * must not auto-advance out from under a held tap, or the tap's own
+   * navigation drop kills it before the grant can land (round-2 audit).
+   * The resume half is the picker's too — WITH THE LIMIT ROUND 4 FOUND:
+   * releasing the hold restarts what was running ONLY IF the viewer left
+   * the transport alone for the hold's whole life. Unlike the picker, this
+   * hold OUTLIVES its dialog: a decline closes the dialog and mints
+   * nothing, so the tap sits held — bounded by the owner's expiry — on a
+   * screen with NO modal on it and the controls LIVE the whole time. A
+   * viewer who plays and then deliberately pauses inside that window has
+   * spoken last; an expiry release that restarted playback over their
+   * pause would be acting on an entry capture that went stale the moment
+   * they pressed (the play/pause-press marker in the hold gate below).
+   * Routing the hold through `pickerOpen` muted every shortcut (arrows,
+   * Space/k, f, Escape) for that whole window, on both Player surfaces
+   * (round-3 audit); routing it through `holdPaused` instead would have
+   * kept the keys but lost the resume even when the viewer never touches
+   * the transport, because that input's no-resume rule is unconditional.
+   * This one composes with both in the hold gate below and sets neither
+   * of their side effects: no key swallow (only `pickerOpen` gates the
+   * handler), no outstanding-work marker (only `holdPaused` sets it).
+   */
+  consentHold?: boolean;
   /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
   cast?: boolean;
   /** OS reduced-motion preference — pauses cast auto-advance when set. */
@@ -118,6 +146,7 @@ export function Player(props: PlayerProps) {
     showSettingsControl = true,
     pickerOpen = false,
     holdPaused = false,
+    consentHold = false,
     cast = false,
     reducedMotion = false,
     isMobile,
@@ -224,21 +253,72 @@ export function Player(props: PlayerProps) {
   // Releasing on `pickerOpen` alone restarted the timer the moment a picker
   // closed — including the close that leaves a half-failed plan behind, five
   // seconds before the auto-advance moved the media out from under it.
-  const holdStill = pickerOpen || holdPaused;
+  // `consentHold` joins the SAME gate (a held reaction tap must also keep
+  // the stage still) but neither side effect: it is not in the keyboard
+  // handler's gate, and it does not set the outstanding marker below, so
+  // its release resumes like a picker's — see its prop doc.
+  // 🔴 A VIEWER PLAY/PAUSE PRESS DURING ANY HOLD MARKS THE ENTRY CAPTURE
+  // STALE (`sawTransportPressRef`, set by `pressToggle` below — the ONLY
+  // wrapper that marks). It is `sawOutstandingRef`'s rule generalised:
+  // that marker exists because a hold spanning the viewer's own
+  // play-state choice makes the captured was-playing decision stale.
+  // Navigation presses do NOT mark (round-5 operator decision): next/prev
+  // say where the stage goes, not whether it plays, so a hold released
+  // after the viewer navigated still resumes — the scrubber, which never
+  // marked, already behaved that way, and until round 5 the two
+  // navigation paths disagreed. In practice the picker hold cannot
+  // receive a toggle press (its modal covers the controls and its key
+  // gate returns first) and the tip hold's own marker already suppresses
+  // its resume — the press marker is the one that bites in a consent
+  // hold's post-decline window, where the screen has no modal and every
+  // control stays live until the owner's expiry.
+  const holdStill = pickerOpen || holdPaused || consentHold;
   /** Was the transport running when this hold BEGAN? */
   const resumeAfterPickerRef = useRef(false);
   /** Are we inside a hold right now (so the entry capture happens once)? */
   const heldRef = useRef(false);
   /** Did a TIP become outstanding at any point during this hold? */
   const sawOutstandingRef = useRef(false);
+  /** Did the VIEWER press play/pause at any point during this hold? */
+  const sawTransportPressRef = useRef(false);
   const playerRef = useRef(player);
   playerRef.current = player;
+
+  // ---- viewer transport presses ----
+  // 🔴 Every viewer-driven transport control routes through these three:
+  // the keyboard handler, the stage click zones, the bottom bar and the
+  // touch swipe. ONLY `pressToggle` marks the hold's entry capture stale
+  // (the marker in the gate above): a play/pause press is the ONE press
+  // that chooses a play state, so it is the one that can make the
+  // captured was-playing decision stale — the release then never resumes
+  // over the viewer's own last play/pause choice. `pressNext`/`pressPrev`
+  // deliberately do NOT mark (round-5 operator decision): navigating is
+  // not choosing a play state, so a hold released after a navigation
+  // resumes, exactly as it always did for the scrubber, which never
+  // marked either. The component's PROGRAMMATIC transport calls do NOT
+  // route through here — the hold gate's own pause()/play(), the
+  // cast-entry effect, the video `ended` path are the app driving, not
+  // the viewer pressing. The scrubber and shuffle are not wrapped:
+  // neither speaks to whether playback should be running, which is the
+  // only question the resume decides.
+  const pressToggle = useCallback(() => {
+    if (heldRef.current) sawTransportPressRef.current = true;
+    playerRef.current.toggle();
+  }, []);
+  const pressNext = useCallback(() => {
+    playerRef.current.next();
+  }, []);
+  const pressPrev = useCallback(() => {
+    playerRef.current.prev();
+  }, []);
+
   useEffect(() => {
     if (holdStill) {
       if (!heldRef.current) {
         heldRef.current = true;
         resumeAfterPickerRef.current = playerRef.current.playing;
         sawOutstandingRef.current = false;
+        sawTransportPressRef.current = false;
       }
       if (holdPaused) sawOutstandingRef.current = true;
       // 🔴 UNCONDITIONAL, AND `pickerOpen` IS IN THE DEPS FOR THIS REASON. Keying
@@ -249,6 +329,8 @@ export function Player(props: PlayerProps) {
       // correct, because the recipients are frozen at press time; what was lost is
       // the defence in depth that keeps the stage still under a viewer reading a
       // preview. `pause()` is idempotent, so re-running it costs nothing.
+      // `consentHold` is in the deps for the same reason: a held tap engaging
+      // while another hold is already on must still land its `pause()`.
       playerRef.current.pause();
     } else if (heldRef.current) {
       heldRef.current = false;
@@ -258,12 +340,21 @@ export function Player(props: PlayerProps) {
       // acting on it restarts playback for someone who deliberately paused it.
       // A hold that was only ever a picker being open is the case the resume is
       // for, and it is the case a test pins.
-      const resume = resumeAfterPickerRef.current && !sawOutstandingRef.current;
+      // 🔴 THE SAME STALENESS, FROM THE VIEWER'S SIDE: a play/pause press
+      // during the hold (`sawTransportPressRef`) cancels the pending
+      // resume too. A consent hold's post-decline window is where this
+      // bites — the viewer plays, then pauses on purpose, and the tap's
+      // expiry must not restart playback over that pause (round-4 audit).
+      // Navigation presses never set the marker, so they do NOT cancel
+      // the resume (round-5 decision, in the wrapper comment above).
+      const resume =
+        resumeAfterPickerRef.current && !sawOutstandingRef.current && !sawTransportPressRef.current;
       resumeAfterPickerRef.current = false;
       sawOutstandingRef.current = false;
+      sawTransportPressRef.current = false;
       if (resume) playerRef.current.play();
     }
-  }, [holdStill, pickerOpen, holdPaused]);
+  }, [holdStill, pickerOpen, holdPaused, consentHold]);
 
   // ---- keyboard (all viewports; the platform routes real key events to the
   // focused iframe, and arrow keys are the desktop-primary control) ----
@@ -291,16 +382,16 @@ export function Player(props: PlayerProps) {
       switch (e.key) {
         case 'ArrowRight':
           e.preventDefault();
-          player.next();
+          pressNext();
           break;
         case 'ArrowLeft':
           e.preventDefault();
-          player.prev();
+          pressPrev();
           break;
         case ' ':
         case 'k':
           e.preventDefault();
-          player.toggle();
+          pressToggle();
           break;
         case 'f':
           toggleFullscreen();
@@ -315,7 +406,7 @@ export function Player(props: PlayerProps) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [player.next, player.prev, player.toggle, pickerOpen, onExit, cast]);
+  }, [pressNext, pressPrev, pressToggle, pickerOpen, onExit, cast]);
 
   useEffect(() => {
     const onFsChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
@@ -349,8 +440,8 @@ export function Player(props: PlayerProps) {
       setChromeVisible((v) => !v);
       return;
     }
-    if (dx < 0) player.next();
-    else player.prev();
+    if (dx < 0) pressNext();
+    else pressPrev();
   };
 
   if (visibleItems.length === 0) {
@@ -432,21 +523,21 @@ export function Player(props: PlayerProps) {
             <button
               type="button"
               aria-label="Previous"
-              onClick={player.prev}
+              onClick={pressPrev}
               style={clickZone('left')}
               data-testid="clickzone-prev"
             />
             <button
               type="button"
               aria-label="Play or pause"
-              onClick={player.toggle}
+              onClick={pressToggle}
               style={clickZone('center')}
               data-testid="clickzone-toggle"
             />
             <button
               type="button"
               aria-label="Next"
-              onClick={player.next}
+              onClick={pressNext}
               style={clickZone('right')}
               data-testid="clickzone-next"
             />
@@ -486,12 +577,12 @@ export function Player(props: PlayerProps) {
       {chromeShown && (
         <div style={bottomBar(c)}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center' }}>
-            <button type="button" onClick={player.prev} style={iconBtn(c)} aria-label="Previous" data-testid="ctrl-prev">
+            <button type="button" onClick={pressPrev} style={iconBtn(c)} aria-label="Previous" data-testid="ctrl-prev">
               ⏮
             </button>
             <button
               type="button"
-              onClick={player.toggle}
+              onClick={pressToggle}
               style={iconBtn(c, player.playing)}
               aria-label={player.playing ? 'Pause' : 'Play'}
               aria-pressed={player.playing}
@@ -499,7 +590,7 @@ export function Player(props: PlayerProps) {
             >
               {player.playing ? '⏸' : '▶'}
             </button>
-            <button type="button" onClick={player.next} style={iconBtn(c)} aria-label="Next" data-testid="ctrl-next">
+            <button type="button" onClick={pressNext} style={iconBtn(c)} aria-label="Next" data-testid="ctrl-next">
               ⏭
             </button>
             <button

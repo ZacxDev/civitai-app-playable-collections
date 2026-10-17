@@ -85,9 +85,11 @@ import { DEFAULT_VIEW_MODE, type ViewMode } from './view-modes.js';
 import {
   BUZZ_READ_SELF,
   COLLECTIONS_READ_PRIVATE,
+  SOCIAL_REACT_SELF,
   SOCIAL_TIP_SELF,
   defaultHasDocStoreScope,
   defaultHasPrivateScope,
+  defaultHasReactScope,
   defaultHasTipScope,
 } from './scopes.js';
 import { palette } from './theme.js';
@@ -185,13 +187,23 @@ export interface AppProps {
    * drive the document-store path against the REST fake.
    */
   isStorageGranted?: (tokenScopes: string[]) => boolean;
+  /**
+   * Predicate over the current block-token scopes deciding whether the token
+   * carries `social:react:self` — whether the player may issue reaction
+   * READS and render counts. (Rendering the buttons for a signed-in viewer
+   * is NOT gated on it: the tips pattern shows them and asks on press.)
+   * Defaults to the real check. Same test-seam shape as `isTipGranted`: the
+   * mock host's token carries no react scope, so a test grants it by
+   * predicate to drive the reaction path against the bridge fake.
+   */
+  isReactGranted?: (tokenScopes: string[]) => boolean;
   /** Bounded-retry config for the auto-run data loaders (test seam). */
   retry?: RetryConfig;
   /** Analytics sink (Feature #10). A test injects one; prod plugs a transport. */
   onEvent?: AnalyticsSink;
 }
 
-export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorageGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
+export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorageGranted, isReactGranted, retry = DEFAULT_RETRY, onEvent }: AppProps = {}) {
   const { ready, viewer, theme } = useBlockContext();
   const token = useBlockToken();
   const host = useHostOrigin();
@@ -335,6 +347,32 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
       return;
     }
     requestConsent({ scopes: [SOCIAL_TIP_SELF, BUZZ_READ_SELF] });
+  }, [viewer, requestSignIn, requestConsent]);
+
+  // May this token read the viewer's reactions? `social:react:self` is
+  // consent-gated AND approval-gated (see `src/scopes.ts`): presence on the
+  // token switches the bridge hook's reads (and the counts they feed) on.
+  // It does NOT switch the buttons' rendering — a signed-in viewer without
+  // it sees them count-less, and their tap lands here (the tips pattern).
+  const hasReactScope = (isReactGranted ?? defaultHasReactScope)(token.scopes ?? []);
+
+  /**
+   * A reaction tap needs the grant this token doesn't carry. The MAIN path
+   * here is the ordinary one: a signed-in viewer who never granted (or
+   * installed before the scope existed) tapped a reaction, and the viewer
+   * stashed that one tap. The backstop path is a granted write the host
+   * still refused `needs-consent` (grant revoked after the mint, or the
+   * mint raced the grant). Either way, ask exactly as the tip path does:
+   * fire-and-forget, and on grant the re-mint flips `hasReactScope` and
+   * changes `token.raw` — the epoch the stashed toggle retries against.
+   * Declined changes nothing.
+   */
+  const requestReactConsent = useCallback(() => {
+    if (!viewer) {
+      requestSignIn();
+      return;
+    }
+    requestConsent({ scopes: [SOCIAL_REACT_SELF] });
   }, [viewer, requestSignIn, requestConsent]);
 
   // Real HTTP client (prod) unless a fake is injected (tests/dev).
@@ -1234,6 +1272,10 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
           onRequestSignIn={() => requestSignIn()}
           hasTipScope={hasTipScope}
           onRequestTipConsent={requestTipConsent}
+          hasReactScope={hasReactScope}
+          onRequestReactConsent={requestReactConsent}
+          reactTokenEpoch={token.raw}
+          onReactionNotice={(kind, message) => toasts.push(kind, message)}
           tipping={tipping}
           // `null` (unresolved / failed read) becomes `undefined`, which is the
           // pickers' "no local pre-block" default. A failed allowance read must

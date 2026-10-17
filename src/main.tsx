@@ -62,7 +62,11 @@ if (!container) throw new Error('#root missing from index.html');
 
 // Dev-only in-memory API (viewer id 99 matches the Harness viewer) so the
 // harness discover/play/tip/follow loop works with no backend.
-const devApi = useHarness ? createFakeApi({ viewerUserId: 99, balance: 5000 }) : undefined;
+// `reactTickets` is on so the items the player loads carry the tickets the
+// real collection endpoint attaches for a signed-in viewer — without them
+// every item would land in the reaction read's `unavailable` and the
+// harness could not exercise reactions at all.
+const devApi = useHarness ? createFakeApi({ viewerUserId: 99, balance: 5000, reactTickets: true }) : undefined;
 
 // `<BlockGate>` shows an "Open on Civitai" landing when the block is loaded
 // DIRECTLY (top-level at its bare `<slug>.civit.ai` origin, no BLOCK_INIT)
@@ -74,7 +78,11 @@ createRoot(container).render(
     <BlockGate>
       {useHarness ? (
         <Harness>
-          <App api={devApi} />
+          {/* The mock token carries no `social:react:self`; grant it by
+              predicate (the seam's purpose) so the dev loop can exercise
+              reactions against the mock host, whose own declaration gate is
+              fed the real manifest scopes by <Harness> above. */}
+          <App api={devApi} isReactGranted={() => true} />
         </Harness>
       ) : (
         <App />
