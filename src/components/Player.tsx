@@ -107,7 +107,7 @@ export interface PlayerProps {
    * viewer who plays and then deliberately pauses inside that window has
    * spoken last; an expiry release that restarted playback over their
    * pause would be acting on an entry capture that went stale the moment
-   * they pressed (the transport-press marker in the hold gate below).
+   * they pressed (the play/pause-press marker in the hold gate below).
    * Routing the hold through `pickerOpen` muted every shortcut (arrows,
    * Space/k, f, Escape) for that whole window, on both Player surfaces
    * (round-3 audit); routing it through `holdPaused` instead would have
@@ -257,16 +257,21 @@ export function Player(props: PlayerProps) {
   // the stage still) but neither side effect: it is not in the keyboard
   // handler's gate, and it does not set the outstanding marker below, so
   // its release resumes like a picker's — see its prop doc.
-  // 🔴 A VIEWER TRANSPORT PRESS DURING ANY HOLD MARKS THE ENTRY CAPTURE
-  // STALE (`sawTransportPressRef`, set by the press* wrappers below). It
-  // is `sawOutstandingRef`'s rule generalised: that marker exists because
-  // a hold spanning the viewer's own presses makes the captured
-  // was-playing decision stale, and a press is a press whichever hold is
-  // up. In practice the picker hold cannot receive one (its modal covers
-  // the controls and its key gate returns first) and the tip hold's
-  // marker already suppresses its resume — the press marker is the one
-  // that bites in a consent hold's post-decline window, where the screen
-  // has no modal and every control stays live until the owner's expiry.
+  // 🔴 A VIEWER PLAY/PAUSE PRESS DURING ANY HOLD MARKS THE ENTRY CAPTURE
+  // STALE (`sawTransportPressRef`, set by `pressToggle` below — the ONLY
+  // wrapper that marks). It is `sawOutstandingRef`'s rule generalised:
+  // that marker exists because a hold spanning the viewer's own
+  // play-state choice makes the captured was-playing decision stale.
+  // Navigation presses do NOT mark (round-5 operator decision): next/prev
+  // say where the stage goes, not whether it plays, so a hold released
+  // after the viewer navigated still resumes — the scrubber, which never
+  // marked, already behaved that way, and until round 5 the two
+  // navigation paths disagreed. In practice the picker hold cannot
+  // receive a toggle press (its modal covers the controls and its key
+  // gate returns first) and the tip hold's own marker already suppresses
+  // its resume — the press marker is the one that bites in a consent
+  // hold's post-decline window, where the screen has no modal and every
+  // control stays live until the owner's expiry.
   const holdStill = pickerOpen || holdPaused || consentHold;
   /** Was the transport running when this hold BEGAN? */
   const resumeAfterPickerRef = useRef(false);
@@ -274,37 +279,38 @@ export function Player(props: PlayerProps) {
   const heldRef = useRef(false);
   /** Did a TIP become outstanding at any point during this hold? */
   const sawOutstandingRef = useRef(false);
-  /** Did the VIEWER drive the transport at any point during this hold? */
+  /** Did the VIEWER press play/pause at any point during this hold? */
   const sawTransportPressRef = useRef(false);
   const playerRef = useRef(player);
   playerRef.current = player;
 
-  // ---- viewer transport presses (the ONLY paths that mark a press) ----
+  // ---- viewer transport presses ----
   // 🔴 Every viewer-driven transport control routes through these three:
   // the keyboard handler, the stage click zones, the bottom bar and the
-  // touch swipe. A press while a hold is up marks the hold's entry
-  // capture stale (the marker in the gate above), so the release never
-  // resumes over the viewer's own last press. The component's PROGRAMMATIC
-  // transport calls deliberately do NOT route through here — the hold
-  // gate's own pause()/play(), the cast-entry effect, the video `ended`
-  // path are the app driving, not the viewer pressing. The scrubber and
-  // shuffle are not wrapped either: neither speaks to whether playback
-  // should be running, which is the only question the resume decides.
-  const markTransportPress = useCallback(() => {
-    if (heldRef.current) sawTransportPressRef.current = true;
-  }, []);
+  // touch swipe. ONLY `pressToggle` marks the hold's entry capture stale
+  // (the marker in the gate above): a play/pause press is the ONE press
+  // that chooses a play state, so it is the one that can make the
+  // captured was-playing decision stale — the release then never resumes
+  // over the viewer's own last play/pause choice. `pressNext`/`pressPrev`
+  // deliberately do NOT mark (round-5 operator decision): navigating is
+  // not choosing a play state, so a hold released after a navigation
+  // resumes, exactly as it always did for the scrubber, which never
+  // marked either. The component's PROGRAMMATIC transport calls do NOT
+  // route through here — the hold gate's own pause()/play(), the
+  // cast-entry effect, the video `ended` path are the app driving, not
+  // the viewer pressing. The scrubber and shuffle are not wrapped:
+  // neither speaks to whether playback should be running, which is the
+  // only question the resume decides.
   const pressToggle = useCallback(() => {
-    markTransportPress();
+    if (heldRef.current) sawTransportPressRef.current = true;
     playerRef.current.toggle();
-  }, [markTransportPress]);
+  }, []);
   const pressNext = useCallback(() => {
-    markTransportPress();
     playerRef.current.next();
-  }, [markTransportPress]);
+  }, []);
   const pressPrev = useCallback(() => {
-    markTransportPress();
     playerRef.current.prev();
-  }, [markTransportPress]);
+  }, []);
 
   useEffect(() => {
     if (holdStill) {
@@ -334,11 +340,13 @@ export function Player(props: PlayerProps) {
       // acting on it restarts playback for someone who deliberately paused it.
       // A hold that was only ever a picker being open is the case the resume is
       // for, and it is the case a test pins.
-      // 🔴 THE SAME STALENESS, FROM THE VIEWER'S SIDE: any transport press
+      // 🔴 THE SAME STALENESS, FROM THE VIEWER'S SIDE: a play/pause press
       // during the hold (`sawTransportPressRef`) cancels the pending
       // resume too. A consent hold's post-decline window is where this
       // bites — the viewer plays, then pauses on purpose, and the tap's
       // expiry must not restart playback over that pause (round-4 audit).
+      // Navigation presses never set the marker, so they do NOT cancel
+      // the resume (round-5 decision, in the wrapper comment above).
       const resume =
         resumeAfterPickerRef.current && !sawOutstandingRef.current && !sawTransportPressRef.current;
       resumeAfterPickerRef.current = false;

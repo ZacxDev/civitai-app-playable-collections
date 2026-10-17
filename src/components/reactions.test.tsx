@@ -1251,6 +1251,66 @@ describe('reactions — a transport press during a held tap cancels the pending 
   });
 });
 
+describe('reactions — navigation does NOT cancel the auto-resume (round 5)', () => {
+  // 🔴 THE OPERATOR DECISION, PINNED. Round 4 marked the hold stale on
+  // EVERY transport press, so after a decline, pressing next dropped the
+  // tap (navigation drop) but left playback paused — while a scrub,
+  // which never marked, let the release resume. The two navigation
+  // paths disagreed, and only one of them read the viewer's mind right:
+  // navigating says where the stage goes, not whether it plays; only a
+  // play/pause press chooses a play state. So only `pressToggle` marks
+  // now. Here: tap while playing → decline → press next → the tap is
+  // dropped (round 1's rule, unchanged) AND playback RESUMES on the new
+  // item. Restoring the mark in pressNext turns this red; the round-4
+  // play-then-pause tests above pin the toggle half stays marked.
+  it('decline → press next → the tap is dropped and playback resumes on the new item', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({
+      reactionStates: { 2001: { counts: { Like: 7 } }, 2002: { counts: { Like: 1 } } },
+    });
+    const { rerender } = render(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2');
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'true'); // playing
+
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+    // The hold lands: playback paused, entry capture = "was playing".
+    await waitFor(() =>
+      expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false'),
+    );
+
+    // The viewer declines (no new token) and presses NEXT. Navigation
+    // drops the held tap — and, the tap gone, the hold releases and the
+    // release replays the capture: playback resumes on item 2002.
+    fireEvent.click(screen.getByTestId('ctrl-next'));
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 2'));
+    await waitFor(() =>
+      expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'true'),
+    );
+
+    // The dropped tap stays dropped: a later grant sends nothing.
+    rerender(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
+  });
+});
+
 describe('reactions — the stepped read window', () => {
   const manyItems = (n: number, base: number): MediaItem[] =>
     Array.from({ length: n }, (_, i) => item(base + i));

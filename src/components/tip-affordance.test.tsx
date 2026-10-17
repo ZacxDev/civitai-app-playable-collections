@@ -757,6 +757,41 @@ describe('🔴 a half-failed plan survives the four things that unmount a surfac
     expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('🔴 does NOT restart playback out of an outstanding-tip hold when the viewer pressed NOTHING', async () => {
+    // 🔴 THE NO-PRESS TWIN OF THE CASE ABOVE, AND ROUND 5 IS WHY IT EXISTS.
+    // The case above presses play TWICE during the hold, so round 4's
+    // play/pause-press marker suppresses the resume BY ITSELF — deleting
+    // the outstanding-tip guard (`!sawOutstandingRef`) from the release
+    // decision left every test green, because the press marker was doing
+    // the visible work. But the guard is what decides THIS case: playing,
+    // the picker opens, a tip goes outstanding, the hold releases — and
+    // no viewer press happened anywhere in it. Only the outstanding
+    // marker stands between the entry capture ("was playing") and a
+    // restart that would move the media off a still-relevant plan the
+    // moment it settles. Delete the guard and this test goes red while
+    // the case above stays green — that asymmetry is the guard's pin.
+    const onTip = curatorRefusedOnce();
+    render(<Host items={[byBob, byCarol]} onTip={onTip} />);
+    const modal = await openPicker();
+    await userEvent.click(within(modal).getByTestId('split-confirm'));
+    await screen.findByTestId('split-partial');
+    await userEvent.click(screen.getByTestId('split-cancel'));
+
+    // The hold is up, playback is paused — and from here to the release
+    // the viewer touches NO transport control. The transport starts
+    // playing in this harness, so the entry capture the picker took was
+    // "was playing" (Player's own tests pin that a picker-only hold
+    // DOES resume on close — the capture is live, not vacuous).
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+
+    // Settle the tip — the hold releases, and must NOT hand playback back.
+    const reopened = await openPicker();
+    await userEvent.click(within(reopened).getByTestId('split-retry'));
+    await waitFor(() => expect(screen.queryByTestId('tip-split-modal')).toBeNull());
+    expect(onTip).toHaveBeenCalledTimes(3);
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false');
+  });
+
   it('🔴 the media does not DRIFT AWAY from an outstanding plan on its own', async () => {
     // 🔴 THE PICKER PROMISES THIS IN SO MANY WORDS: "Closing is safe too:
     // reopening this split picks the same tip back up, for as long as this page
