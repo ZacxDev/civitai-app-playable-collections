@@ -190,6 +190,31 @@ describe('🔴 `pickerOpen` pauses the transport and swallows every player short
   });
 });
 
+describe('🔴 `consentHold` in the hold effect deps: a held tap engaging over an existing hold still lands the pause', () => {
+  it('tip hold up, viewer presses play underneath it, then consentHold engages → the re-run pauses', () => {
+    const { rerender } = render(<Host items={[byBob, byCarol]} holdPaused />);
+    const playBtn = () => screen.getByTestId('ctrl-play');
+
+    // The outstanding-tip hold pauses the running transport on entry…
+    expect(playBtn()).toHaveAttribute('aria-pressed', 'false');
+    // …but that hold spans the viewer's own presses: they press play and
+    // the transport is RUNNING again underneath an active hold.
+    fireEvent.click(playBtn());
+    expect(playBtn()).toHaveAttribute('aria-pressed', 'true');
+
+    // A reaction tap is held while the tip hold is STILL up. `holdStill`
+    // never changes (true → true), so the ONLY thing that re-runs the
+    // hold effect is `consentHold`'s own entry in its deps — and the
+    // effect's pause() is unconditional, so the stage stills. Drop
+    // `consentHold` from the deps and this assertion fails: the effect
+    // never re-runs, playback keeps running, and the item drifts out
+    // from under the held tap exactly as if the round-2 pause had never
+    // been wired into this Player.
+    rerender(<Host items={[byBob, byCarol]} holdPaused consentHold />);
+    expect(playBtn()).toHaveAttribute('aria-pressed', 'false');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The Player enforces the maturity ceiling ITSELF
 // ---------------------------------------------------------------------------

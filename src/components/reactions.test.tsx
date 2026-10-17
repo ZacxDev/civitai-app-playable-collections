@@ -1144,6 +1144,113 @@ describe('reactions — the held-tap pause on EVERY surface (round-3 pins)', () 
   });
 });
 
+describe('reactions — a transport press during a held tap cancels the pending auto-resume (round 4)', () => {
+  // 🔴 THE ROUND-4 PROBE, AS TESTS. The consent hold inherited the
+  // picker's resume: entry capture says "was playing", release calls
+  // play(). That premise holds while a modal is up — but a DECLINED tap
+  // leaves the hold sitting on a live screen for the rest of the TTL,
+  // and a viewer who takes the transport back (play, then a deliberate
+  // pause) has overridden the capture. At head the expiry release read
+  // only the capture and restarted playback over that pause — for BOTH
+  // the Space path and the play-button path the probe exercised. Each
+  // path is pinned separately below: they are different wirings into
+  // the transport, and unwrapping either one must fail only its own
+  // test. The untouched cases stay pinned elsewhere: grant release
+  // resumes (fast pacing), silent expiry resumes (the pause-bound test).
+  //
+  // 🔴 THE CLOCK SHAPE IS THE PAUSE-BOUND TEST'S, DELIBERATELY. A
+  // single-shot advance past 60s does NOT reliably cross the TTL in
+  // this harness (the stash arms only once the consent round-trip
+  // lands, which the fake clock reaches partway through an advance —
+  // measured: 62s in one shot left the tap held, a further stepped
+  // walk released it). So both tests advance to just inside the TTL,
+  // then walk in 250ms steps, asserting the frozen state at EVERY step:
+  // a release that wrongly resumed would flip the control and, at 1s
+  // pacing, walk the label off `1 / 3` inside the walk. The two play →
+  // pause presses are synchronous, so no auto-advance can slip between
+  // them and drop the tap by navigation instead.
+  const threeItems = () => [item(2001), item(2002), item(2003)];
+  const threeStates = () => ({
+    reactionStates: {
+      2001: { counts: { Like: 7 } },
+      2002: { counts: { Like: 1 } },
+      2003: { counts: { Like: 3 } },
+    },
+  });
+  const fast: PlayerSettings = { secondsPerImage: 1, videoLoopCount: 1 };
+  const playBtn = () => screen.getByTestId('ctrl-play');
+  const label = () => screen.getByTestId('progress-label').textContent;
+
+  /** Tap → held → decline-by-silence → the caller's two presses → walk
+   *  past the TTL asserting the deliberate pause survives the release. */
+  async function declinePlayPauseExpire(press: () => void): Promise<void> {
+    const onRequestReactConsent = vi.fn();
+    installHost(threeStates());
+    render(
+      <Host
+        items={threeItems()}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        settings={fast}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    expect(label()).toBe('1 / 3');
+    expect(playBtn()).toHaveAttribute('aria-pressed', 'true'); // playing
+
+    fireReact('like', true);
+    await vi.waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+    // The hold lands: playback paused, entry capture = "was playing".
+    await vi.waitFor(() => expect(playBtn()).toHaveAttribute('aria-pressed', 'false'));
+
+    // Held at 1s pacing: time passes, the item does not move.
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(label()).toBe('1 / 3');
+
+    // The viewer declines (no token — nothing rerenders, the tap sits
+    // held) and takes the transport back: play, then pause ON PURPOSE.
+    press();
+    expect(playBtn()).toHaveAttribute('aria-pressed', 'true');
+    press();
+    expect(playBtn()).toHaveAttribute('aria-pressed', 'false');
+
+    // Up to just inside the TTL: still held, still the viewer's pause.
+    await vi.advanceTimersByTimeAsync(58_000);
+    expect(playBtn()).toHaveAttribute('aria-pressed', 'false');
+    expect(label()).toBe('1 / 3');
+
+    // Walk past the TTL. The stash drops somewhere in here and the hold
+    // releases: pre-fix the release replayed the entry capture, the
+    // control flipped to playing and the label walked off `1 / 3`.
+    for (let step = 0; step < 60; step++) {
+      await vi.advanceTimersByTimeAsync(250);
+      expect(playBtn()).toHaveAttribute('aria-pressed', 'false');
+      expect(label()).toBe('1 / 3');
+    }
+    expect(writes()).toHaveLength(0);
+    expect(onRequestReactConsent).toHaveBeenCalledTimes(1);
+  }
+
+  it('SPACE: decline → play → deliberate pause → the TTL release leaves playback paused', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await declinePlayPauseExpire(() => fireEvent.keyDown(window, { key: ' ' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('PLAY BUTTON: decline → play → deliberate pause → the TTL release leaves playback paused', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await declinePlayPauseExpire(() => fireEvent.click(playBtn()));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('reactions — the stepped read window', () => {
   const manyItems = (n: number, base: number): MediaItem[] =>
     Array.from({ length: n }, (_, i) => item(base + i));
