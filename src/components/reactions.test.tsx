@@ -1309,6 +1309,60 @@ describe('reactions — navigation does NOT cancel the auto-resume (round 5)', (
     await new Promise((r) => setTimeout(r, 50));
     expect(writes()).toHaveLength(0);
   });
+
+  // The pressPrev TWIN of the test above (round-6 nit): the round-5
+  // decision pins pressNext, but pressPrev carried the identical
+  // no-mark rule with no test of its own — restoring the mark there
+  // left everything green. Same shape, one difference: the press is
+  // ArrowLeft (the keyboard route into pressPrev), and prev WRAPS, so
+  // from 1 / 2 it lands on the last item, 2 / 2.
+  it('decline → ArrowLeft (prev) → the tap is dropped and playback resumes on the new item', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({
+      reactionStates: { 2001: { counts: { Like: 7 } }, 2002: { counts: { Like: 1 } } },
+    });
+    const { rerender } = render(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    expect(screen.getByTestId('progress-label')).toHaveTextContent('1 / 2');
+    expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'true'); // playing
+
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+    // The hold lands: playback paused, entry capture = "was playing".
+    await waitFor(() =>
+      expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'false'),
+    );
+
+    // The viewer declines (no new token) and presses ArrowLeft. Prev
+    // wraps to item 2002; navigation drops the held tap — and, the tap
+    // gone, the hold releases and the release replays the capture:
+    // playback resumes on item 2002, exactly as for next.
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    await waitFor(() => expect(screen.getByTestId('progress-label')).toHaveTextContent('2 / 2'));
+    await waitFor(() =>
+      expect(screen.getByTestId('ctrl-play')).toHaveAttribute('aria-pressed', 'true'),
+    );
+
+    // The dropped tap stays dropped: a later grant sends nothing.
+    rerender(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
+  });
 });
 
 describe('reactions — the stepped read window', () => {
