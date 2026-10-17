@@ -10,8 +10,9 @@
 //     - the view-mode switcher (`ModeSwitcher` / `SegmentedControl`) —
 //       `components/ModeSwitcher.test.tsx` pins role=radiogroup, aria-checked,
 //       the roving tabindex and Arrow/Home/End selection+focus.
-//     - the Discover/Mine tablist — `App.test.tsx` pins role=tab, aria-controls
-//       onto a real tabpanel, and roving focus.
+//     - the Discover/Mine navigation — a sidebar drawer of upstream nav
+//       items since 2026-10-17; `App.test.tsx` pins the drawer (trigger,
+//       selection, backdrop/Escape dismissal, focus hand-off).
 //     - the lightbox dialog — `CollectionViewer.test.tsx` + `FocusTrap.test.tsx`
 //       pin role=dialog/aria-modal, the trap, and focus restoration on close.
 //

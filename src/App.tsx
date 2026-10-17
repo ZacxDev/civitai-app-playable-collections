@@ -30,8 +30,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { nextIndex, rovingAction } from './lib/roving.js';
-
 // 🔴 THE NINE RUNTIME HOOKS NOW COME FROM `./lib/sdk-runtime.js`, NOT FROM
 // `@civitai/blocks-react`. Same names, same shapes, different transport underneath:
 // the snapshot-derived five still read the bridge transport (so the /testing Harness
@@ -73,9 +71,9 @@ import {
   PERIOD_LABEL,
   PERIOD_TESTID,
   endOfResultsLabel,
-  sortHint,
   windowFallbackNotice,
 } from './lib/period.js';
+import { isOfficialCollection } from './lib/official.js';
 import { useBrowsePrefs } from './lib/browse-prefs.js';
 import { useDebouncedValue } from './lib/use-debounced-value.js';
 import { useServerTipAllowance } from './lib/tip-allowance.js';
@@ -102,6 +100,11 @@ import type {
   MediaItem,
 } from './types.js';
 import { CollectionGrid, PopularRail, RecentRail } from './components/CollectionGrid.js';
+// Per-element deep imports (the Phase 2 pattern — see CollectionGrid.tsx):
+// the sidebar's nav is the upstream `civitai-nav-list` / `civitai-nav-item`
+// pair, the same component family the sibling apps' sidebars use.
+import { CivitaiNavList } from '@civitai/components-react/elements/civitai-nav-list';
+import { CivitaiNavItem } from '@civitai/components-react/elements/civitai-nav-item';
 import { useRecent, type RecentEntry } from './lib/recent.js';
 import { useAnalytics, type AnalyticsSink } from './lib/analytics.js';
 import { CollectionViewer } from './components/CollectionViewer.js';
@@ -116,11 +119,17 @@ const SEARCH_DEBOUNCE_MS = 300;
 
 type Tab = 'discover' | 'mine';
 
-const TAB_PANEL_ID = 'collection-tabpanel';
-const TABS: ReadonlyArray<{ key: Tab; label: string; testid: string }> = [
-  { key: 'discover', label: 'Discover', testid: 'tab-discover' },
-  { key: 'mine', label: 'My collections', testid: 'tab-mine' },
-];
+/**
+ * The sidebar nav items' hrefs. The upstream item is a LINK — with no `href`
+ * it renders as a group disclosure button, which these are not — and the list
+ * matches its `current` against them, so each view needs a stable href of
+ * its own. They are never actually navigated to: the click is intercepted
+ * (preventDefault) and drives the `tab` state, exactly as the old tab-strip
+ * buttons did. The values are deliberately NOT valid deep links
+ * (`lib/deep-link.ts` parses an unrelated format and returns null for these),
+ * so even an unintercepted activation would only park an inert hash.
+ */
+const TAB_HREF: Record<Tab, string> = { discover: '#discover', mine: '#mine' };
 
 interface ListState {
   items: CollectionSummary[];
@@ -149,6 +158,18 @@ interface OpenCollection {
   nextCursor?: string;
   /** Pages fetched so far (safety ceiling = MAX_DETAIL_PAGES). */
   pages: number;
+}
+
+/**
+ * Discover is a public lens: collections curated by Civitai official
+ * accounts are hidden from it (Zacx, 2026-10-17 — see lib/official.ts for
+ * the rule and for what the payload does and does not carry). Applied where
+ * a public page lands — the first page AND every infinite-scroll append —
+ * and to the Popular rail's resolved entries. Never applied to Mine, which
+ * is the viewer's own list and theirs to see whole.
+ */
+function withoutOfficial(items: CollectionSummary[]): CollectionSummary[] {
+  return items.filter((s) => !isOfficialCollection(s));
 }
 
 /** Append `incoming` onto `existing`, dropping ids already present (inclusive-cursor re-emit). */
@@ -282,8 +303,11 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
   const rootRef = useRef<HTMLDivElement>(null);
   useBlockResize(rootRef);
 
-  // Refs to the Discover/Mine tab buttons for roving-focus keyboard nav (#4).
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  // The sidebar trigger, so closing the drawer can hand focus back to the
+  // control that opened it; the drawer's close button takes focus on open
+  // (see the effect by the drawer state below).
+  const navTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const navCloseRef = useRef<HTMLButtonElement | null>(null);
 
   // Theme colors resolve to `--civitai-*` tokens (theme-agnostic); light/dark is
   // driven by the `data-theme` attribute set on the app root below, not by JS.
@@ -453,6 +477,57 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
 
   // ---- browse state ----
   const [tab, setTab] = useState<Tab>('discover');
+  // The two surfaces that replaced the tab strip and the sort/window chip
+  // rows (Zacx, 2026-10-17): a slide-out navigation drawer, and ONE
+  // sort/filter dropdown behind an icon button.
+  const [navOpen, setNavOpen] = useState(false);
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
+
+  const closeNav = useCallback(() => {
+    setNavOpen(false);
+    // Hand focus back to the trigger — a drawer that strands focus on a
+    // control it just unmounted drops keyboard users at the top of the page.
+    navTriggerRef.current?.focus();
+  }, []);
+
+  const selectTab = useCallback(
+    (next: Tab) => {
+      setTab(next);
+      setNavOpen(false);
+      navTriggerRef.current?.focus();
+    },
+    [],
+  );
+
+  // The dropdown describes the tab in front of the viewer; a tab switch
+  // (which now happens from the drawer) retires it rather than leaving a
+  // stale menu hanging over the new view.
+  useEffect(() => {
+    setSortMenuOpen(false);
+  }, [tab]);
+
+  // Escape dismisses either overlay. Both sit over a backdrop; a trapped
+  // Escape would read as a dead key, and the browse root has no other Escape
+  // consumer (the player's own handler lives in the viewer, which replaces
+  // this root wholesale).
+  useEffect(() => {
+    if (!navOpen && !sortMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (navOpen) closeNav();
+      setSortMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [navOpen, sortMenuOpen, closeNav]);
+
+  // On open, focus lands on the drawer's close button — the first control in
+  // it — so keyboard and screen-reader users are inside the surface they
+  // opened rather than tabbing in from wherever they were.
+  useEffect(() => {
+    if (navOpen) navCloseRef.current?.focus();
+  }, [navOpen]);
+
   const [search, setSearch] = useState('');
   // Live type-ahead: the input updates on every keystroke, but the list only
   // re-fetches off this debounced value — no explicit Enter/Search needed. The
@@ -708,7 +783,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
       // this one is about to throw away.
       discoverAppliedRef.current++;
       setDiscover({
-        items: page.items,
+        items: withoutOfficial(page.items),
         loading: false,
         error: null,
         nextCursor: page.nextCursor,
@@ -784,7 +859,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
       if (seq !== discoverSeqRef.current || gen !== discoverAppliedRef.current) return;
       setDiscover((p) => ({
         ...p,
-        items: mergeSummaries(p.items, page.items),
+        items: mergeSummaries(p.items, withoutOfficial(page.items)),
         nextCursor: page.nextCursor,
         loadingMore: false,
         // The newest page's provenance wins: a mid-scroll fallback is still a
@@ -847,7 +922,10 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
         }
       });
       if (seq !== popularSeqRef.current) return;
-      setPopular(resolved);
+      // The rail lists OTHER people's collections, so the official-account
+      // filter applies here too — including to entries resolved by id,
+      // which never passed through a (filtered) list page.
+      setPopular(resolved.filter((e) => !isOfficialCollection(e.collection)));
     } catch {
       // Popular is a nice-to-have; never block the page on it.
       if (seq !== popularSeqRef.current) return;
@@ -1301,22 +1379,6 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
   }
 
   const activeList = tab === 'discover' ? discover : mine;
-  const activeTabId = TABS.find((t) => t.key === tab)?.testid;
-
-  // Roving-focus tablist keyboard handler (ship-blocker #4): Arrow keys / Home /
-  // End move selection + focus across the Discover/Mine tabs.
-  const onTabKeyDown = (e: React.KeyboardEvent) => {
-    const action = rovingAction(e.key, 'horizontal');
-    if (!action) return;
-    e.preventDefault();
-    const cur = TABS.findIndex((t) => t.key === tab);
-    const target = nextIndex(action, cur, TABS.length);
-    const next = TABS[target];
-    if (next) {
-      setTab(next.key);
-      tabRefs.current[target]?.focus();
-    }
-  };
 
   return (
     <div ref={rootRef} data-pc-skin data-theme={dataTheme} data-layout={isMobile ? 'mobile' : 'desktop'} style={pageStyle()}>
@@ -1335,6 +1397,23 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
                   the store assets; `skin` is what earns it a place in the UI. It is
                   aria-hidden — the <h1> already says the name. */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                {/* The navigation trigger: opens the slide-out drawer whose
+                    upstream nav items replaced the Discover/My-collections
+                    tab strip (Zacx, 2026-10-17). */}
+                <Button
+                  ref={(el) => {
+                    navTriggerRef.current = el;
+                  }}
+                  variant="light"
+                  size="sm"
+                  onClick={() => setNavOpen(true)}
+                  aria-label="Open navigation"
+                  aria-expanded={navOpen}
+                  aria-controls="pc-sidebar"
+                  data-testid="nav-open"
+                >
+                  ☰
+                </Button>
                 <BrandMark />
                 <h1 style={{ fontSize: 22, margin: 0 }}>Playable Collections</h1>
               </div>
@@ -1356,29 +1435,11 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
             </Alert>
           )}
 
-          {/* tabs — WAI-ARIA roving tablist (#4): only the selected tab is
-              tabbable; Arrow/Home/End move selection+focus; each tab controls the
-              tabpanel below. */}
-          <Group gap={8} role="tablist" aria-label="Collection source" onKeyDown={onTabKeyDown}>
-            {TABS.map((t, i) => (
-              <Button
-                key={t.key}
-                ref={(el) => {
-                  tabRefs.current[i] = el;
-                }}
-                id={t.testid}
-                role="tab"
-                aria-selected={tab === t.key}
-                aria-controls={TAB_PANEL_ID}
-                tabIndex={tab === t.key ? 0 : -1}
-                variant={tab === t.key ? 'filled' : 'light'}
-                onClick={() => setTab(t.key)}
-                data-testid={t.testid}
-              >
-                {t.label}
-              </Button>
-            ))}
-          </Group>
+          {/* Discover / My collections lived here as a roving tab strip until
+              2026-10-17. They are the sidebar drawer's two upstream nav items
+              now (header ☰ trigger; the drawer renders at the end of this
+              root). The views themselves — and the `tab` state that selects
+              between them — are unchanged. */}
 
           {/* search + sort */}
           <form
@@ -1403,75 +1464,105 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
                 </Button>
               </Group>
 
-              {/* sort toggle — Popular ("Most followed") ↔ Newest (feedback #3) */}
-              <Group gap={8} align="center">
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--civitai-color-text-dimmed)' }}>Sort</span>
-                <Group gap={4} role="group" aria-label="Sort collections">
-                  <Button
-                    size="sm"
-                    variant={sort === 'popular' ? 'filled' : 'light'}
-                    aria-pressed={sort === 'popular'}
-                    onClick={() => setSort('popular')}
-                    data-testid="sort-popular"
-                  >
-                    Popular
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={sort === 'newest' ? 'filled' : 'light'}
-                    aria-pressed={sort === 'newest'}
-                    onClick={() => setSort('newest')}
-                    data-testid="sort-newest"
-                  >
-                    Newest
-                  </Button>
-                </Group>
-              </Group>
+              {/* Sort + window, consolidated (Zacx, 2026-10-17): ONE icon button
+                  opens a dropdown detailing both — what to sort by, and what
+                  to filter by (the popularity window). The standalone chip
+                  rows and their "Sort" / "Popular" labels are gone, and with
+                  them the "Sorted by …" announcement line: the dropdown's
+                  pressed chips state the current choices once, where the
+                  viewer changes them. The chips themselves are the controls
+                  that stood here — same testids, same `aria-pressed` pattern,
+                  same persisted prefs — moved, not rebuilt. The dropdown
+                  stays open across a selection (it is a control panel, like
+                  the viewer's settings popover, not a one-shot menu) and
+                  closes on its backdrop, on Escape, or on the toggle. */}
+              <div style={{ position: 'relative', width: 'fit-content' }}>
+                <Button
+                  variant="light"
+                  size="sm"
+                  onClick={() => setSortMenuOpen((v) => !v)}
+                  aria-haspopup="true"
+                  aria-expanded={sortMenuOpen}
+                  aria-controls="sort-filter-menu"
+                  aria-label="Sort and filter"
+                  data-testid="sort-filter-toggle"
+                >
+                  ⇅
+                </Button>
+                {sortMenuOpen && (
+                  <>
+                    <div
+                      style={menuBackdropStyle}
+                      onClick={() => setSortMenuOpen(false)}
+                      data-testid="sort-filter-backdrop"
+                    />
+                    <div
+                      id="sort-filter-menu"
+                      data-testid="sort-filter-menu"
+                      style={menuPanelStyle}
+                      aria-label="Sort and filter"
+                    >
+                      <span style={menuHeadingStyle}>Sort by</span>
+                      <Group gap={4} role="group" aria-label="Sort collections">
+                        <Button
+                          size="sm"
+                          variant={sort === 'popular' ? 'filled' : 'light'}
+                          aria-pressed={sort === 'popular'}
+                          onClick={() => setSort('popular')}
+                          data-testid="sort-popular"
+                        >
+                          Popular
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={sort === 'newest' ? 'filled' : 'light'}
+                          aria-pressed={sort === 'newest'}
+                          onClick={() => setSort('newest')}
+                          data-testid="sort-newest"
+                        >
+                          Newest
+                        </Button>
+                      </Group>
 
-              {/* Popularity window — rendered only on the popular sort, because
-                  that is the only sort the server honours it for (criterion 6).
-                  Hiding it beats disabling it: a viewer cannot pick a window
-                  under Newest, see nothing change, and have to be told why.
-                  The choice is REMEMBERED while hidden, so switching back to
-                  Popular restores the window rather than resetting it.
+                      {/* Popularity window — the dropdown's Filter-by section,
+                          rendered only on the popular sort, because that is
+                          the only sort the server honours it for (criterion
+                          6). Hiding it beats disabling it: a viewer cannot
+                          pick a window under Newest, see nothing change, and
+                          have to be told why. The choice is REMEMBERED while
+                          hidden, so switching back to Popular restores the
+                          window rather than resetting it.
 
-                  Same control pattern as the sort chips above, deliberately
-                  (criterion 5): real `<Button>`s in a labelled `role="group"`,
-                  each carrying `aria-pressed`. That is natively keyboard
-                  operable — every chip is in the tab order, Enter/Space
-                  activates. NO roving tabindex: the tabs above use roving
-                  because they are `role="tab"` in a tablist, where the ARIA
-                  pattern requires it; a group of toggle buttons must not steal
-                  Tab from its own members. */}
-              {activePeriod != null && (
-                <Group gap={8} align="center">
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--civitai-color-text-dimmed)' }}>Popular</span>
-                  <Group gap={4} role="group" aria-label="Popularity window" data-testid="period-group">
-                    {COLLECTION_PERIODS.map((p) => (
-                      <Button
-                        key={p}
-                        size="sm"
-                        variant={period === p ? 'filled' : 'light'}
-                        aria-pressed={period === p}
-                        onClick={() => setPeriod(p)}
-                        data-testid={PERIOD_TESTID[p]}
-                      >
-                        {PERIOD_LABEL[p]}
-                      </Button>
-                    ))}
-                  </Group>
-                </Group>
-              )}
-              {/* 🔴 OUT OF THE CHIP ROW, AND PHRASED AS A SENTENCE. Sitting inline
-                  after the two chips at 12px dimmed, this read as a THIRD, disabled
-                  sort option — "Popular | Newest | Most followed" — which is a claim
-                  about the control surface, not about the sort. The same string was
-                  ALSO the `title` on the Popular button, so it was delivered twice by
-                  two mechanisms; that duplicate is gone. A sentence with a full stop
-                  cannot be mistaken for a chip. */}
-              <span style={{ fontSize: 12, color: 'var(--civitai-color-text-dimmed)' }} data-testid="sort-hint">
-                {sortHint(sort, activePeriod)}
-              </span>
+                          Same control pattern as the sort chips above,
+                          deliberately (criterion 5): real `<Button>`s in a
+                          labelled `role="group"`, each carrying
+                          `aria-pressed`. That is natively keyboard operable
+                          — every chip is in the tab order, Enter/Space
+                          activates. NO roving tabindex: a group of toggle
+                          buttons must not steal Tab from its own members. */}
+                      {activePeriod != null && (
+                        <>
+                          <span style={menuHeadingStyle}>Filter by</span>
+                          <Group gap={4} role="group" aria-label="Popularity window" data-testid="period-group">
+                            {COLLECTION_PERIODS.map((p) => (
+                              <Button
+                                key={p}
+                                size="sm"
+                                variant={period === p ? 'filled' : 'light'}
+                                aria-pressed={period === p}
+                                onClick={() => setPeriod(p)}
+                                data-testid={PERIOD_TESTID[p]}
+                              >
+                                {PERIOD_LABEL[p]}
+                              </Button>
+                            ))}
+                          </Group>
+                        </>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
               {/* 🔴 WHY THIS IS A NOTE AND NOT A REWRITTEN HINT. When the server
                   cannot rank the asked-for window it silently serves the
                   all-time order, and presenting that as "this month" would be a
@@ -1495,8 +1586,8 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
             </Stack>
           </form>
 
-          {/* the tabpanel the Discover/Mine tabs control (#4) */}
-          <div role="tabpanel" id={TAB_PANEL_ID} aria-labelledby={activeTabId} tabIndex={0} style={{ display: 'grid', gap: 16, outline: 'none' }}>
+          {/* the browse content the sidebar nav selects between */}
+          <div style={{ display: 'grid', gap: 16 }}>
           {/* continue-watching rail (discover only, #7) */}
           {tab === 'discover' && <RecentRail entries={recent} onOpen={openRecent} c={c} />}
 
@@ -1556,6 +1647,68 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
           </div>
         </Stack>
       </div>
+
+      {/* ---- slide-out navigation drawer (Zacx, 2026-10-17) ----
+          The Discover / My-collections navigation as a drawer over a
+          backdrop, its entries the upstream `civitai-nav-list` /
+          `civitai-nav-item` pair. Selection, backdrop tap and Escape all
+          close it; the items are links whose clicks are intercepted into
+          the `tab` state (see TAB_HREF). Deliberately NOT wrapped in the
+          app's FocusTrap: the trap enumerates focusable LIGHT-DOM elements,
+          and the items' anchors live in the elements' shadow DOM — a trap
+          here would cycle Tab onto the close button alone and make the
+          items unreachable by keyboard. Focus is managed by hand instead:
+          the close button on open, back to the trigger on close. */}
+      {navOpen && (
+        <div data-testid="sidebar-overlay">
+          <div style={sidebarBackdropStyle} onClick={closeNav} data-testid="sidebar-backdrop" />
+          <aside
+            id="pc-sidebar"
+            role="dialog"
+            aria-label="Navigation"
+            data-testid="sidebar"
+            className="pc-sidebar"
+            style={sidebarPanelStyle}
+          >
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button
+                ref={(el) => {
+                  navCloseRef.current = el;
+                }}
+                variant="light"
+                size="sm"
+                onClick={closeNav}
+                aria-label="Close navigation"
+                data-testid="nav-close"
+              >
+                ✕
+              </Button>
+            </div>
+            <CivitaiNavList label="Collection source" current={TAB_HREF[tab]}>
+              <CivitaiNavItem
+                href={TAB_HREF.discover}
+                label="Discover"
+                current={tab === 'discover'}
+                onClick={(e) => {
+                  e.preventDefault();
+                  selectTab('discover');
+                }}
+                data-testid="tab-discover"
+              />
+              <CivitaiNavItem
+                href={TAB_HREF.mine}
+                label="My collections"
+                current={tab === 'mine'}
+                onClick={(e) => {
+                  e.preventDefault();
+                  selectTab('mine');
+                }}
+                data-testid="tab-mine"
+              />
+            </CivitaiNavList>
+          </aside>
+        </div>
+      )}
       <ToastHost toasts={toasts.toasts} onDismiss={toasts.dismiss} />
     </div>
   );
@@ -1593,4 +1746,54 @@ const contentStyle: CSSProperties = {
   maxWidth: 960,
   padding: 20,
   boxSizing: 'border-box',
+};
+
+// ---- the two overlays (drawer + dropdown) ----
+const sidebarBackdropStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'var(--pc-overlay-scrim)',
+  zIndex: 60,
+};
+const sidebarPanelStyle: CSSProperties = {
+  position: 'fixed',
+  top: 0,
+  bottom: 0,
+  left: 0,
+  width: 'min(280px, 85vw)',
+  background: 'var(--civitai-color-surface)',
+  borderRight: '1px solid var(--civitai-color-border)',
+  boxShadow: 'var(--pc-drawer-shadow)',
+  zIndex: 61,
+  padding: 12,
+  display: 'grid',
+  alignContent: 'start',
+  gap: 8,
+  boxSizing: 'border-box',
+  overflowY: 'auto',
+};
+const menuBackdropStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'transparent',
+  zIndex: 40,
+};
+const menuPanelStyle: CSSProperties = {
+  position: 'absolute',
+  top: 'calc(100% + 6px)',
+  left: 0,
+  zIndex: 41,
+  minWidth: 230,
+  display: 'grid',
+  gap: 6,
+  padding: 10,
+  background: 'var(--civitai-color-surface)',
+  border: '1px solid var(--civitai-color-border)',
+  borderRadius: 'var(--civitai-radius)',
+  boxShadow: 'var(--pc-overlay-shadow)',
+};
+const menuHeadingStyle: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  color: 'var(--civitai-color-text-dimmed)',
 };

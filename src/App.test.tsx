@@ -131,6 +131,31 @@ function renderApp(
 
 const c = palette();
 
+/** Open the slide-out navigation drawer (Discover / My collections live there now). */
+async function openNav() {
+  // Idempotent: a flow that already opened the drawer must not toggle it shut.
+  if (!screen.queryByTestId('sidebar')) {
+    await userEvent.click(screen.getByTestId('nav-open'));
+  }
+  await screen.findByTestId('sidebar');
+}
+
+/** Switch browse views the way a viewer does: drawer → nav item (which closes the drawer). */
+async function switchTab(testid: 'tab-discover' | 'tab-mine') {
+  await openNav();
+  await userEvent.click(screen.getByTestId(testid));
+}
+
+/** Open the consolidated sort/filter dropdown (the sort + window chips live inside it). */
+async function openSortMenu() {
+  // Idempotent: the dropdown stays open across selections, so a helper that
+  // already opened it (e.g. to re-sort mid-scenario) must not toggle it shut.
+  if (!screen.queryByTestId('sort-filter-menu')) {
+    await userEvent.click(screen.getByTestId('sort-filter-toggle'));
+  }
+  await screen.findByTestId('sort-filter-menu');
+}
+
 const sampleCollection = (over: Partial<CollectionSummary> = {}): CollectionSummary => ({
   id: 1,
   name: 'Sample',
@@ -291,10 +316,18 @@ describe('App — discover + tabs', () => {
     expect(screen.queryByText(/1,234/)).toBeNull();
   });
 
-  it('offers a Popular ↔ Newest sort toggle, and describes the active sort as a sentence rather than a third chip', async () => {
+  it('consolidates the sort into ONE dropdown: Popular ↔ Newest behind the ⇅ button, no announcement copy', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api });
     await screen.findByTestId('collection-grid');
+    // Consolidated (Zacx, 2026-10-17): at the top level there is only the ONE
+    // icon button — the chips exist only inside its dropdown.
+    expect(screen.queryByTestId('sort-popular')).toBeNull();
+    expect(screen.queryByTestId('sort-newest')).toBeNull();
+    const toggle = screen.getByTestId('sort-filter-toggle');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await openSortMenu();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
     const popular = screen.getByTestId('sort-popular');
     const newest = screen.getByTestId('sort-newest');
     // Two explicit options, no <select>, no name-sort.
@@ -302,7 +335,7 @@ describe('App — discover + tabs', () => {
     expect(newest).toBeInTheDocument();
     expect(screen.queryByTestId('sort-select')).toBeNull();
     expect(screen.queryByText('Name')).toBeNull();
-    // Default = Popular, and it's labelled so users know what it means.
+    // Default = Popular.
     expect(popular).toHaveAttribute('aria-pressed', 'true');
     expect(newest).toHaveAttribute('aria-pressed', 'false');
     // 🔴 The `title` is GONE on purpose and this asserts its absence, not merely
@@ -310,9 +343,11 @@ describe('App — discover + tabs', () => {
     // tooltip on the button AND as the visible hint — so dropping one without a
     // guard would leave the duplicate free to come back.
     expect(popular).not.toHaveAttribute('title');
-    // A SENTENCE, with a full stop: inline after the two chips at 12px dimmed,
-    // the bare "Most followed" read as a third, disabled sort option.
-    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Sorted by most followed.');
+    // 🔴 AND THE HINT IS GONE TOO, BY DIRECTION THIS TIME: the "Sorted by …"
+    // announcement copy is hidden (Zacx, 2026-10-17). The dropdown's pressed
+    // chips are the one statement of the active sort.
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
+    expect(screen.queryByText(/Sorted by/)).toBeNull();
   });
 
   it('toggling the sort re-fetches the list from page 1 with the new sort (feedback #3)', async () => {
@@ -331,19 +366,20 @@ describe('App — discover + tabs', () => {
     await waitFor(() => expect(seen.some((s) => s.sort === 'popular')).toBe(true));
     seen.length = 0;
 
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('sort-newest'));
     // A fresh page-1 fetch (no cursor) with sort=newest.
     await waitFor(() => expect(seen.some((s) => s.sort === 'newest')).toBe(true));
     expect(seen.every((s) => s.cursor === undefined)).toBe(true);
     expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('sort-hint')).toHaveTextContent('Sorted newest first.');
+    expect(screen.getByTestId('sort-popular')).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('switches to My collections and shows own public + private when private access is granted', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     renderApp({ api, isPrivateGranted: () => true });
     await screen.findByTestId('collection-grid');
-    await userEvent.click(screen.getByTestId('tab-mine'));
+    await switchTab('tab-mine');
     const grid = await screen.findByTestId('collection-grid');
     await waitFor(() => expect(within(grid).getAllByTestId('collection-card')).toHaveLength(2));
     expect(grid).toHaveTextContent('My Public Board');
@@ -356,7 +392,7 @@ describe('App — discover + tabs', () => {
     const api = createFakeApi();
     renderApp({ api, viewer: null });
     await screen.findByTestId('collection-grid');
-    await userEvent.click(screen.getByTestId('tab-mine'));
+    await switchTab('tab-mine');
     expect(await screen.findByTestId('mine-anon')).toBeInTheDocument();
   });
 
@@ -375,6 +411,130 @@ describe('App — discover + tabs', () => {
     fail = false;
     await userEvent.click(screen.getByTestId('grid-retry'));
     await screen.findByTestId('collection-grid');
+  });
+});
+
+describe('App — Civitai official collections are hidden from Discover (2026-10-17)', () => {
+  // The rule keys on the ONLY owner identity the payload carries:
+  // `curator.username`, exact-matched case-insensitively against the official
+  // account names in `lib/official.ts`. There is no official/staff flag on
+  // the wire — see that module's header before "improving" this fixture.
+  const officialSummary = sampleCollection({
+    id: 900,
+    name: 'Official Picks',
+    curator: { userId: 1, username: 'Civitai' },
+  });
+  const indieSummary = sampleCollection({
+    id: 901,
+    name: 'Indie Picks',
+    curator: { userId: 5, username: 'alice' },
+  });
+
+  function stubApi(): ApiClient {
+    const base = createFakeApi({ viewerUserId: 99 });
+    return {
+      ...base,
+      async listCollections(params) {
+        if (params.mode === 'public') return { items: [officialSummary, indieSummary] };
+        // Mine returns the official-curated row on purpose: the SAME summary
+        // must render there, proving the filter is Discover-scoped.
+        return { items: [officialSummary] };
+      },
+    };
+  }
+
+  it('does not render an official collection in Discover, and still renders a normal creator’s', async () => {
+    renderApp({ api: stubApi() });
+    const grid = await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(grid).toHaveTextContent('Indie Picks'));
+    expect(grid).not.toHaveTextContent('Official Picks');
+    expect(within(grid).getAllByTestId('collection-card')).toHaveLength(1);
+  });
+
+  it('still shows the same collection on My collections — the filter is Discover-only', async () => {
+    renderApp({ api: stubApi(), isPrivateGranted: () => true });
+    await screen.findByTestId('collection-grid');
+    await switchTab('tab-mine');
+    const grid = await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(grid).toHaveTextContent('Official Picks'));
+  });
+
+  it('filters official collections out of infinite-scroll appends too', async () => {
+    const base = createFakeApi({ viewerUserId: 99 });
+    const page2 = sampleCollection({
+      id: 902,
+      name: 'Second Page Indie',
+      curator: { userId: 6, username: 'bob' },
+    });
+    const api: ApiClient = {
+      ...base,
+      async listCollections(params) {
+        if (params.mode !== 'public') return base.listCollections(params);
+        if (!params.cursor) return { items: [indieSummary], nextCursor: 'p2' };
+        return { items: [officialSummary, page2] };
+      },
+    };
+    renderApp({ api });
+    const grid = await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(grid).toHaveTextContent('Indie Picks'));
+    // Drive the sentinel the way the suite does: re-fire intersections on
+    // every poll until the append lands (the PR #60 pattern).
+    await waitFor(() => {
+      flushIntersections();
+      expect(screen.getByTestId('collection-grid')).toHaveTextContent('Second Page Indie');
+    });
+    expect(screen.getByTestId('collection-grid')).not.toHaveTextContent('Official Picks');
+  });
+
+  it('keeps an official collection out of the Popular rail even when it tops the chart', async () => {
+    // The rail resolves ids that never passed through a list page, so it is
+    // the easiest place for the filter to leak; the official entry here is
+    // the MOST played one and resolves through `getCollection` only.
+    const base = createFakeApi({ viewerUserId: 99 });
+    const api: ApiClient = {
+      ...base,
+      async getCollection(id, opts) {
+        if (id === 999) {
+          return {
+            collection: {
+              id: 999,
+              name: 'Official Gem',
+              description: null,
+              curator: { userId: 1, username: 'Civitai' },
+              isPublic: true,
+              followed: false,
+            },
+            items: [
+              {
+                mediaId: 5,
+                type: 'image',
+                url: 'https://x/5.jpg',
+                width: 1,
+                height: 1,
+                creator: { userId: 1, username: 'Civitai' },
+                nsfwLevel: 1,
+              },
+            ],
+          };
+        }
+        return base.getCollection(id, opts);
+      },
+    };
+    renderApp({
+      api,
+      shared: {
+        seed: [
+          { value: { title: 'Official Gem', data: { collectionId: 999 } }, voters: [1, 2, 3, 4, 5] },
+          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
+          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
+          { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
+        ],
+      },
+    });
+    await screen.findByTestId('collection-grid');
+    const rail = await screen.findByTestId('popular-rail');
+    expect(rail).toHaveTextContent('Neon Cities');
+    expect(rail).not.toHaveTextContent('Official Gem');
   });
 });
 
@@ -566,7 +726,7 @@ describe('App — responsive root branch', () => {
 describe('App — private collections consent gate', () => {
   async function gotoMine() {
     await screen.findByTestId('collection-grid');
-    await userEvent.click(screen.getByTestId('tab-mine'));
+    await switchTab('tab-mine');
     // wait for the mine list to load (public own board present)
     await screen.findByText('My Public Board');
   }
@@ -895,33 +1055,75 @@ describe('App — failed collection-open retry (ship-blocker #5)', () => {
   });
 });
 
-describe('App — keyboard-operable tablist (ship-blocker #4)', () => {
-  it('wires a roving tablist: selected tab tabbable + aria-controls a tabpanel', async () => {
+describe('App — sidebar navigation (replaced the tab strip, 2026-10-17)', () => {
+  // The roving tablist this describe used to pin is gone by direction: the
+  // two views are items of the upstream `civitai-nav-list` inside a slide-out
+  // drawer. What jsdom can pin is the BEHAVIOUR — presence, selection,
+  // dismissal, focus hand-off. The items' rendered current state lives in
+  // the elements' shadow DOM, which jsdom cannot upgrade (the @lit/react SSR
+  // build), so — as with the Phase 3 reactions — that half is verified in a
+  // real browser (the dev-harness screenshots), not faked here.
+  it('keeps the nav items inside the closed drawer — no tab strip at the top level', async () => {
     renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
     await screen.findByTestId('collection-grid');
-    const discover = screen.getByTestId('tab-discover');
-    const mine = screen.getByTestId('tab-mine');
-    expect(discover).toHaveAttribute('role', 'tab');
-    expect(discover).toHaveAttribute('aria-selected', 'true');
-    expect(discover).toHaveAttribute('tabindex', '0');
-    expect(mine).toHaveAttribute('tabindex', '-1');
-    // aria-controls points at a real tabpanel labelled by the active tab.
-    const panelId = discover.getAttribute('aria-controls');
-    const panel = document.getElementById(panelId!);
-    expect(panel).toHaveAttribute('role', 'tabpanel');
-    expect(panel).toHaveAttribute('aria-labelledby', 'tab-discover');
+    expect(screen.queryByTestId('sidebar')).toBeNull();
+    expect(screen.queryByTestId('tab-discover')).toBeNull();
+    expect(screen.queryByTestId('tab-mine')).toBeNull();
+    expect(screen.queryByRole('tablist')).toBeNull();
+    // The ONE top-level nav affordance is the trigger.
+    expect(screen.getByTestId('nav-open')).toHaveAttribute('aria-expanded', 'false');
+    await openNav();
+    expect(screen.getByTestId('nav-open')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('tab-discover')).toBeInTheDocument();
+    expect(screen.getByTestId('tab-mine')).toBeInTheDocument();
+    // The items are the upstream element, not a restyled button.
+    expect(screen.getByTestId('tab-discover').tagName.toLowerCase()).toBe('civitai-nav-item');
+    expect(screen.getByTestId('tab-mine').closest('civitai-nav-list')).not.toBeNull();
   });
 
-  it('ArrowRight moves selection + focus to the next tab', async () => {
+  it('selecting My collections switches the view AND closes the drawer, focus back on the trigger', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }), isPrivateGranted: () => true });
+    await screen.findByTestId('collection-grid');
+    await switchTab('tab-mine');
+    expect(screen.queryByTestId('sidebar')).toBeNull();
+    const grid = await screen.findByTestId('collection-grid');
+    await waitFor(() => expect(within(grid).getAllByTestId('collection-card')).toHaveLength(2));
+    expect(grid).toHaveTextContent('My Public Board');
+    expect(screen.getByTestId('nav-open')).toHaveFocus();
+  });
+
+  it('Escape closes the drawer without switching views, focus back on the trigger', async () => {
     renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
     await screen.findByTestId('collection-grid');
-    screen.getByTestId('tab-discover').focus();
-    await userEvent.keyboard('{ArrowRight}');
-    const mine = screen.getByTestId('tab-mine');
-    expect(mine).toHaveAttribute('aria-selected', 'true');
-    expect(mine).toHaveFocus();
-    expect(mine).toHaveAttribute('tabindex', '0');
-    expect(screen.getByTestId('tab-discover')).toHaveAttribute('tabindex', '-1');
+    await openNav();
+    // Opening put focus inside the drawer (its close button).
+    expect(screen.getByTestId('nav-close')).toHaveFocus();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('sidebar')).toBeNull());
+    expect(screen.getByTestId('nav-open')).toHaveFocus();
+    // Still on Discover.
+    expect(screen.getByTestId('collection-grid')).toHaveTextContent('Neon Cities');
+  });
+
+  it('a backdrop tap closes the drawer', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    await openNav();
+    await userEvent.click(screen.getByTestId('sidebar-backdrop'));
+    expect(screen.queryByTestId('sidebar')).toBeNull();
+    expect(screen.getByTestId('collection-grid')).toHaveTextContent('Neon Cities');
+  });
+
+  it('the sort/filter dropdown dismisses on its backdrop and on Escape', async () => {
+    renderApp({ api: createFakeApi({ viewerUserId: 99 }) });
+    await screen.findByTestId('collection-grid');
+    await openSortMenu();
+    await userEvent.click(screen.getByTestId('sort-filter-backdrop'));
+    expect(screen.queryByTestId('sort-filter-menu')).toBeNull();
+    await openSortMenu();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('sort-filter-menu')).toBeNull());
+    expect(screen.getByTestId('sort-filter-toggle')).toHaveAttribute('aria-expanded', 'false');
   });
 });
 
@@ -1216,6 +1418,7 @@ describe('the popularity window', () => {
   it('offers all five periods and defaults to This month (criterion 1)', async () => {
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
 
     const chips = ['period-day', 'period-week', 'period-month', 'period-year', 'period-alltime'];
     for (const id of chips) expect(screen.getByTestId(id)).toBeInTheDocument();
@@ -1239,6 +1442,7 @@ describe('the popularity window', () => {
     // period.
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
 
     // Default window: Month.
     await waitFor(async () => expect(await gridOrder()).toEqual(['Bravo', 'Delta', 'Alpha', 'Charlie']));
@@ -1278,30 +1482,41 @@ describe('the popularity window', () => {
     await waitFor(() => expect(seen.some((s) => s.sort === 'popular' && s.period === 'month')).toBe(true));
 
     seen.length = 0;
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('period-week'));
     await waitFor(() => expect(seen.some((s) => s.period === 'week')).toBe(true));
     // A fresh page-1 fetch, not a continuation of the previous window's pages.
     expect(seen.every((s) => s.cursor === undefined)).toBe(true);
   });
 
-  it('names the active period in the sort hint, keeping the capture recipe literal (criterion 4)', async () => {
+  it('renders NO "Sorted by" announcement copy in any control state (the hint is hidden by direction)', async () => {
+    // 🔴 THIS TEST REPLACES THE CRITERION-4 HINT TEST, AND THE REPLACEMENT IS
+    // A DELIBERATE REVERSAL, NOT A REPAIR. The hint existed to name the
+    // active sort + window, and one of its sentences —
+    // `POPULAR_SORT_SENTENCE`, "Sorted by most followed." — is a literal an
+    // EXTERNAL consumer waits on: talos-infra's app-capture recipe used
+    // `waitForGone: "Sorted by most followed."` as its signal that the
+    // player had opened. Zacx's direction (2026-10-17) hides the "Sorted
+    // by" copy outright, so the literal is now absent at ALL times —
+    // including on the grid — and that recipe's wait goes VACUOUSLY green
+    // rather than red. That consequence is recorded here because this test
+    // is where the literal used to be pinned: the recipe needs a new
+    // player-open signal, and that is an operator follow-up outside this
+    // app. `lib/period.ts` keeps `sortHint` + the sentence (and its own
+    // pins) untouched; the UI simply no longer renders them.
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
-    const hint = () => screen.getByTestId('sort-hint');
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
+    expect(document.body.textContent).not.toContain('Sorted by');
 
-    // 🔴 `toHaveTextContent` is a substring match, so the first assertion in each
-    // pair is what pins the EXACT literal that talos-infra's app-capture recipe
-    // waits on (`waitForGone: "Sorted by most followed."`). Reword it and that
-    // wait does not go red — it goes vacuously green.
-    expect(hint().textContent).toContain('Sorted by most followed.');
-    expect(hint().textContent).toBe('Sorted by most followed. Popular this month.');
-
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('period-day'));
-    expect(hint().textContent).toBe('Sorted by most followed. Popular today.');
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
+    expect(document.body.textContent).not.toContain('Sorted by');
 
-    await userEvent.click(screen.getByTestId('period-alltime'));
-    expect(hint().textContent).toBe('Sorted by most followed. Popular all time.');
-    expect(hint().textContent).toContain('Sorted by most followed.');
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
+    expect(document.body.textContent).not.toContain('Sorted by');
   });
 
   it('applies the window to the popular sort ONLY — Newest is unaffected (criterion 6)', async () => {
@@ -1317,6 +1532,7 @@ describe('the popularity window', () => {
     renderApp({ api });
     await screen.findByTestId('collection-grid');
 
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('sort-newest'));
     await waitFor(() => expect(seen.some((s) => s.sort === 'newest')).toBe(true));
 
@@ -1324,15 +1540,16 @@ describe('the popularity window', () => {
     // discard it (`period-ignored-for-non-popularity-sort`), so sending one buys
     // a param that changes nothing and a reason string to suppress.
     expect(seen.filter((s) => s.sort === 'newest').every((s) => s.period === undefined)).toBe(true);
-    // The control is hidden rather than disabled: a viewer cannot pick a window
-    // here, see nothing change, and have to be told why.
+    // The Filter section is hidden rather than disabled: a viewer cannot pick
+    // a window here, see nothing change, and have to be told why.
     expect(screen.queryByTestId('period-group')).toBeNull();
-    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted newest first.');
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
   });
 
   it('remembers the chosen window while the control is hidden under Newest', async () => {
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
 
     await userEvent.click(screen.getByTestId('period-year'));
     await waitFor(async () => expect(await gridOrder()).toEqual(['Charlie', 'Alpha', 'Delta', 'Bravo']));
@@ -1342,7 +1559,7 @@ describe('the popularity window', () => {
 
     await userEvent.click(screen.getByTestId('sort-popular'));
     expect(screen.getByTestId('period-year')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this year.');
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
   });
 
   it('🔴 never sends a window on the MINE feed, and never claims one there', async () => {
@@ -1367,7 +1584,7 @@ describe('the popularity window', () => {
     };
     renderApp({ api, isPrivateGranted: () => true });
     await screen.findByTestId('collection-grid');
-    await userEvent.click(screen.getByTestId('tab-mine'));
+    await switchTab('tab-mine');
     // Positive control: the Mine grid really has rows, so the assertions below
     // are about the window and not about an empty tab.
     await waitFor(async () => expect((await gridOrder()).length).toBe(4));
@@ -1379,21 +1596,28 @@ describe('the popularity window', () => {
 
     // No control, no window named, no end-of-list marker — this tab is untouched.
     expect(screen.queryByTestId('period-group')).toBeNull();
-    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed.');
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
     expect(screen.queryByTestId('period-fallback')).toBeNull();
     expect(screen.queryByTestId('grid-end')).toBeNull();
+
+    // And opening the dropdown ON Mine still offers no Filter section — the
+    // window is a Discover-popular concept (the query above runs with the
+    // menu closed, where the group is absent trivially).
+    await openSortMenu();
+    expect(screen.queryByTestId('period-group')).toBeNull();
   });
 
   it('is keyboard operable and labelled, matching the sort control (criterion 5)', async () => {
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
 
     const group = screen.getByTestId('period-group');
     const sortGroup = screen.getByTestId('sort-popular').closest('[role="group"]')!;
     // Same ARIA pattern as the existing sort chips: a labelled group of
-    // `aria-pressed` toggle buttons. NOT roving tabindex — that belongs to the
-    // Discover/Mine `role="tab"` strip, where the ARIA pattern requires it; a
-    // group of toggle buttons must not take Tab away from its own members.
+    // `aria-pressed` toggle buttons. NOT roving tabindex — the sidebar's nav
+    // items are links, and a group of toggle buttons must not take Tab away
+    // from its own members.
     expect(group).toHaveAttribute('role', 'group');
     expect(sortGroup).toHaveAttribute('role', 'group');
     expect(group).toHaveAccessibleName('Popularity window');
@@ -1457,6 +1681,7 @@ describe('the popularity window', () => {
       },
     });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
 
     // Touch ONLY the window. The record must still carry the sort.
     await userEvent.click(screen.getByTestId('period-year'));
@@ -1487,6 +1712,7 @@ describe('the popularity window', () => {
       storage: { seed: { [BROWSE_PREFS_KEY]: { sort: 'newest', period: 'year' } } },
     });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
 
     // The sort came back as Newest, not the Popular default.
     await waitFor(() => expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true'));
@@ -1504,7 +1730,7 @@ describe('the popularity window', () => {
     // And it is the window actually IN EFFECT, not just a pressed chip: the
     // year ranking orders the seeds differently from every other window.
     await waitFor(async () => expect(await gridOrder()).toEqual(['Charlie', 'Alpha', 'Delta', 'Bravo']));
-    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this year.');
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
   });
 
   it('falls back to the defaults on a first visit, with nothing stored', async () => {
@@ -1515,9 +1741,10 @@ describe('the popularity window', () => {
     // change fixed.
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
     expect(screen.getByTestId('sort-popular')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this month.');
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
   });
 
   it('🔴 degrades a corrupt stored record PER FIELD instead of breaking the UI', async () => {
@@ -1531,6 +1758,7 @@ describe('the popularity window', () => {
       storage: { seed: { [BROWSE_PREFS_KEY]: { sort: 'newest', period: 'fortnight' } } },
     });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
     await waitFor(() => expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true'));
     await userEvent.click(screen.getByTestId('sort-popular'));
     await waitFor(() => expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true'));
@@ -1547,6 +1775,7 @@ describe('the popularity window', () => {
       storage: { seed: { [BROWSE_PREFS_KEY]: 'not-a-record' } },
     });
     await screen.findByTestId('collection-grid');
+    await openSortMenu();
     expect(screen.getByTestId('sort-popular')).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByTestId('period-month')).toHaveAttribute('aria-pressed', 'true');
   });
@@ -1561,8 +1790,9 @@ describe('the popularity window', () => {
     expect(note).toHaveTextContent(
       "Ranking for this month isn't available right now — showing all-time popularity instead.",
     );
-    // The hint still describes the CONTROL's state; the note describes the serve.
-    expect(screen.getByTestId('sort-hint').textContent).toBe('Sorted by most followed. Popular this month.');
+    // The note describes the SERVE, not the control — a functional notice,
+    // not announcement copy, so it survives the copy-hiding rework.
+    expect(screen.queryByTestId('sort-hint')).toBeNull();
   });
 
   it('🔴 stays silent on a healthy AllTime request, whose sourceReason is expected', async () => {
@@ -1571,6 +1801,7 @@ describe('the popularity window', () => {
     renderApp({ api: createFakeApi({ collections: windowSeeds() }) });
     await screen.findByTestId('collection-grid');
     expect(screen.queryByTestId('period-fallback')).toBeNull();
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('period-alltime'));
     await waitFor(async () => expect(await gridOrder()).toEqual(['Alpha', 'Bravo', 'Charlie', 'Delta']));
     expect(screen.queryByTestId('period-fallback')).toBeNull();
@@ -1588,6 +1819,7 @@ describe('the popularity window', () => {
     );
 
     // On all-time there is no longer window to offer, so the line stays generic.
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('period-alltime'));
     await waitFor(() => expect(screen.getByTestId('grid-end')).toHaveTextContent("That's the end of the results."));
   });
@@ -1682,6 +1914,7 @@ describe('🔴 a superseded list response cannot overwrite a newer one', () => {
     expect(screen.queryByText('Stale')).toBeNull();
     expect(screen.getByText('Restored')).toBeInTheDocument();
     // The control and the content still agree, which is the harm in one line.
+    await openSortMenu();
     expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
   });
 
@@ -1801,6 +2034,7 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
     expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
 
     // 2 ── re-sort. This is the REPLACE, and it bumps the counter.
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('sort-newest'));
     await waitFor(() => expect(calls.length).toBe(2));
     expect(calls[1].params.sort).toBe('newest');
@@ -1842,6 +2076,7 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
     // while looking at a list half of which was ranked by followers.
     expect(screen.queryByText('Stale Page Two')).toBeNull();
     expect(screen.getByText('Newest One')).toBeInTheDocument();
+    await openSortMenu();
     expect(screen.getByTestId('sort-newest')).toHaveAttribute('aria-pressed', 'true');
   });
 
@@ -1936,6 +2171,7 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
     await act(async () => calls[0].resolve({ items: [named(1, 'Popular One')], nextCursor: 'CURSOR_POPULAR' }));
     expect(await screen.findByText('Popular One')).toBeInTheDocument();
 
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('sort-newest'));
     await waitFor(() => expect(calls.length).toBe(2));
     await act(async () => {
@@ -1974,6 +2210,7 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
     expect(await screen.findByText('Popular One')).toBeInTheDocument();
 
     // Append A goes out under the in-flight replace, exactly as above.
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('sort-newest'));
     await waitFor(() => expect(calls.length).toBe(2));
     await act(async () => {
@@ -2030,6 +2267,7 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
     await act(async () => calls[0].resolve({ items: [named(1, 'Popular One')], nextCursor: 'CURSOR_POPULAR' }));
     expect(await screen.findByText('Popular One')).toBeInTheDocument();
 
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('sort-newest'));
     await waitFor(() => expect(calls.length).toBe(2));
     await act(async () => {
@@ -2077,7 +2315,8 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
       },
     };
     renderApp({ api, isPrivateGranted: () => true });
-    await userEvent.click(await screen.findByTestId('tab-mine'));
+    await screen.findByTestId('nav-open');
+    await switchTab('tab-mine');
 
     await waitFor(() => expect(calls.length).toBe(1));
     expect(calls[0].params.sort).toBe('popular');
@@ -2085,6 +2324,7 @@ describe('🔴 an append issued under a superseded cursor cannot land on the new
     expect(await screen.findByText('Mine Popular')).toBeInTheDocument();
     expect(screen.getByTestId('grid-sentinel')).toBeInTheDocument();
 
+    await openSortMenu();
     await userEvent.click(screen.getByTestId('sort-newest'));
     await waitFor(() => expect(calls.length).toBe(2));
     expect(calls[1].params.cursor).toBeUndefined();
