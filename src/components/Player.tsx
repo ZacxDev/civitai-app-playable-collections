@@ -100,7 +100,7 @@ export interface PlayerProps {
    * navigation drop kills it before the grant can land (round-2 audit).
    * The resume half is the picker's too — WITH THE LIMIT ROUND 4 FOUND:
    * releasing the hold restarts what was running ONLY IF the viewer left
-   * the transport alone for the hold's whole life. Unlike the picker, this
+   * play/pause alone for the hold's whole life. Unlike the picker, this
    * hold OUTLIVES its dialog: a decline closes the dialog and mints
    * nothing, so the tap sits held — bounded by the owner's expiry — on a
    * screen with NO modal on it and the controls LIVE the whole time. A
