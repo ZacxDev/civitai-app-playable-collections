@@ -90,6 +90,30 @@ export interface PlayerProps {
    * to the same media re-engages this hold and offers the Retry again.
    */
   holdPaused?: boolean;
+  /**
+   * A reaction tap is held, waiting on the owner's consent round-trip.
+   *
+   * 🔴 PAUSES AND AUTO-RESUMES LIKE `pickerOpen`, BUT DOES NOT SWALLOW KEYS —
+   * and the second half is why this is its own input rather than a second
+   * caller of either existing one. The pause half is the picker's: the item
+   * must not auto-advance out from under a held tap, or the tap's own
+   * navigation drop kills it before the grant can land (round-2 audit). The
+   * resume half is the picker's too: the hold began over a running
+   * transport, and nothing about the viewer changed while a HOST dialog
+   * was up, so releasing the hold restarts what was running. But unlike
+   * the picker, this hold OUTLIVES its dialog: a decline closes the dialog
+   * and mints nothing, so the tap sits held — bounded by the owner's
+   * expiry — on a screen with NO modal on it. Routing the hold through
+   * `pickerOpen` therefore muted every shortcut (arrows, Space/k, f,
+   * Escape) for that whole window, on both Player surfaces (round-3
+   * audit); routing it through `holdPaused` instead would have kept the
+   * keys but lost the resume, because that input's no-resume rule exists
+   * for a hold that spans the viewer's own transport presses. This one
+   * composes with both in the hold gate below and sets neither of their
+   * side effects: no key swallow (only `pickerOpen` gates the handler),
+   * no outstanding-work marker (only `holdPaused` sets it).
+   */
+  consentHold?: boolean;
   /** Ambient "cast" mode (#8): chrome hidden, passive auto-advance (TV/2nd screen). */
   cast?: boolean;
   /** OS reduced-motion preference — pauses cast auto-advance when set. */
@@ -118,6 +142,7 @@ export function Player(props: PlayerProps) {
     showSettingsControl = true,
     pickerOpen = false,
     holdPaused = false,
+    consentHold = false,
     cast = false,
     reducedMotion = false,
     isMobile,
@@ -224,7 +249,11 @@ export function Player(props: PlayerProps) {
   // Releasing on `pickerOpen` alone restarted the timer the moment a picker
   // closed — including the close that leaves a half-failed plan behind, five
   // seconds before the auto-advance moved the media out from under it.
-  const holdStill = pickerOpen || holdPaused;
+  // `consentHold` joins the SAME gate (a held reaction tap must also keep
+  // the stage still) but neither side effect: it is not in the keyboard
+  // handler's gate, and it does not set the outstanding marker below, so
+  // its release resumes like a picker's — see its prop doc.
+  const holdStill = pickerOpen || holdPaused || consentHold;
   /** Was the transport running when this hold BEGAN? */
   const resumeAfterPickerRef = useRef(false);
   /** Are we inside a hold right now (so the entry capture happens once)? */
@@ -249,6 +278,8 @@ export function Player(props: PlayerProps) {
       // correct, because the recipients are frozen at press time; what was lost is
       // the defence in depth that keeps the stage still under a viewer reading a
       // preview. `pause()` is idempotent, so re-running it costs nothing.
+      // `consentHold` is in the deps for the same reason: a held tap engaging
+      // while another hold is already on must still land its `pause()`.
       playerRef.current.pause();
     } else if (heldRef.current) {
       heldRef.current = false;
@@ -263,7 +294,7 @@ export function Player(props: PlayerProps) {
       sawOutstandingRef.current = false;
       if (resume) playerRef.current.play();
     }
-  }, [holdStill, pickerOpen, holdPaused]);
+  }, [holdStill, pickerOpen, holdPaused, consentHold]);
 
   // ---- keyboard (all viewports; the platform routes real key events to the
   // focused iframe, and arrow keys are the desktop-primary control) ----

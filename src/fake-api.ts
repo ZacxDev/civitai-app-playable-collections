@@ -49,6 +49,17 @@ export interface FakeApiOptions {
    */
   collectionsPrivateGranted?: () => boolean;
   /**
+   * Attach a `reactTicket` to every item `getCollection` returns, as the real
+   * collection endpoint does for a signed-in viewer (signed for this app +
+   * viewer, 24h). OPT-IN and default OFF: the ticket is part of the wire
+   * payload, so a fake that attached one unasked would change the payload
+   * under every existing fixture. The ticket is a deterministic string —
+   * the fake cannot sign an HMAC and does not pretend to; the mock HOST
+   * accepts any well-formed ticket, and production verification of a real
+   * one is the live host's job, not this double's.
+   */
+  reactTickets?: boolean;
+  /**
    * Model the server FAILING to serve a ranked window (ClickHouse unavailable):
    * a `period=Day|Week|Month|Year` request comes back from Postgres, in the
    * UNWINDOWED order, reporting `source: 'postgres'` +
@@ -273,7 +284,14 @@ export function createFakeApi(opts: FakeApiOptions = {}): FakeApi {
           isPublic: s.summary.isPublic,
           followed: followed.get(id) ?? false,
         },
-        items: s.items,
+        // With `reactTickets` on, every item carries the ticket the real
+        // endpoint would attach for this viewer; the seed's own item objects
+        // are NOT mutated (a fixture reused across fetches must not change
+        // under its holder), so the ticket rides on a copy. Off: the seed
+        // items pass through untouched, tickets and all.
+        items: opts.reactTickets
+          ? s.items.map((it) => ({ ...it, reactTicket: `fake-ticket-${it.mediaId}` }))
+          : s.items,
       };
     },
 

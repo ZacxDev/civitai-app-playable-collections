@@ -134,3 +134,30 @@ describe('ranking is opt-in, which is what leaves the existing fixtures alone', 
     expect(ids(byYear)).toEqual([701, 702]);
   });
 });
+
+describe('reaction tickets (the fake models the endpoint’s per-item attach)', () => {
+  const item = (mediaId: number) => ({
+    mediaId,
+    type: 'image' as const,
+    url: `https://x.invalid/i/${mediaId}.jpg`,
+    width: 10,
+    height: 10,
+    creator: { userId: 22, username: 'bob' },
+    nsfwLevel: 1,
+  });
+  const coll = (): SeedCollection[] => [{ summary: summary(401, 'Ticketed'), items: [item(2001), item(2002)] }];
+
+  it('attaches a ticket to every item when reactTickets is on', async () => {
+    const api = createFakeApi({ viewerUserId: 99, collections: coll(), reactTickets: true });
+    const page = await api.getCollection(401);
+    expect(page.items.map((i) => i.reactTicket)).toEqual(['fake-ticket-2001', 'fake-ticket-2002']);
+    // The seed's own objects are not mutated under their holder.
+    expect(coll()[0].items[0].reactTicket).toBeUndefined();
+  });
+
+  it('leaves items untouched when reactTickets is off (the default)', async () => {
+    const api = createFakeApi({ viewerUserId: 99, collections: coll() });
+    const page = await api.getCollection(401);
+    expect(page.items.every((i) => i.reactTicket === undefined)).toBe(true);
+  });
+});

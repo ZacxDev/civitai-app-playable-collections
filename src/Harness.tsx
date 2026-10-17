@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 
 import { Harness as SdkHarness } from '@civitai/blocks-react/testing';
 
+import manifest from '../block.manifest.json';
+
 /**
  * Local dev mock host for the Playable Collections PAGE app.
  *
@@ -21,7 +23,27 @@ export function Harness({ children }: { children: ReactNode }) {
   const params = new URLSearchParams(window.location.search);
   const theme = params.get('theme') === 'light' ? 'light' : 'dark';
   return (
-    <SdkHarness viewer={{ id: 99, username: 'me' }} theme={theme}>
+    // `declaredScopes` is the mock host's picture of the MANIFEST — its
+    // reaction gate refuses every call `needs-consent` unless
+    // `social:react:self` is among the declared scopes, exactly as the real
+    // host refuses an undeclared scope. Hand it the app's real declaration
+    // (the SDK's own documented usage) so dev exercises the declared set,
+    // not a copy of it that can drift.
+    //
+    // `reactionStates` seeds the bridge state for the fake API's item ids
+    // (1001… in collection 1): counts on the first items and one reaction
+    // the dev viewer already holds, so the player's pressed state renders
+    // on first open instead of a row of zeros.
+    <SdkHarness
+      viewer={{ id: 99, username: 'me' }}
+      theme={theme}
+      declaredScopes={manifest.scopes}
+      reactionStates={{
+        1001: { counts: { Like: 12, Heart: 5, Laugh: 2, Cry: 0 }, viewerReactions: ['Heart'] },
+        1002: { counts: { Like: 3, Heart: 1, Laugh: 0, Cry: 0 } },
+        1003: { counts: { Like: 0, Heart: 0, Laugh: 0, Cry: 1 } },
+      }}
+    >
       {children}
     </SdkHarness>
   );
