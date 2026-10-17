@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
@@ -103,5 +103,61 @@ describe('App — reactions token gate', () => {
     await screen.findByTestId('chrome-tip');
     expect(screen.queryByTestId('viewer-reactions')).toBeNull();
     expect(outbound.filter((m) => m.type === 'GET_ENTITY_REACTIONS')).toHaveLength(0);
+  });
+});
+
+describe('App — the ungranted tap, wired end to end', () => {
+  it('🔴 tap → REQUEST_CONSENT for exactly [social:react:self] → re-mint → the held tap writes exactly once', async () => {
+    const outbound: { type: string; payload?: unknown }[] = [];
+    const api = createFakeApi({ viewerUserId: 99, reactTickets: true });
+    // 🔴 NO `isReactGranted` SEAM — the DEFAULT predicate reads the
+    // token's own scopes, so this test drives App's real wiring: the
+    // `requestConsent({ scopes: [SOCIAL_REACT_SELF] })` call AND the
+    // `reactTokenEpoch={token.raw}` prop. Round-1 audit, as mutations:
+    // deleting the consent call, or passing the epoch as undefined, each
+    // left every other test green; each turns THIS one red — no
+    // REQUEST_CONSENT goes out, or the epoch never flips and the held tap
+    // never fires. (Both mutations were run against this test while it
+    // was written; it failed under each and passes with them reverted.)
+    renderApp({ api, onOutbound: (m) => outbound.push(m) });
+    await openFirstCollection();
+
+    // Ungranted (the mock host's mint carries no react scope): the
+    // buttons are up, and — the control — nothing has been read and
+    // nothing has asked for consent yet.
+    await screen.findByTestId('viewer-reactions');
+    expect(outbound.filter((m) => m.type === 'GET_ENTITY_REACTIONS')).toHaveLength(0);
+    expect(outbound.find((m) => m.type === 'REQUEST_CONSENT')).toBeUndefined();
+
+    fireEvent(
+      screen.getByTestId('reaction-like'),
+      new CustomEvent('react', {
+        bubbles: true,
+        composed: true,
+        detail: { emoji: '👍', reacted: true, count: 5, reaction: 'Like' },
+      }),
+    );
+
+    // The ask goes out, for exactly the one scope. (No "and no write yet"
+    // assertion here: the host's grant + re-mint can land before this
+    // test's next tick — the write's own assertions below are the pin.)
+    await waitFor(() => expect(outbound.find((m) => m.type === 'REQUEST_CONSENT')).toBeTruthy());
+    const consent = outbound.find((m) => m.type === 'REQUEST_CONSENT');
+    expect((consent?.payload as { scopes: string[] }).scopes).toEqual(['social:react:self']);
+
+    // The mock host grants what was asked and re-mints: the new token
+    // carries the scope AND a new raw value — the epoch flip the retry
+    // keys on — and the ONE held tap goes out under the item's ticket,
+    // with set semantics.
+    await waitFor(() =>
+      expect(outbound.filter((m) => m.type === 'SET_ENTITY_REACTION')).toHaveLength(1),
+    );
+    const write = outbound.find((m) => m.type === 'SET_ENTITY_REACTION');
+    expect(write?.payload).toMatchObject({
+      entityId: 1001,
+      reaction: 'Like',
+      reacted: true,
+      ticket: 'fake-ticket-1001',
+    });
   });
 });

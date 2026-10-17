@@ -292,13 +292,18 @@ export function CollectionViewer(props: CollectionViewerProps) {
   // navigation, so the instance survives every item change; what changes is
   // the WINDOW of ids it is handed:
   //
-  // 🔴 A WINDOW, NOT THE WHOLE LOADED SET. ±50 around the current item is at
-  // most 101 ids — one read chunk — and it covers most collections whole (a
-  // single read per collection, exactly as the full set would). A huge
-  // collection read whole would spend a chunk per loaded page on items the
-  // viewer may never reach; the window instead reads a new id only when the
-  // viewer actually arrives near it, and the hook's incrementality means a
-  // slide of the window re-reads only the ids that entered it.
+  // 🔴 A STEPPED WINDOW, NOT THE WHOLE LOADED SET AND NOT A SLIDING ONE.
+  // The window is `REACTION_WINDOW_SIZE` ids starting at the current item's
+  // BLOCK — `floor(index / REACTION_BLOCK) * REACTION_BLOCK` — so it is
+  // IDENTICAL for every item in a block: stepping inside a block changes no
+  // id and costs no read at all, and crossing into the next block adds only
+  // the ≤50 ids that entered (the hook's incrementality sends just those).
+  // The first build slid a ±50 window with the anchor, which past index 50
+  // turned every single step into a 1-id read — 9 steps, 10 reads, all
+  // billed to the same rate limit as collection loads (round-1 audit,
+  // measured). A huge collection read WHOLE would be worse in the other
+  // direction: a chunk per loaded page spent on items the viewer may never
+  // reach.
   //
   // 🔴 THE HOOK'S INPUTS ARE GRANTED-ONLY (below): without the scope the id
   // list and ticket map are empty, so the hook issues no reads at all. The
@@ -306,17 +311,18 @@ export function CollectionViewer(props: CollectionViewerProps) {
   // fed by this hook — they are the consent ask's surface, not a read's.
   const currentItemRef = useRef(currentItem);
   currentItemRef.current = currentItem;
-  const reactionAnchor = useMemo(() => {
+  const reactionBlockStart = useMemo(() => {
     if (!currentItem) return 0;
     const at = displayItems.findIndex((it) => it.mediaId === currentItem.mediaId);
-    return at >= 0 ? at : 0;
+    const idx = at >= 0 ? at : 0;
+    return Math.floor(idx / REACTION_BLOCK) * REACTION_BLOCK;
   }, [currentItem, displayItems]);
   const reactionIds = useMemo<readonly number[]>(() => {
     if (!hasReactScope) return NO_REACTION_IDS;
     return displayItems
-      .slice(Math.max(0, reactionAnchor - REACTION_WINDOW), reactionAnchor + REACTION_WINDOW + 1)
+      .slice(reactionBlockStart, reactionBlockStart + REACTION_WINDOW_SIZE)
       .map((it) => it.mediaId);
-  }, [hasReactScope, displayItems, reactionAnchor]);
+  }, [hasReactScope, displayItems, reactionBlockStart]);
   // Tickets ride in on the item payloads (see `MediaItem.reactTicket`) and
   // are keyed over ALL loaded items, not the window: the hook sends only the
   // tickets of the ids it reads, and a ticket that rotates in on a later page
@@ -355,21 +361,76 @@ export function CollectionViewer(props: CollectionViewerProps) {
    * never stashed. At most one stash exists; a newer held toggle replaces
    * it (the latest intent wins). `marker` is the token epoch current when
    * the toggle was held — the epoch that could not send it.
+   *
+   * 🔴 A HELD TAP IS THE VIEWER'S PRESENT INTENT, NOT A STANDING ORDER —
+   * IT DIES THREE WAYS BESIDES FIRING (round-1 audit, real-host facts the
+   * first build modelled wrong):
+   *   - a DECLINE never settles it: on "Not now" the host only closes the
+   *     dialog and never re-mints, so no new token arrives to settle or
+   *     fire anything — the tap simply sits held;
+   *   - NAVIGATION drops it: the tap was made on one item, and a grant
+   *     that lands later grants the WHOLE missing set regardless of which
+   *     consent asked (a later tip consent re-mints carrying
+   *     `social:react:self` too) — without the drop, that unrelated grant
+   *     fired the held Like on an item no longer on screen;
+   *   - EXPIRY drops it: after `STASHED_TOGGLE_TTL_MS` (the timer started
+   *     in `stashConsentToggle`, and the age re-check in the retry effect)
+   *     the tap is stale — the consent round-trip is seconds, so a tap
+   *     still held a minute later is not one the viewer is waiting on.
+   * `heldAt` is the wall-clock the toggle was held at, for the age check.
    */
   const stashedToggleRef = useRef<{
     id: number;
     reaction: BlockAppReaction;
     reacted: boolean;
     marker: string | undefined;
+    heldAt: number;
   } | null>(null);
+  const stashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Drop the held toggle and cancel its expiry timer. */
+  const clearStashedToggle = useCallback((): void => {
+    stashedToggleRef.current = null;
+    if (stashTimerRef.current) {
+      clearTimeout(stashTimerRef.current);
+      stashTimerRef.current = null;
+    }
+  }, []);
+
+  // The expiry timer must not outlive the view (a fired timer on an
+  // unmounted instance would only clear dead refs, but hygiene is cheap).
+  useEffect(() => {
+    return () => {
+      if (stashTimerRef.current) clearTimeout(stashTimerRef.current);
+    };
+  }, []);
 
   /** Hold a toggle for the consent retry (see `stashedToggleRef`). */
   const stashConsentToggle = useCallback(
     (id: number, reaction: BlockAppReaction, reacted: boolean): void => {
-      stashedToggleRef.current = { id, reaction, reacted, marker: reactTokenEpochRef.current };
+      if (stashTimerRef.current) clearTimeout(stashTimerRef.current);
+      stashedToggleRef.current = {
+        id,
+        reaction,
+        reacted,
+        marker: reactTokenEpochRef.current,
+        heldAt: Date.now(),
+      };
+      stashTimerRef.current = setTimeout(clearStashedToggle, STASHED_TOGGLE_TTL_MS);
     },
-    [],
+    [clearStashedToggle],
   );
+
+  // 🔴 NAVIGATION DROPS THE HELD TAP. The stash belongs to the item it was
+  // made on; the moment a different item is on screen it is dead, whatever
+  // grant arrives later. (The retry effect re-checks the item at fire time
+  // too — this effect is what makes "held" mean "held for THIS item" at
+  // every instant, not just at the instant a token lands.)
+  const currentItemId = currentItem?.mediaId;
+  useEffect(() => {
+    const stash = stashedToggleRef.current;
+    if (stash && stash.id !== currentItemId) clearStashedToggle();
+  }, [currentItemId, clearStashedToggle]);
 
   const runReactionToggle = useCallback(
     async (id: number, reaction: BlockAppReaction, reacted: boolean): Promise<void> => {
@@ -440,17 +501,25 @@ export function CollectionViewer(props: CollectionViewerProps) {
   //   - the mint carries the scope → the held toggle fires once (a retry
   //     refused again writes a NEW stash keyed on the new epoch and waits
   //     for the NEXT mint — no loop within one token);
-  //   - the mint lacks it (the viewer declined, or the re-mint was for
-  //     something else) → the intent is DROPPED with the token that
-  //     answered the ask. A declined grant changes nothing: no late write
-  //     rides some unrelated future grant.
+  //   - the mint lacks it (a re-mint for some other cause — a DECLINE
+  //     produces no mint at all, see the stash doc) → the intent is
+  //     DROPPED with the token that answered the ask.
+  // Two fire-time re-checks guard the gap the settle cannot see — a tap
+  // whose token never came is dropped by navigation/expiry instead (see
+  // the stash doc), and those drops are effects of their own; these checks
+  // are the same two facts read again at the one moment that matters, so
+  // no ordering of effects can fire a stale tap:
+  //   - EXPIRED while held → dropped silently;
+  //   - its ITEM is no longer on screen → dropped silently.
   useEffect(() => {
     const stash = stashedToggleRef.current;
     if (!stash) return;
     if (reactTokenEpoch === stash.marker) return; // still the token that could not send it
-    stashedToggleRef.current = null;
+    clearStashedToggle();
+    if (Date.now() - stash.heldAt > STASHED_TOGGLE_TTL_MS) return; // expired while held
+    if (currentItemRef.current?.mediaId !== stash.id) return; // its item moved on
     if (hasReactScope) void runReactionToggle(stash.id, stash.reaction, stash.reacted);
-  }, [hasReactScope, reactTokenEpoch, runReactionToggle]);
+  }, [hasReactScope, reactTokenEpoch, runReactionToggle, clearStashedToggle]);
 
   /**
    * The elements' `react` event. `detail.reaction` names WHICH reaction —
@@ -467,6 +536,25 @@ export function CollectionViewer(props: CollectionViewerProps) {
    * fires it exactly once if the new token carries the scope. Anonymous
    * viewers render no elements, so a tap here is a signed-in viewer by
    * construction — the `viewerUserId` check is the belt on that brace.
+   * Three ungranted-only rules, all round-1 audit:
+   *   - THE HELD INTENT IS ALWAYS `reacted: true`. The element flips
+   *     itself per click, so a second tap's event carries `reacted:
+   *     false` — but an ungranted viewer has no READ state to un-react
+   *     from (their server-side reactions, if any, are exactly what the
+   *     grant would let the app read). Holding the flip would turn the
+   *     post-grant write into an un-react. An ungranted tap can only mean
+   *     "add this reaction".
+   *   - THE ELEMENT IS RESET to unpressed right here (see the code): it
+   *     flipped itself on click, and this path writes only refs, so no
+   *     re-render follows to rebind the truth — and the binding would not
+   *     repair it anyway, since it re-sets a property only when the bound
+   *     value CHANGES, and the ungranted bound value is `false` before
+   *     and after the tap.
+   *   - A TICKETLESS ITEM'S TAP IS A NO-OP: no stash, no consent ask. Even
+   *     granted, a write for it can never be sent (the hook refuses a
+   *     ticketless toggle locally), so the ask would buy a dialog whose
+   *     only product is a held tap that cannot land. The buttons still
+   *     render — ticketlessness is per item, the surface is per viewer.
    */
   const onReact = useCallback(
     (e: CustomEvent<ReactionDetail>) => {
@@ -474,8 +562,18 @@ export function CollectionViewer(props: CollectionViewerProps) {
       const item = currentItemRef.current;
       if (!item) return;
       if (!hasReactScopeRef.current) {
+        // Reset the element FIRST (see the doc): whatever this tap goes on
+        // to do — stash, no-op — it must not leave the element claiming a
+        // pressed state the app does not hold for this viewer. `e.target`
+        // is the element host (the event is composed; the listener sits on
+        // the group, outside its shadow root). The assignment is the
+        // element's own reactive property in the browser; in any
+        // environment where it is a plain field it is equally harmless.
+        const el = e.target as (EventTarget & { reacted?: boolean }) | null;
+        if (el) el.reacted = false;
         if (viewerUserIdRef.current == null) return;
-        stashConsentToggle(item.mediaId, e.detail.reaction, e.detail.reacted);
+        if (!item.reactTicket) return;
+        stashConsentToggle(item.mediaId, e.detail.reaction, true);
         requestReactConsentRef.current?.();
         return;
       }
@@ -865,7 +963,8 @@ export function CollectionViewer(props: CollectionViewerProps) {
           from NOTHING: unpressed, count hidden (the `pc-reaction-unknown`
           ::part treatment — a zero count here would be a claim the app
           cannot make), never disabled, because a tap is live: it asks for
-          the grant (see `onReact`). */}
+          the grant (see `onReact`) — unless the item carries no ticket,
+          where no write could ever be sent and the tap is a no-op. */}
       {(currentReactionState || showUngrantedReactions) && currentItem && (
         <span style={reactionGroupStyle} data-testid="viewer-reactions" ref={reactionGroupRef}>
           {REACTIONS.map((r) => (
@@ -1238,9 +1337,23 @@ export function CollectionViewer(props: CollectionViewerProps) {
 
 // ---- reactions constants ----
 
-/** Half-width of the reaction read window around the current item (±50 →
- *  at most 101 ids, one `GET_ENTITY_REACTIONS` chunk). See the mount block. */
-const REACTION_WINDOW = 50;
+/** The read window's anchor moves in blocks of this many items: the window
+ *  handed to `useReactions` starts at `floor(index / REACTION_BLOCK) *
+ *  REACTION_BLOCK`, so stepping INSIDE a block changes no id and costs no
+ *  read. See the mount block. */
+const REACTION_BLOCK = 50;
+
+/** Ids per read window — the hook's `GET_ENTITY_REACTIONS` chunk size, so
+ *  one window is at most one chunk, and a block crossing sends at most the
+ *  ≤50 newly-entered ids (one further chunk, never one read per step). */
+const REACTION_WINDOW_SIZE = 100;
+
+/** How long a consent-held toggle stays live. The consent round-trip is
+ *  seconds; this bounds the window in which a later, unrelated grant could
+ *  fire a tap the viewer has moved on from. (Round-1 audit: a decline
+ *  produces NO new token, so nothing else ever settled a held tap — without
+ *  an expiry it was held indefinitely.) */
+const STASHED_TOGGLE_TTL_MS = 60_000;
 
 /** Stable empties for the gate-off hook call: no ids, no tickets, no reads. */
 const NO_REACTION_IDS: readonly number[] = [];

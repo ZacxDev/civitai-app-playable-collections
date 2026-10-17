@@ -28,9 +28,16 @@ describe('block.manifest.json', () => {
     // Phase 3's reactions step adds `social:react:self` — CONSENT-GATED and
     // SENSITIVE (its justification below is a manifest requirement, not a
     // courtesy). It is the write half of the reaction bridge (`useReactions`):
-    // the token carries it only after the viewer grants it, so a build whose
-    // manifest declares it but which is not yet the approved version mints
-    // tokens without it and the player renders no reaction UI at all.
+    // the token carries it only after the viewer grants it. What a token
+    // WITHOUT it means for the player is three-state (the tips pattern —
+    // see CollectionViewer's gate docs): granted → the full reaction UI
+    // over real reads; signed-in but ungranted → the buttons render
+    // count-less, NO reads are issued, and a tap asks for the grant;
+    // anonymous → no reaction UI at all. So a build whose manifest declares
+    // the scope but which is not yet the approved version mints scope-less
+    // tokens and lands every signed-in viewer in the middle state: the
+    // surface is visible, the ask is one tap away, and nothing is read or
+    // written until they grant.
     //
     // This literal ledger pins WHAT IS DECLARED. It cannot tell you whether the
     // code needs it — that relationship lives in `scope-contract.test.ts`, which

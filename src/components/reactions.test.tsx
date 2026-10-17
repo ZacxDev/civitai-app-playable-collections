@@ -495,7 +495,36 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
     expect(onRequestReactConsent).toHaveBeenCalledTimes(1);
   });
 
-  it('a declined grant changes nothing — no write then, none on a later grant either', async () => {
+  it('a decline produces NO new token: nothing fires, nothing toasts', async () => {
+    const onRequestReactConsent = vi.fn();
+    const notice = vi.fn();
+    installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
+    render(
+      <Host
+        items={[item(2001)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+        onReactionNotice={notice}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+
+    // 🔴 THE DECLINE, MODELLED AS THE REAL HOST DOES IT (round-1 audit):
+    // on "Not now" the host only closes the dialog — it NEVER re-mints, so
+    // there is no epoch-2 render in this test because there is no epoch-2
+    // TOKEN. The held tap just sits there (its death is item change or
+    // expiry — the next two tests); what the decline itself must never do
+    // is fire it or report it.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
+    expect(reads()).toHaveLength(0);
+    expect(notice).not.toHaveBeenCalled();
+  });
+
+  it('a fresh token WITHOUT the scope settles the held tap — dropped, and a later grant does not revive it', async () => {
     const onRequestReactConsent = vi.fn();
     const notice = vi.fn();
     installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
@@ -512,9 +541,9 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
     fireReact('like', true);
     await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
 
-    // The consent round concludes WITHOUT the grant: a fresh token whose
-    // scopes still lack the scope. The held tap is settled by that mint —
-    // dropped, not kept.
+    // A re-mint for some OTHER cause (NOT a decline — a decline mints
+    // nothing, see the test above): a fresh token whose scopes still lack
+    // the scope. The held tap is settled by that mint — dropped, not kept.
     rerender(
       <Host
         items={[item(2001)]}
@@ -529,7 +558,7 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
     expect(notice).not.toHaveBeenCalled();
 
     // Proof the stash is empty rather than dormant: when the grant DOES
-    // land later, the declined tap does not ride it. (Reads now flow —
+    // land later, the settled tap does not ride it. (Reads now flow —
     // that is the granted state working, not the stale intent.)
     rerender(
       <Host items={[item(2001)]} hasReactScope reactTokenEpoch="epoch-3" onRequestReactConsent={onRequestReactConsent} />,
@@ -537,5 +566,202 @@ describe('reactions — the ungranted consent path (show the buttons, ask on pre
     await waitFor(() => expect(reads()).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 50));
     expect(writes()).toHaveLength(0);
+  });
+
+  it('decline → navigate → a later grant sends nothing: the held tap died with its item', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({
+      reactionStates: { 2001: { counts: { Like: 7 } }, 2002: { counts: { Like: 1 } } },
+    });
+    const { rerender } = render(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+    fireReact('like', true);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+    expect(writes()).toHaveLength(0);
+
+    // Declined (no new token — nothing to rerender), then the viewer moves
+    // on to item 2002. The held tap was made ON 2001; navigation drops it.
+    fireEvent.click(screen.getByTestId('ctrl-next'));
+    await waitFor(() => expect(screen.getByTestId('progress-label').textContent).toContain('2'));
+
+    // A later grant — from ANY consent dialog; the host grants the whole
+    // missing set, so a tip consent re-mints carrying this scope too —
+    // flips the epoch WITH the scope. The pre-fix code fired the held Like
+    // at 2001 here, an item no longer on screen (the audit's probe: one
+    // write to item 2001). Now: the granted state is live (reads flow for
+    // the item on screen)…
+    rerender(
+      <Host
+        items={[item(2001), item(2002)]}
+        hasReactScope
+        reactTokenEpoch="epoch-2"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await waitFor(() => expect(reads().length).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    // …but the stale tap is not.
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('a held tap EXPIRES: decline, time passes, a later grant sends nothing', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
+    const t0 = Date.now();
+    let now = t0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const { rerender } = render(
+        <Host
+          items={[item(2001)]}
+          hasReactScope={false}
+          reactTokenEpoch="epoch-1"
+          onRequestReactConsent={onRequestReactConsent}
+        />,
+      );
+      await screen.findByTestId('viewer-reactions');
+      fireReact('like', true);
+      await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(1));
+      expect(writes()).toHaveLength(0);
+
+      // Decline (no token) and the viewer simply leaves it. The held tap's
+      // TTL is a minute; ten minutes is past any reading of "short" — the
+      // age is read off the wall clock at fire time, which is what the spy
+      // moves. The stash's own real-time timer is the hygiene twin.
+      now = t0 + 10 * 60_000;
+      rerender(
+        <Host items={[item(2001)]} hasReactScope reactTokenEpoch="epoch-2" onRequestReactConsent={onRequestReactConsent} />,
+      );
+      await new Promise((r) => setTimeout(r, 50));
+      expect(writes()).toHaveLength(0);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('two ungranted taps hold reacted:true — the grant sends ONE write, never an un-react', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
+    const { rerender } = render(
+      <Host
+        items={[item(2001)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    await screen.findByTestId('viewer-reactions');
+
+    // The element flips ITSELF on click, so the second tap's event carries
+    // reacted:false (the audit's probe: ungranted clicks held [true,
+    // false], and the post-grant write REMOVED a reaction). Ungranted
+    // there is no read state to un-react FROM — the held intent is always
+    // reacted:true, so both taps hold the same single intent. Each tap
+    // asks; neither sends.
+    fireReact('like', true);
+    fireReact('like', false);
+    await waitFor(() => expect(onRequestReactConsent).toHaveBeenCalledTimes(2));
+    expect(writes()).toHaveLength(0);
+    expect(reads()).toHaveLength(0);
+
+    rerender(
+      <Host items={[item(2001)]} hasReactScope reactTokenEpoch="epoch-2" onRequestReactConsent={onRequestReactConsent} />,
+    );
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0].payload).toMatchObject({ entityId: 2001, reaction: 'Like', reacted: true });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(1);
+  });
+
+  it('an ungranted tap on a TICKETLESS item asks nothing and holds nothing', async () => {
+    const onRequestReactConsent = vi.fn();
+    installHost({ reactionStates: { 2001: { counts: { Like: 7 } } } });
+    const { rerender } = render(
+      <Host
+        items={[item(2001, false)]}
+        hasReactScope={false}
+        reactTokenEpoch="epoch-1"
+        onRequestReactConsent={onRequestReactConsent}
+      />,
+    );
+    // The buttons render — the surface is per-viewer, not per-ticket…
+    await screen.findByTestId('viewer-reactions');
+    fireReact('like', true);
+    await new Promise((r) => setTimeout(r, 50));
+    // …but the tap is a no-op: even granted, a ticketless write is refused
+    // locally by the hook, so there is nothing to ask FOR and nothing to
+    // hold.
+    expect(onRequestReactConsent).not.toHaveBeenCalled();
+    expect(writes()).toHaveLength(0);
+    // And a later grant fires nothing on its behalf.
+    rerender(
+      <Host items={[item(2001, false)]} hasReactScope reactTokenEpoch="epoch-2" onRequestReactConsent={onRequestReactConsent} />,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(writes()).toHaveLength(0);
+  });
+});
+
+describe('reactions — the stepped read window', () => {
+  const manyItems = (n: number, base: number): MediaItem[] =>
+    Array.from({ length: n }, (_, i) => item(base + i));
+  const statesFor = (items: MediaItem[]) =>
+    Object.fromEntries(items.map((it) => [it.mediaId, { counts: { Like: 1 } }]));
+
+  async function stepTo(position: number, total: number): Promise<void> {
+    fireEvent.click(screen.getByTestId('ctrl-next'));
+    await waitFor(() =>
+      expect(screen.getByTestId('progress-label')).toHaveTextContent(`${position} / ${total}`),
+    );
+  }
+
+  it('60 items, 9 steps: ONE read of the whole window — stepping inside a block is free', async () => {
+    const items = manyItems(60, 4001);
+    installHost({ reactionStates: statesFor(items) });
+    render(<Host items={items} />);
+    await screen.findByTestId('viewer-reactions');
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    expect((reads()[0].payload as { ids: number[] }).ids).toHaveLength(60);
+
+    // The audit's measured shape: the sliding ±50 window answered these
+    // same 9 steps with 9 further 1-id reads ([51,1,1,1,1,1,1,1,1,1]
+    // overall). The stepped window's id set does not move inside the
+    // block, so there is nothing further to read.
+    for (let step = 0; step < 9; step++) await stepTo(step + 2, 60);
+    expect(reads()).toHaveLength(1);
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('crossing a block boundary reads only the ids that entered — never one per step', async () => {
+    const items = manyItems(120, 5001);
+    installHost({ reactionStates: statesFor(items) });
+    render(<Host items={items} />);
+    await screen.findByTestId('viewer-reactions');
+    await waitFor(() => expect(reads()).toHaveLength(1));
+    // One window = one 100-id chunk (the hook's real chunk size).
+    expect((reads()[0].payload as { ids: number[] }).ids).toEqual(
+      Array.from({ length: 100 }, (_, i) => 5001 + i),
+    );
+
+    // 49 steps land on index 49 — still block [0…]: the id set has not
+    // moved, so no read has been added by ANY of them.
+    for (let step = 0; step < 49; step++) await stepTo(step + 2, 120);
+    expect(reads()).toHaveLength(1);
+
+    // Step 50 crosses into block [50…]: the window becomes ids 5051…5120,
+    // of which 5101…5120 are new — exactly one further read, for exactly
+    // those 20 ids (the hook's incrementality), not 50 one-id reads.
+    await stepTo(51, 120);
+    await waitFor(() => expect(reads()).toHaveLength(2));
+    expect((reads()[1].payload as { ids: number[] }).ids).toEqual(
+      Array.from({ length: 20 }, (_, i) => 5101 + i),
+    );
   });
 });
