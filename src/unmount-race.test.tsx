@@ -113,6 +113,16 @@ describe('a feed loader that settles after unmount', () => {
 
       unmount();
 
+      // Drain React's scheduler BEFORE removing `window`. Work the unmount left
+      // queued (scheduled via `setImmediate`) reads `window` when it runs; if it
+      // lands after the delete below it throws an UNCAUGHT exception outside this
+      // test's rejection listener — the intermittent `window is not defined` that
+      // turned whole CI runs red with every test passing (10-17 `60687bf`, 10-20
+      // `7141713`). The popular read is still held open, so the late write this
+      // test exists to catch still settles after the teardown.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
       // Reproduce the teardown, which is the half that makes the write THROW
       // rather than merely being a no-op: vitest disposes the jsdom environment
       // after a test, so `window` is already gone when a late promise settles.
