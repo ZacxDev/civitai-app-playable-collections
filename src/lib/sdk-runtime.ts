@@ -15,7 +15,7 @@
 //      app paints its boot skeleton off `ready`/`theme`.
 //   2. HOST-MEDIATED (resize, sign-in, consent) — still postMessage, and
 //      `createHost(transport)` is synchronous, so these need no await either.
-//   3. REST (app storage, shared storage, Buzz) — these moved off the bridge onto
+//   3. REST (the document store, Buzz) — these moved off the bridge onto
 //      `/api/v1`, and they are the only group that must wait for
 //      `initialize({ transport })` to resolve, because only the AppClient carries
 //      the http clients bound to the token session.
@@ -40,15 +40,13 @@ import type {
   DocumentListQuery,
   Host,
   Scope,
-  SharedItem,
-  SharedValue,
-  StorageClient,
   StorageCollection,
   Theme,
   ViewerInfo,
 } from '@civitai/sdk';
 import { createHost } from '@civitai/sdk';
 
+import { createKvStore, type KvStore } from './kv-store.js';
 import { createSdkTransportAdapter } from './sdk-transport.js';
 
 /** What the viewer's per-pool balance looks like — the shape `blocks/buzz` returns. */
@@ -159,9 +157,8 @@ function transport(): BlockTransport {
  * bridge-identity swap in `transport()` never fires because `getTransport()`
  * caches forever.
  *
- * What that costs, all at once and all silently: app storage stops loading and
- * persisting, shared storage leaves the popular rail permanently empty and drops
- * votes, the Buzz row errors with `refetchBalance()` as a DEAD control (it
+ * What that costs, all at once and all silently: the browse prefs stop loading
+ * and persisting, the popular rail stays permanently empty and drops plays, the Buzz row errors with `refetchBalance()` as a DEAD control (it
  * re-awaits the same rejected promise), the host consent dialog never opens, and
  * `useBlockToken().refresh` rejects — so the 401-retry in `lib/api.ts` re-issues
  * with the same stale token and every call ends as "session expired", advice no
@@ -386,81 +383,26 @@ export function useRequestConsent(): { requestConsent: (args: { scopes: readonly
 // ---------------------------------------------------------------------------
 
 /**
- * Per-(block instance, viewer) KV.
+ * The viewer's private key/value records, over the document store's private
+ * `kv` collection (`./kv-store.ts` owns the mapping, which a cutover copy script
+ * depends on byte-for-byte — read its header before touching it).
+ *
+ * Until 0.3.0 this was the `useAppStorage` hook over the legacy per-viewer KV
+ * (`/api/v1/blocks/app-storage/*`), and a sibling `useSharedStorage` hook reached
+ * the legacy shared store for the Popular rail. Both legacy surfaces are being
+ * deleted platform-wide, and this app no longer reaches either.
  *
  * Returns a STABLE façade whose methods await the AppClient internally, rather
- * than `StorageClient | null`. Two reasons, both load-bearing:
- *   - the object goes into `useEffect`/`useMemo` dependency arrays (see
- *     `lib/browse-prefs.ts`), and the bridge hook documented itself as stable;
- *   - a `null` would make every call site grow a branch for a state that lasts
- *     milliseconds and that the app already gates on `ready`.
- */
-export function useAppStorage(): StorageClient {
-  return useMemo<StorageClient>(
-    () => ({
-      get: async (key, opts) => (await app()).storage.get(key, opts),
-      set: async (key, value, opts) => (await app()).storage.set(key, value, opts),
-      delete: async (key, opts) => (await app()).storage.delete(key, opts),
-      list: async (query, opts) => (await app()).storage.list(query, opts),
-      getQuota: async (opts) => (await app()).storage.getQuota(opts),
-    }),
-    [],
-  );
-}
-
-/**
- * Where the shared-storage vote route lives, relative to the site base URL.
+ * than `KvStore | null`, because the object goes into `useEffect` dependency
+ * arrays (`lib/browse-prefs.ts`) and a `null` would make every call site grow a
+ * branch for a state that lasts milliseconds.
  *
- * 🔴 SPELLED OUT HERE BECAUSE THE SDK DELIBERATELY DOES NOT CARRY IT.
- * `starters#479` decided `AppClient.sharedStorage` is GENERIC KEY-VALUE ONLY —
- * `list`/`get`/`append`/`update`/`withdraw`. `vote`, `unvote`, `counts`, `top`,
- * `increment` and `report` are app-layer by that decision, so the eleven routes
- * existing is not a gap the SDK is expected to close.
- *
- * Verified against the route rather than guessed (civitai `origin/main`,
- * `src/pages/api/v1/blocks/shared-storage/vote.ts`): POST, body `{ key }`,
- * response `{ count }` — the row's new aggregate tally — under scope
- * `apps:storage:shared:write`. Its docblock records that a double vote is a
- * no-op and the tally never inflates, which is what makes `recordPlay`'s
- * vote-then-read sequence safe to retry.
+ * 🔴 AN ANONYMOUS VIEWER IS REFUSED: a private collection has no anonymous
+ * reader, so every call rejects `sign_in_required`. `App.tsx` therefore enables
+ * the browse-prefs read only for a signed-in viewer.
  */
-const SHARED_VOTE_ROUTE = 'blocks/shared-storage/vote';
-
-/** The three shared-storage operations this app performs. */
-export interface SharedStorageFacade {
-  list(query?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
-    items: SharedItem[];
-    nextCursor?: string;
-  }>;
-  append(value: SharedValue): Promise<{ key: string }>;
-  vote(key: string): Promise<number>;
-}
-
-/**
- * Cross-user shared storage: `list` and `append` from the SDK client, `vote`
- * app-layer over `app.site` per the decision recorded on `SHARED_VOTE_ROUTE`.
- *
- * Stable identity, for the same reason as `useAppStorage`.
- */
-export function useSharedStorage(): SharedStorageFacade {
-  return useMemo<SharedStorageFacade>(
-    () => ({
-      list: async (query) => (await app()).sharedStorage.list(query),
-      append: async (value) => (await app()).sharedStorage.append(value),
-      vote: async (key) => {
-        const reply = await (await app()).site.post<{ count?: unknown }>(SHARED_VOTE_ROUTE, { key });
-        // 🔴 ASSERTED, NOT COERCED. `Number(undefined)` is NaN and `?? 0` would
-        // report a vote that did not land as a tally of zero — and `recordPlay`
-        // writes this number into the popular rail, so a silent 0 is a play count
-        // the rail then ranks on. A malformed reply is a failure, not a count.
-        if (typeof reply?.count !== 'number' || !Number.isFinite(reply.count)) {
-          throw new Error('shared-storage vote: reply carried no numeric `count`');
-        }
-        return reply.count;
-      },
-    }),
-    [],
-  );
+export function useKvStore(): KvStore {
+  return useMemo<KvStore>(() => createKvStore(async () => (await app()).storage), []);
 }
 
 /**
@@ -475,16 +417,15 @@ export function useSharedStorage(): SharedStorageFacade {
  *
  * The collection NAME is the caller's: the manifest declares it and
  * `lib/popular.ts` owns the constant, so this module stays a runtime binding
- * with no domain vocabulary of its own — the same split that keeps
- * `SHARED_VOTE_ROUTE` a route and nothing more.
+ * with no domain vocabulary of its own.
  *
- * Stable identity per name, for the same reason as `useAppStorage`: the
+ * Stable identity per name, for the same reason as `useKvStore`: the
  * object goes into dependency arrays. Every method awaits the AppClient
  * internally, so a call made before `initialize()` resolves simply waits —
  * and a call against a server where the collection does not exist yet (the
  * declaring version not yet approved) rejects with the store's
- * `collection_not_declared`, which callers treat as "not migrated yet",
- * never as a viewer-facing error. Gated on the `apps:storage` scope (see
+ * `collection_not_declared`, which callers swallow (an empty rail), never
+ * surfacing it to the viewer. Gated on the `apps:storage` scope (see
  * `src/scopes.ts`): a token minted by a manifest that does not declare it
  * would be refused `insufficient_scope` instead, so callers check first.
  */

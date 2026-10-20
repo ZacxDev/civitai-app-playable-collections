@@ -77,9 +77,9 @@ export interface ApiClient {
 // declares, so the call would 403 — and it would skip the host's per-action
 // consent confirm, which is the only consent this path has ever had.
 // NOTE: the viewer's Buzz balance and the cross-user "popular" play-counts are
-// NOT part of this HTTP client. They go through the host-mediated postMessage
-// bridges instead: `useBuzzBalance()` (scope-free GET_BUZZ_BALANCE) and
-// `useSharedStorage()` (apps:storage:shared:*). See ./popular.ts + App.tsx.
+// NOT part of this HTTP client. They go through `useBuzzBalance()` and the
+// document store's `popular_plays` collection (`useStorageCollection`, scope
+// `apps:storage`). See ./popular.ts + App.tsx.
 // The retired `/api/v1/blocks/buzz` (civitai #3144) and the never-real guessed
 // `/api/v1/blocks/shared-storage/{increment,top}` routes were removed here.
 

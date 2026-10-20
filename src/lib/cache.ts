@@ -23,8 +23,8 @@
 //   is the replacement, and App calls it from the follow `onChange`.
 // - Entries expire after `ttlMs` (default 5 min) to bound staleness.
 // - The one remaining write method (`tip`) passes straight through. Buzz balance
-//   and shared play-counts are no longer on this client — they go through the
-//   `useBuzzBalance()` / `useSharedStorage()` host bridges (see lib/popular.ts).
+//   and shared play-counts are no longer on this client — they go through
+//   `useBuzzBalance()` and the document store (see lib/popular.ts).
 
 import type { ApiClient } from './api.js';
 import type {

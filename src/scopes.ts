@@ -69,23 +69,22 @@ export function defaultHasTipScope(tokenScopes: readonly string[]): boolean {
 
 // ---- the document-store scope ----
 //
-// `apps:storage` gates the DOCUMENT store (`app.storage.collection(...)`) — a
-// different surface from the legacy per-viewer `apps:storage:read`/`write` pair
-// and the legacy shared pair above, and the host does not treat any of them as
-// satisfying another (exact string match again). It is CONSENT-EXEMPT, so no
-// viewer is ever asked for it; the gate it actually creates is APPROVAL. The
-// mint builds the token from the APPROVED manifest, so a build whose manifest
-// declares the scope but which is not yet the approved version mints tokens
-// WITHOUT it — and the `popular_plays` collection it declares does not exist
-// server-side either (every call is refused `collection_not_declared`).
+// `apps:storage` gates the DOCUMENT store (`app.storage.collection(...)`). It is
+// the ONLY storage scope this app declares since 0.3.0: the legacy per-viewer
+// `apps:storage:read`/`write` pair and the legacy shared pair went with the
+// legacy stores (the browse prefs moved to the private `kv` collection, the
+// Popular rail to `popular_plays`). The host compares scopes by exact string,
+// so none of the legacy ones would satisfy this one or vice versa. It is
+// CONSENT-EXEMPT, so no viewer is ever asked for it; the gate it actually
+// creates is APPROVAL. The mint builds the token from the APPROVED manifest, so
+// a build whose manifest declares the scope but which is not yet the approved
+// version mints tokens WITHOUT it — and the collections it declares do not
+// exist server-side either (every call is refused `collection_not_declared`).
 //
-// So the predicate below is the migration's transition switch, not a consent
-// check: token carries the scope → the declaring version is the approved one →
-// attempt the document store. Token lacks it → the app is in its pre-migration
-// state and runs the legacy shared-storage path exactly as before, without
-// spending a doomed request per play and per rail load to learn so. The doc
-// path ALSO falls back on any runtime failure (see `lib/popular.ts`), because
-// a carried scope does not promise a healthy store.
+// So the predicate below is the Popular rail's switch: token carries the scope →
+// attempt the document store. Token lacks it → empty rail and no recorded
+// play, without spending a doomed request per play and per rail load. A carried
+// scope does not promise a healthy store, so `App.tsx` also swallows a refusal.
 export const APPS_STORAGE = 'apps:storage';
 
 /** Default predicate: may this token use the document store at all? */

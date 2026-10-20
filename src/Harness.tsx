@@ -13,7 +13,7 @@ import manifest from '../block.manifest.json';
  *
  * NOTE: the SDK mock host answers BLOCK_INIT + viewer/consent but does NOT
  * answer any of the block HTTP endpoints (collections, tip, follow, buzz,
- * shared storage). So the dev harness (main.tsx) injects an in-memory fake
+ * the document store). So the dev harness (main.tsx) injects an in-memory fake
  * ApiClient at the App boundary for all of those — the real HTTP path
  * (createHttpApiClient) is used only against a live civitai host.
  */
