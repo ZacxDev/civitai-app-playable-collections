@@ -33,20 +33,19 @@ import type { CSSProperties } from 'react';
 // 🔴 THE NINE RUNTIME HOOKS NOW COME FROM `./lib/sdk-runtime.js`, NOT FROM
 // `@civitai/blocks-react`. Same names, same shapes, different transport underneath:
 // the snapshot-derived five still read the bridge transport (so the /testing Harness
-// keeps answering them), while app storage, shared storage and the Buzz balance are
+// keeps answering them), while the document store and the Buzz balance are
 // HTTP against `/api/v1` through `@civitai/sdk`'s `initialize({ transport })`. The
 // `/ui` import BELOW deliberately stays on the bridge package until starters#328 —
 // see `lib/sdk-transport.ts` for why one transport serves both.
 import {
-  useAppStorage,
   useBlockContext,
   useBlockResize,
   useBlockToken,
   useBuzzBalance,
   useHostOrigin,
   useRequestConsent,
+  useKvStore,
   useRequestSignIn,
-  useSharedStorage,
   useStorageCollection,
 } from './lib/sdk-runtime.js';
 import {
@@ -62,7 +61,7 @@ import {
 
 import { ApiError, createHttpApiClient, type ApiClient } from './lib/api.js';
 import { createCachedApiClient, type CachedApiClient } from './lib/cache.js';
-import { POPULAR_PLAYS_COLLECTION, readPopularMigrated, recordPlayMigrated, resolvePopularEntries, summaryFromPage, totalBuzz, type ResolvedPopular } from './lib/popular.js';
+import { POPULAR_PLAYS_COLLECTION, readPopular, recordPlay, resolvePopularEntries, summaryFromPage, totalBuzz, type ResolvedPopular } from './lib/popular.js';
 import { MAX_DETAIL_PAGES, loadCollectionFirstPage, loadMoreItems } from './lib/collection-loader.js';
 import { DEFAULT_RETRY, withBoundedRetry, type RetryConfig } from './lib/retry.js';
 import { usePlayerSettings } from './settings.js';
@@ -261,26 +260,15 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
   const { balance: buzzPools, refetch: refetchBalance } = useBuzzBalance();
   const balance = totalBuzz(buzzPools);
 
-  // Cross-user "popular" play-counts. TWO stores while the migration runs
-  // (see `lib/popular.ts` for the model and the merge rule):
-  //
-  //   - the DOCUMENT store's `popular_plays` collection — the destination.
-  //     Reached as REST under `/api/v1/blocks/storage/`, behind the
-  //     `apps:storage` scope; attempted only when the token carries that
-  //     scope, which is what `docPlays` below encodes.
-  //   - App Blocks SHARED storage — the legacy store, now the REST routes
-  //     under `/api/v1/blocks/shared-storage/`, not the postMessage bridge.
-  //     Still read on every rail load (dual-read) and still written when a
-  //     doc-store write fails, so pre-migration behaviour is the floor.
-  //
-  // 🔴 THE EARLIER COMMENT CALLED THOSE ROUTES "guessed". They are not, and were not
-  // the ones it named: `list` and `append` come from `AppClient.sharedStorage`, and
-  // `vote` is app-layer over `app.site` because starters#479 kept voting OUT of the
-  // SDK client on purpose. `increment`/`top` do exist on the platform but this app
-  // uses neither (the document store's own `increment` is a different surface and
-  // IS used, via the collection façade). Stable identity across renders, so it
-  // stays safe in the effect/callback deps below.
-  const shared = useSharedStorage();
+  // Cross-user "popular" play-counts: the DOCUMENT store's `popular_plays`
+  // collection (see `lib/popular.ts` for the model). Reached as REST under
+  // `/api/v1/blocks/storage/`, behind the `apps:storage` scope; attempted only
+  // when the token carries that scope, which is what `docPlays` below encodes.
+  // 🔴 There is no second store any more: until 0.3.0 this rail also read and
+  // fell back to the legacy shared store (`/api/v1/blocks/shared-storage/*`),
+  // which is being deleted platform-wide. Its rows move into `popular_plays` by
+  // a hand-run copy at cutover. Stable identity across renders, so it stays
+  // safe in the effect/callback deps below.
   const plays = useStorageCollection(POPULAR_PLAYS_COLLECTION);
 
   // Inject the component-pack stylesheet into the block document once (gotcha
@@ -343,11 +331,10 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
   // May the Popular rail use the document store? `apps:storage` is
   // consent-exempt, so this is not a consent state: the mint builds the token
   // from the APPROVED manifest, so the scope's presence is exactly "the
-  // version declaring `popular_plays` is the approved one" — and its absence
-  // is the pre-migration state, in which the migrated helpers are handed
-  // `null` and run the legacy path whole (see `src/scopes.ts`). The helpers
-  // ALSO fall back on any doc-store failure, so this gate is the cheap common
-  // case, not the only guard.
+  // version declaring `popular_plays` is the approved one" — and in its
+  // absence the helpers are handed `null`: no request, an empty rail and no
+  // recorded play (see `src/scopes.ts`). A doc-store failure with the scope
+  // carried also empties the rail, swallowed below.
   const docPlays = (isStorageGranted ?? defaultHasDocStoreScope)(token.scopes ?? []) ? plays : null;
 
   /**
@@ -545,7 +532,8 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
   // `useState`s that agreed by both persisting NOTHING, with a comment here
   // asking the operator to decide whether both should survive a reload. They
   // should. `lib/browse-prefs.ts` writes them as a single record to a single
-  // app-storage key, so there is no way to give one a mechanism the other lacks
+  // key of the document store's private `kv` collection (`lib/kv-store.ts`),
+  // so there is no way to give one a mechanism the other lacks
   // — which is the drift `App.test.tsx`'s relationship guard exists to catch.
   //
   // 🔴 It is NOT localStorage, and the reason is in `lib/browse-prefs.ts`: this
@@ -559,8 +547,14 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
   // the first fetch until prefs resolve — needed a deadline timer, a `hydrated`
   // flag, a race guard and two gated effect dependency arrays, and it put a
   // viewer's stored record one slow host away from being overwritten.
-  const appStorage = useAppStorage();
-  const { prefs: browsePrefs, setSort, setPeriod } = useBrowsePrefs(appStorage, { enabled: ready });
+  //
+  // 🔴 ONLY A SIGNED-IN VIEWER READS. A private collection has no anonymous
+  // reader (`sign_in_required`), so an anonymous read is a guaranteed refusal;
+  // and keying `enabled` on the viewer is what lets a viewer who signs in
+  // mid-session get their record read at all — the hook reads once per
+  // `enabled` transition, and a refused read never licenses a write.
+  const kvStore = useKvStore();
+  const { prefs: browsePrefs, setSort, setPeriod } = useBrowsePrefs(kvStore, { enabled: ready && viewer != null });
   const { sort, period } = browsePrefs;
   // 🔴 THE WINDOW IS A PUBLIC-DISCOVERY CONCEPT, AND IT IS SENT IN EXACTLY ONE
   // PLACE: the public feed, on the popularity sort. Both exclusions are measured,
@@ -907,7 +901,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
     // cheaper to be wrong about.
     const seq = ++popularSeqRef.current;
     try {
-      const entries = await readPopularMigrated(docPlays, shared, POPULAR_LIMIT);
+      const entries = await readPopular(docPlays, POPULAR_LIMIT);
       // Resolve each ranked entry to a full card. An id already on a loaded list
       // is used directly; an id that ISN'T (a popular collection not on the
       // current page) is fetched by id so the rail always shows the true top-N
@@ -931,7 +925,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
       if (seq !== popularSeqRef.current) return;
       setPopular([]);
     }
-  }, [docPlays, shared, known, api]);
+  }, [docPlays, known, api]);
 
   // ---- effects ---- (all gated on `canFetch`: don't fetch until the host
   // origin + token are established, or the loop's root cause returns)
@@ -954,7 +948,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, canFetch, known]);
 
-  // ---- open a collection into the player (+ increment shared play-count) ----
+  // ---- open a collection into the player (+ record the play) ----
   // Loads ONLY the first page (one fetch); the player streams the rest on demand.
   const openCollection = useCallback(
     async (summary: CollectionSummary) => {
@@ -976,10 +970,8 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
         // Add to the device-local "Continue watching" rail (#7).
         recordRecentPlay({ id: summary.id, name: summary.name, coverImageUrl: summary.coverImageUrl, coverNsfwLevel: summary.coverNsfwLevel });
         // Fire-and-forget the play count; a failure never blocks playback
-        // (anon viewers reject on the write path — that's fine). The write
-        // goes to the document store when the migration gate is open, and
-        // falls back to the shared-store vote when it is not or it fails.
-        recordPlayMigrated(docPlays, shared, summary)
+        // (anon viewers reject on the write path — that's fine).
+        recordPlay(docPlays, summary)
           .then(() => loadPopular())
           .catch(() => {});
       } catch (err) {
@@ -990,7 +982,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
         setOpenLoading(false);
       }
     },
-    [api, docPlays, shared, loadPopular, recordRecentPlay, analytics],
+    [api, docPlays, loadPopular, recordRecentPlay, analytics],
   );
 
   const retryOpen = useCallback(() => {
@@ -1011,7 +1003,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
         const s = summaryFromPage(page);
         analytics.track({ type: 'play', collectionId: s.id });
         recordRecentPlay({ id: s.id, name: s.name, coverImageUrl: s.coverImageUrl, coverNsfwLevel: s.coverNsfwLevel });
-        recordPlayMigrated(docPlays, shared, s)
+        recordPlay(docPlays, s)
           .then(() => loadPopular())
           .catch(() => {});
       } catch (err) {
@@ -1031,7 +1023,7 @@ export function App({ api: injectedApi, isPrivateGranted, isTipGranted, isStorag
         setOpenLoading(false);
       }
     },
-    [api, docPlays, shared, loadPopular, recordRecentPlay, analytics],
+    [api, docPlays, loadPopular, recordRecentPlay, analytics],
   );
 
   // Reopen a recently-played collection (#7). Reuses the id-based open; the saved

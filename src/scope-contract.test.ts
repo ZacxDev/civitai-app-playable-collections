@@ -388,7 +388,7 @@ const NON_HOOK_SCOPE_CONSUMERS: Readonly<
   [BLOCK_SCOPES.APPS_STORAGE]: {
     file: 'scopes.ts',
     token: "APPS_STORAGE = 'apps:storage'",
-    why: 'The document-store gate for the Popular rail migration: `App.tsx` hands `lib/popular.ts` the `popular_plays` collection façade only when the token carries this scope (an approved manifest declares it), and the legacy shared store covers every other state.',
+    why: 'The document-store gate for the Popular rail: `App.tsx` hands `lib/popular.ts` the `popular_plays` collection façade only when the token carries this scope (an approved manifest declares it); without it the rail is empty. The browse prefs (private `kv` collection, `useKvStore`) need the same scope.',
   },
 };
 
@@ -457,8 +457,9 @@ function sourceFiles(dir = SRC_DIR, prefix = ''): string[] {
  * the module the capability arrives through is new, and both are named here.
  *
  * 🔴 IT WENT RED RATHER THAN QUIET, which is the only reason this was a repair and
- * not a silent hole: the positive control below asserts the scanner FINDS
- * `useAppStorage` in `App.tsx`, so a scanner that stopped seeing it fails by name.
+ * not a silent hole: the positive control below asserted the scanner FINDS
+ * `useAppStorage` in `App.tsx` (now `useBuzzBalance`, since 0.3.0 dropped the
+ * legacy stores), so a scanner that stopped seeing it fails by name.
  * A contract test without that control would have passed the port untouched.
  *
  * 🔴 AN IMPORT IS TREATED AS A CALL, and that is sound HERE rather than in
@@ -509,8 +510,9 @@ describe('the scanner itself', () => {
 
   it('POSITIVE CONTROL — finds the scoped hook this app really does call', () => {
     // If this goes empty, every "no undeclared scope" verdict below is vacuous.
-    expect(imported.get('useAppStorage')).toContain('App.tsx');
-    expect(imported.get('useSharedStorage')).toContain('App.tsx');
+    // (`useAppStorage`/`useSharedStorage` were the other two controls here until
+    // 0.3.0 removed both legacy stores; `useBuzzBalance` is a ledger-1 hook this
+    // app still calls, which is the property a control needs.)
     expect(imported.get('useBuzzBalance')).toContain('App.tsx');
   });
 

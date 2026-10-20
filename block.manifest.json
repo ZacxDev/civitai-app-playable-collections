@@ -14,10 +14,6 @@
     "collections:read:private",
     "social:tip:self",
     "buzz:read:self",
-    "apps:storage:read",
-    "apps:storage:write",
-    "apps:storage:shared:read",
-    "apps:storage:shared:write",
     "apps:storage",
     "social:react:self"
   ],
@@ -25,14 +21,12 @@
     "collections:read:private": "Lets a signed-in viewer browse and play their own private collections (behind an explicit in-app consent prompt), in addition to public ones.",
     "social:tip:self": "Sends the viewer's Buzz tip to the creator of the media on screen, or to the collection's curator, or split between the two — within the per-tip and daily caps.",
     "buzz:read:self": "Reads the viewer's Buzz balance so a tip amount can be validated before it is sent.",
-    "apps:storage:read": "Reads back the viewer's own saved browse preferences — the collection sort and the popularity window — so a return visit opens the way they left it. Private to that viewer; no other viewer's data is readable.",
-    "apps:storage:write": "Saves the viewer's own browse preferences (collection sort and popularity window) so the choice survives a reload. One small record, visible only to that viewer.",
-    "apps:storage:shared:write": "Records the shared popular-collections rail entries (collection references and tallies) that are visible to all viewers.",
-    "apps:storage": "Reads the shared popular_plays tallies that rank the Popular rail, and records a signed-in viewer's own play in that collection — a plays counter increment plus their own played mark. The collection is write:none, so no viewer authors or edits a document; viewers only tally and mark.",
+    "apps:storage": "Saves the signed-in viewer's own browse preferences (collection sort and popularity window) in a private collection only that viewer can read, so a return visit opens the way they left it. Reads the shared popular_plays tallies that rank the Popular rail, and records a signed-in viewer's own play in that collection — a plays counter increment plus their own played mark. popular_plays is write:none, so no viewer authors or edits a document there; viewers only tally and mark.",
     "social:react:self": "Registers the viewer's own reactions (Like, Heart, Laugh, Cry) on the media they are playing, on Civitai itself — the same registration, rewards and counts as the site's own reaction button. Every reaction is the viewer's own tap on the item on screen; the app never reacts on its own, in bulk, or for anyone else."
   },
   "storage": {
     "collections": {
+      "kv": { "visibility": "private" },
       "popular_plays": { "visibility": "shared", "write": "none", "counters": ["plays"], "marks": ["played"] }
     }
   },

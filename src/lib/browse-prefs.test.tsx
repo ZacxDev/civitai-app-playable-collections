@@ -202,7 +202,7 @@ describe('useBrowsePrefs — a write is only ever laid over a record that was RE
     // pre-change tree, which held a `chosenRef` that covered this case by a
     // different route. It is here because that ref is gone and the property has
     // to be pinned by something: the restore effect keys on the `storage`
-    // object's identity, which is stable only because `useAppStorage` memoises
+    // object's identity, which is stable only because `useKvStore` memoises
     // it. If a store identity ever changes — a caller, an SDK change,
     // StrictMode — a second restore must not land on top of the viewer.
     const first = fakeStore({ sort: 'newest', period: 'year' });

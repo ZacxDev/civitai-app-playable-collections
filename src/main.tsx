@@ -42,7 +42,7 @@ const useHarness = import.meta.env.VITE_DEV_HARNESS === 'true';
 if (useHarness) installHarnessTransport();
 
 // 🔴 THE HARNESS NEEDS A REST FAKE NOW, AND WITHOUT IT THE DEV LOOP IS BROKEN RATHER
-// THAN DEGRADED. App storage, shared storage and the Buzz balance used to be
+// THAN DEGRADED. Storage and the Buzz balance used to be
 // postMessage, which the mock host answered; after the port they are HTTP against
 // `https://civitai.com/api/v1` (`@civitai/sdk`'s DEFAULT_SITE_URL is absolute, which
 // is also why production needs no override here). From `localhost:5187` with a fake
@@ -81,8 +81,10 @@ createRoot(container).render(
           {/* The mock token carries no `social:react:self`; grant it by
               predicate (the seam's purpose) so the dev loop can exercise
               reactions against the mock host, whose own declaration gate is
-              fed the real manifest scopes by <Harness> above. */}
-          <App api={devApi} isReactGranted={() => true} />
+              fed the real manifest scopes by <Harness> above. Same for
+              `apps:storage`, which the approved manifest always carries:
+              without it the Popular rail has no store at all. */}
+          <App api={devApi} isReactGranted={() => true} isStorageGranted={() => true} />
         </Harness>
       ) : (
         <App />

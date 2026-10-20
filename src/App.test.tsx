@@ -10,7 +10,7 @@ import { BROWSE_PREFS_KEY } from './lib/browse-prefs.js';
 import { CollectionGrid } from './components/CollectionGrid.js';
 import { ApiError, type ApiClient } from './lib/api.js';
 import { createFakeApi } from './fake-api.js';
-import { createRestFake, type RestFakeOptions } from './dev-rest.js';
+import { createRestFake, type RestDocSeed, type RestFakeOptions } from './dev-rest.js';
 import { configureSdkRuntime } from './lib/sdk-runtime.js';
 import { palette } from './theme.js';
 import type { CollectionSummary, MediaItem } from './types.js';
@@ -24,10 +24,10 @@ function renderApp(
     isPrivateGranted?: (scopes: string[]) => boolean;
     isTipGranted?: (scopes: string[]) => boolean;
     /**
-     * Grants the document-store gate (`apps:storage`) by predicate — the mock
-     * host's token carries none of the storage scopes, so without this the app
-     * runs its pre-migration legacy path, which is what every other case in
-     * this file exercises.
+     * The document-store gate (`apps:storage`) as a predicate. Defaults to
+     * GRANTED: the mock host's token carries no storage scope at all, while the
+     * approved manifest this app ships under declares it — so the real token
+     * always carries it. Pass `() => false` for the scope-less state.
      */
     isStorageGranted?: (scopes: string[]) => boolean;
     /** Seed / disable the REST fake's document store (`blocks/storage/*`). */
@@ -50,54 +50,43 @@ function renderApp(
     retry?: { retries: number; delayMs: number };
     /** Seed the mock host's per-pool Buzz wallet (GET_BUZZ_BALANCE bridge). */
     buzzBalance?: { blue: number; green: number; yellow: number };
-    /** Seed the mock host's SHARED store (the apps:storage:shared:* bridge). */
-    shared?: { seed?: Array<{ value: { title: string; body?: string; data?: unknown }; authorUserId?: number; voters?: number[] }> };
     /**
-     * Seed the mock host's PER-VIEWER app store (the `APP_STORAGE_*` bridge) —
-     * the durable side of `lib/browse-prefs.ts`.
+     * Seed the viewer's private `kv` collection by LEGACY key → legacy value —
+     * laid down exactly as the cutover copy script lays it down
+     * (`{ value: <legacy value> }` under the same key; `lib/kv-store.ts`). This
+     * is the durable side of `lib/browse-prefs.ts`.
      *
-     * 🔴 SEEDING THIS IS HOW A RELOAD IS SIMULATED, AND THE OBVIOUS ALTERNATIVE
-     * DOES NOT WORK. `unmount()` + a second `renderApp()` looks like a reload but
-     * is not one here: the SDK transport is a module singleton, `<Harness>`
-     * installs its mock host in an effect, and the second mount's host is never
-     * reached — measured, a storage read on mount 2 is simply dropped and never
-     * answered. A remount therefore always falls back to the
-     * defaults and CANNOT distinguish "restored" from "never stored". A fresh
-     * mount against a host whose store already holds the record is exactly what
-     * the app sees after a real reload, and it exercises the real bridge.
+     * 🔴 SEEDING THIS IS HOW A RELOAD IS SIMULATED. `unmount()` + a second
+     * `renderApp()` is not one here: the SDK runtime is a module singleton and
+     * the second mount's reads are not answered by the first mount's store. A
+     * fresh mount against a store that already holds the record is exactly what
+     * the app sees after a real reload.
      */
     storage?: { seed?: Record<string, unknown> };
     /** Analytics sink (Feature #10). */
     onEvent?: (e: { type: string; [k: string]: unknown }) => void;
     /**
-     * Observe the REST calls the app makes for storage / shared storage / Buzz.
-     *
-     * 🔴 THIS REPLACES `onOutbound` FOR THOSE THREE FAMILIES. `onOutbound` watches
-     * postMessages, and after the port these three are HTTP — so a guard written
-     * against `APP_STORAGE_SET` sees nothing, which is how the browse-prefs
-     * relationship guard failed loudly during the port rather than going quietly
-     * vacuous. `onOutbound` is still right for everything that IS still a message.
+     * Observe the REST calls the app makes for the document store / Buzz —
+     * every one, including any the fake 404s (a legacy storage route, say).
+     * `onOutbound` watches postMessages and sees none of these.
      */
     onRestRequest?: (call: { path: string; method: string; body: Record<string, unknown> }) => void;
   } = {},
 ) {
-  // 🔴 THE THREE SEEDS BELOW NOW HAVE TWO AUDIENCES, AND THAT IS THE PORT'S ONE
-  // UNAVOIDABLE TEST CHANGE. `buzzBalance`/`shared`/`storage` were mock-HOST
-  // scenarios, because those three were postMessage conversations. After the port
-  // they are HTTP, so the same seeds are also handed to a `fetch` fake — and the
-  // fake is what actually answers them. The Harness props are left in place
-  // deliberately: they still drive the bridge, so a test that asserts an outbound
-  // message keeps working, and removing them would have made this diff a rewrite
-  // of every case rather than a re-route of one helper.
-  //
-  // The viewer id is threaded through so `viewerVoted` and default row authorship
-  // agree with whoever the Harness calls the viewer.
+  // The viewer id is threaded through so mark ownership agrees with whoever the
+  // Harness calls the viewer.
   configureSdkRuntime({
     fetch: createRestFake({
       viewerUserId: (opts.viewer === undefined ? { id: 99 } : opts.viewer)?.id ?? 99,
-      storage: opts.storage,
-      shared: opts.shared,
-      docStore: opts.docStore,
+      docStore: {
+        ...opts.docStore,
+        seed: [
+          ...(opts.docStore?.seed ?? []),
+          ...Object.entries(opts.storage?.seed ?? {}).map(
+            ([key, value]): RestDocSeed => ({ collection: 'kv', key, data: { value } }),
+          ),
+        ],
+      },
       buzz: opts.buzzBalance,
       onRequest: opts.onRestRequest,
     }),
@@ -110,8 +99,6 @@ function renderApp(
       onOutbound={opts.onOutbound}
       {...(opts.consentGrantable === undefined ? {} : { consentGrantable: opts.consentGrantable })}
       buzzBalance={opts.buzzBalance}
-      shared={opts.shared}
-      storage={opts.storage}
     >
       {/* The Harness token carries no `social:tip:self`, so without this the T5 consent
           gate short-circuits every tip case in this file into a REQUEST_CONSENT. These
@@ -121,7 +108,7 @@ function renderApp(
         api={opts.api}
         isPrivateGranted={opts.isPrivateGranted}
         isTipGranted={opts.isTipGranted ?? (() => true)}
-        isStorageGranted={opts.isStorageGranted}
+        isStorageGranted={opts.isStorageGranted ?? (() => true)}
         retry={opts.retry}
         onEvent={opts.onEvent}
       />
@@ -130,6 +117,19 @@ function renderApp(
 }
 
 const c = palette();
+
+/**
+ * `popular_plays` documents, one per `[collectionId, viewer ids holding the
+ * played mark]` — the shape a play (or the cutover copy) leaves behind.
+ */
+function plays(entries: Array<[number, number[]]>): RestDocSeed[] {
+  return entries.map(([id, viewers]) => ({
+    collection: 'popular_plays',
+    key: String(id),
+    counters: { plays: viewers.length },
+    marks: { played: viewers },
+  }));
+}
 
 /** Open the slide-out navigation drawer (Discover / My collections live there now). */
 async function openNav() {
@@ -522,14 +522,7 @@ describe('App — Civitai official collections are hidden from Discover (2026-10
     };
     renderApp({
       api,
-      shared: {
-        seed: [
-          { value: { title: 'Official Gem', data: { collectionId: 999 } }, voters: [1, 2, 3, 4, 5] },
-          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
-          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
-          { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
-        ],
-      },
+      docStore: { seed: plays([[999, [1, 2, 3, 4, 5]], [101, [1, 2]], [102, [1, 2, 3]], [201, [1, 2, 3, 4]]]) },
     });
     await screen.findByTestId('collection-grid');
     const rail = await screen.findByTestId('popular-rail');
@@ -922,16 +915,7 @@ describe('App — analytics events (Feature #10)', () => {
       // 🔴 THREE entries, each at or above POPULAR_MIN_PLAYS — the rail is only
       // rendered when both floors are met, so a single seeded entry would hide it
       // and this test would fail for a reason unrelated to its subject.
-      shared: {
-        seed: [
-          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
-          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
-          // 🔴 201 ('My Public Board') — an id the fake API actually ships.
-          // `resolvePopularEntries` DROPS an unresolvable id, so an invented
-          // companion shrinks the set below the entry floor and hides the rail.
-          { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
-        ],
-      },
+      docStore: { seed: plays([[101, [1, 2]], [102, [1, 2, 3]], [201, [1, 2, 3, 4]]]) },
     });
     await screen.findByTestId('collection-grid');
     const rail = await screen.findByTestId('popular-rail');
@@ -1146,13 +1130,7 @@ describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', 
       api,
       // Hidden Gem is the SUBJECT (an id absent from every loaded list); the two
       // companions exist only so the rail clears POPULAR_MIN_ENTRIES and renders.
-      shared: {
-        seed: [
-          { value: { title: 'Hidden Gem', data: { collectionId: 999 } }, voters: [1, 2, 3, 4, 5] },
-          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
-          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
-        ],
-      },
+      docStore: { seed: plays([[999, [1, 2, 3, 4, 5]], [101, [1, 2]], [102, [1, 2, 3]]]) },
     });
     await screen.findByTestId('collection-grid');
     const rail = await screen.findByTestId('popular-rail');
@@ -1180,7 +1158,7 @@ describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', 
     };
     renderApp({
       api,
-      shared: { seed: [{ value: { title: 'Ghost', data: { collectionId: 888 } }, voters: [1, 2] }] },
+      docStore: { seed: plays([[888, [1, 2]]]) },
     });
     await screen.findByTestId('collection-grid');
     await waitFor(() => expect(screen.queryByTestId('popular-rail')).toBeNull());
@@ -1188,37 +1166,19 @@ describe('App — popular rail resolves ids absent from loaded lists (v0.1.9)', 
     expect(screen.queryByTestId('grid-error')).toBeNull();
   });
 
-  it('hides the rail (no crash) when the shared store is empty', async () => {
+  it('hides the rail (no crash) when the store is empty', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
-    renderApp({ api, shared: { seed: [] } });
+    renderApp({ api, docStore: { seed: [] } });
     await screen.findByTestId('collection-grid');
     expect(screen.queryByTestId('popular-rail')).toBeNull();
   });
 });
 
-describe('App — Popular rail on the document store (Phase 3 migration)', () => {
-  const grantStorage = () => true;
-
-  it('prefers the document store per collection and fills the rest from the legacy store', async () => {
+describe('App — Popular rail on the document store ONLY (0.3.0 port)', () => {
+  it('ranks the rail by the played-mark count of popular_plays', async () => {
     renderApp({
       api: createFakeApi({ viewerUserId: 99 }),
-      isStorageGranted: grantStorage,
-      docStore: {
-        seed: [
-          { collection: 'popular_plays', key: '101', marks: { played: [11, 12, 13, 14, 15] } },
-          { collection: 'popular_plays', key: '102', marks: { played: [11, 12, 13, 14] } },
-          { collection: 'popular_plays', key: '201', marks: { played: [11, 12, 13] } },
-        ],
-      },
-      shared: {
-        seed: [
-          // 101 also has NINE legacy votes: the doc count (5) must win — not
-          // the legacy count, and never the sum.
-          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2, 3, 4, 5, 6, 7, 8, 9] },
-          // 202 exists only in the legacy store: its count fills in as-is.
-          { value: { title: 'My Private Board', data: { collectionId: 202 } }, voters: [1, 2] },
-        ],
-      },
+      docStore: { seed: plays([[101, [11, 12, 13, 14, 15]], [102, [11, 12, 13, 14]], [201, [11, 12, 13]]]) },
     });
     await screen.findByTestId('collection-grid');
     const rail = await screen.findByTestId('popular-rail');
@@ -1229,42 +1189,32 @@ describe('App — Popular rail on the document store (Phase 3 migration)', () =>
       'Play Neon Cities — played 5 times',
       'Play Forest Studies — played 4 times',
       'Play My Public Board — played 3 times',
-      'Play My Private Board — played 2 times',
     ]);
   });
 
-  it('degrades to exactly the legacy rail when the document store is unavailable', async () => {
-    renderApp({
-      api: createFakeApi({ viewerUserId: 99 }),
-      isStorageGranted: grantStorage,
-      // Every blocks/storage/* call answers the store's 503 envelope — the
-      // pre-approval / store-disabled state the fallback exists for.
-      docStore: { disabled: true },
-      shared: {
-        seed: [
-          { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
-          { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
-          { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
-        ],
-      },
-    });
-    await screen.findByTestId('collection-grid');
-    const rail = await screen.findByTestId('popular-rail');
-    const labels = within(rail)
-      .getAllByTestId('popular-card')
-      .map((el) => el.getAttribute('aria-label'));
-    expect(labels).toEqual([
-      'Play My Public Board — played 4 times',
-      'Play Forest Studies — played 3 times',
-      'Play Neon Cities — played 2 times',
-    ]);
-  });
-
-  it('records a play in the document store — counter then mark — and not in the legacy store', async () => {
+  it('🔴 never reads the legacy shared store — not even when the document store is down', async () => {
+    // Before 0.3.0 a refused document store DEGRADED to the legacy rail
+    // (`blocks/shared-storage/list`). That route is being deleted; the rail now
+    // empties instead, and makes no legacy request on the way.
     const calls: Array<{ path: string; method: string }> = [];
     renderApp({
       api: createFakeApi({ viewerUserId: 99 }),
-      isStorageGranted: grantStorage,
+      docStore: { disabled: true },
+      onRestRequest: (call) => calls.push(call),
+    });
+    await screen.findByTestId('collection-grid');
+    // Positive control: the rail read DID go out, to the document store.
+    await waitFor(() =>
+      expect(calls.some((c) => c.method === 'GET' && c.path === 'blocks/storage/popular_plays')).toBe(true),
+    );
+    expect(screen.queryByTestId('popular-rail')).toBeNull();
+    expect(calls.filter((c) => c.path.startsWith('blocks/shared-storage/'))).toEqual([]);
+  });
+
+  it('records a play in the document store — counter then mark', async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
       onRestRequest: (call) => calls.push(call),
     });
     const grid = await screen.findByTestId('collection-grid');
@@ -1275,27 +1225,95 @@ describe('App — Popular rail on the document store (Phase 3 migration)', () =>
         calls.some((c) => c.method === 'PUT' && c.path === 'blocks/storage/popular_plays/101/marks/played'),
       ).toBe(true),
     );
-    expect(
-      calls.some((c) => c.method === 'POST' && c.path === 'blocks/storage/popular_plays/101/counters/plays'),
-    ).toBe(true);
-    // The write has MOVED: no legacy append/vote for this play.
-    expect(calls.some((c) => c.path.startsWith('blocks/shared-storage/') && c.method === 'POST')).toBe(false);
+    const counter = calls.findIndex(
+      (c) => c.method === 'POST' && c.path === 'blocks/storage/popular_plays/101/counters/plays',
+    );
+    const mark = calls.findIndex(
+      (c) => c.method === 'PUT' && c.path === 'blocks/storage/popular_plays/101/marks/played',
+    );
+    expect(counter).toBeGreaterThanOrEqual(0);
+    expect(counter).toBeLessThan(mark);
   });
 
-  it('falls back to the legacy vote for the play when the document store refuses it', async () => {
+  it('🔴 a refused play write makes NO legacy vote (there is no fallback any more)', async () => {
     const calls: Array<{ path: string; method: string }> = [];
     renderApp({
       api: createFakeApi({ viewerUserId: 99 }),
-      isStorageGranted: grantStorage,
       docStore: { disabled: true },
       onRestRequest: (call) => calls.push(call),
     });
     const grid = await screen.findByTestId('collection-grid');
     await userEvent.click(within(grid).getAllByTestId('collection-card')[0]); // Neon Cities (101)
     await screen.findByTestId('collection-viewer');
+    // Positive control: the play write was attempted (and refused) first.
     await waitFor(() =>
-      expect(calls.some((c) => c.method === 'POST' && c.path === 'blocks/shared-storage/vote')).toBe(true),
+      expect(
+        calls.some((c) => c.method === 'POST' && c.path === 'blocks/storage/popular_plays/101/counters/plays'),
+      ).toBe(true),
     );
+    expect(calls.filter((c) => c.path.startsWith('blocks/shared-storage/'))).toEqual([]);
+  });
+
+  it('without apps:storage on the token: no rail, no play write, no request to any store', async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    renderApp({
+      api: createFakeApi({ viewerUserId: 99 }),
+      isStorageGranted: () => false,
+      docStore: { seed: plays([[101, [1, 2]], [102, [1, 2, 3]], [201, [1, 2, 3, 4]]]) },
+      onRestRequest: (call) => calls.push(call),
+    });
+    const grid = await screen.findByTestId('collection-grid');
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    await screen.findByTestId('collection-viewer');
+    expect(screen.queryByTestId('popular-rail')).toBeNull();
+    expect(calls.filter((c) => c.path.startsWith('blocks/storage/popular_plays'))).toEqual([]);
+    expect(calls.filter((c) => c.path.startsWith('blocks/shared-storage/'))).toEqual([]);
+  });
+});
+
+describe('App — 🔴 zero legacy storage traffic (the closing condition of the store migration)', () => {
+  // The legacy routes `/api/v1/blocks/app-storage/*` and
+  // `/api/v1/blocks/shared-storage/*` can only be deleted once no first-party
+  // app reaches them. This drives every storage-touching path a signed-in
+  // viewer has — boot (prefs read + rail read), a sort change (prefs write)
+  // and a play (counter + mark) — and asserts the WHOLE request log, with a
+  // positive control per path so an empty log cannot pass.
+  const LEGACY = /^blocks\/(app-storage|shared-storage)\//;
+
+  it('a signed-in session touches only the document store', async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    renderApp({
+      api: createFakeApi({ collections: windowSeeds() }),
+      onRestRequest: (call) => calls.push(call),
+    });
+    const grid = await screen.findByTestId('collection-grid');
+    await openSortMenu();
+    await userEvent.click(screen.getByTestId('sort-newest'));
+    await userEvent.click(within(grid).getAllByTestId('collection-card')[0]);
+    await screen.findByTestId('collection-viewer');
+    await waitFor(() => {
+      // Positive controls, one per path.
+      expect(calls.some((c) => c.method === 'GET' && c.path === 'blocks/storage/kv/playable-collections%3Abrowse-prefs')).toBe(true);
+      expect(calls.some((c) => c.method === 'PUT' && c.path === 'blocks/storage/kv/playable-collections%3Abrowse-prefs')).toBe(true);
+      expect(calls.some((c) => c.method === 'GET' && c.path === 'blocks/storage/popular_plays')).toBe(true);
+      expect(calls.some((c) => c.method === 'PUT' && /^blocks\/storage\/popular_plays\/\d+\/marks\/played$/.test(c.path))).toBe(true);
+    });
+    expect(calls.filter((c) => LEGACY.test(c.path))).toEqual([]);
+  });
+
+  it('an anonymous viewer makes no private-store request at all (it could only be refused)', async () => {
+    const calls: Array<{ path: string; method: string }> = [];
+    renderApp({
+      api: createFakeApi({ collections: windowSeeds() }),
+      viewer: null,
+      onRestRequest: (call) => calls.push(call),
+    });
+    await screen.findByTestId('collection-grid');
+    // Positive control: the fake IS observing this mount — the rail read
+    // (anonymous viewers can read the shared tallies) went out.
+    await waitFor(() => expect(calls.some((c) => c.path === 'blocks/storage/popular_plays')).toBe(true));
+    expect(calls.filter((c) => c.path.startsWith('blocks/storage/kv'))).toEqual([]);
+    expect(calls.filter((c) => LEGACY.test(c.path))).toEqual([]);
   });
 });
 
@@ -1664,19 +1682,23 @@ describe('the popularity window', () => {
     //   3. An exact FIELD LEDGER — the record is `{period, sort}` and nothing
     //      else, so it fails if a control grows a persisted field the other
     //      lacks, AND if one is dropped.
-    //   🔴 4. RE-POINTED BY THE PORT, AND ITS THIRD POINTING. It watched the
-    //      `APP_STORAGE_SET` postMessage; app storage is `POST
-    //      blocks/app-storage/set` now, so that observation saw nothing. Note WHICH
-    //      way it broke: it went RED, not green — the assertion is `writes.length`
-    //      is 1, and zero writes fails it. A guard that had asserted "no more than
-    //      one key" would have passed on an empty set and reported coverage it no
-    //      longer had. The invariant is unchanged; only where it is observed moved.
+    //   🔴 4. RE-POINTED AGAIN BY THE 0.3.0 DOCUMENT-STORE PORT — its FOURTH
+    //      pointing (postMessage → `POST blocks/app-storage/set` → a `PUT` of
+    //      the private `kv` document). It went RED, not green, each time: the
+    //      assertion is `writes.length` is 1, and zero writes fails it. The
+    //      invariant is unchanged; only where it is observed moved.
     const writes: Array<{ key: string; value: unknown }> = [];
     renderApp({
       api: createFakeApi({ collections: windowSeeds() }),
       onRestRequest: (call) => {
-        if (call.path === 'blocks/app-storage/set') {
-          writes.push(call.body as { key: string; value: unknown });
+        // A PUT of one document in the private `kv` collection; the record is
+        // the document's `data.value` (the copy script's wrapping).
+        const m = /^blocks\/storage\/kv\/([^/]+)$/.exec(call.path);
+        if (m && call.method === 'PUT') {
+          writes.push({
+            key: decodeURIComponent(m[1] as string),
+            value: (call.body.data as { value: unknown }).value,
+          });
         }
       },
     });

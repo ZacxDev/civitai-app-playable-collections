@@ -7,23 +7,17 @@ import { manifest, validateManifest } from './manifest.js';
 import { RECIPIENT_PERCENT, TIP_TOTAL_MAX, type TipRecipientChoice } from './lib/tip-split.js';
 
 describe('block.manifest.json', () => {
-  it('declares the 10 required scopes (no block:settings:*, no collections:write:self)', () => {
-    // 🔴 `apps:storage:read` / `apps:storage:write` — the PER-VIEWER store — are
-    // NOT the same capability as the `apps:storage:shared:*` pair below, and the
-    // host does not treat one as satisfying the other: it compares the required
-    // scope against the token's scope set by EXACT STRING MATCH. This app needs
-    // both families and declares both: the per-viewer pair backs the saved browse
-    // preferences (`lib/browse-prefs.ts` via `useAppStorage`), the shared pair
-    // backs the cross-user Popular rail (`lib/popular.ts` via `useSharedStorage`).
-    //
-    // Phase 3 adds the THIRD storage family: `apps:storage`, the DOCUMENT
-    // store scope — again a distinct string no sibling satisfies. It backs the
-    // `popular_plays` collection declared below, which the Popular rail is
-    // migrating to. Both legacy families stay declared during the migration:
-    // the per-viewer pair still backs browse prefs, and the shared pair backs
-    // the rail's legacy half — the dual-read fallback and the write a failed
-    // doc-store write falls back to (`lib/popular.ts`). Dropping either is a
-    // later change, made when nothing reads it any more.
+  it('declares the 6 required scopes (no legacy storage, no block:settings:*, no collections:write:self)', () => {
+    // 🔴 ONE STORAGE SCOPE, AND IT IS THE DOCUMENT STORE'S. Until 0.3.0 this app
+    // declared THREE storage families — the legacy per-viewer pair
+    // (`apps:storage:read`/`write`, browse prefs), the legacy shared pair
+    // (`apps:storage:shared:read`/`write`, the Popular rail's dual-read) and
+    // `apps:storage`. The 0.3.0 port moved browse prefs to the private `kv`
+    // collection and the rail to `popular_plays` alone, so both legacy pairs
+    // went: a declared scope nothing uses is a capability shown to a moderator
+    // and every viewer for nothing, and the legacy routes those scopes gate are
+    // being deleted platform-wide. The host compares scopes by EXACT STRING
+    // MATCH, so `apps:storage` does not satisfy a legacy one (or vice versa).
     //
     // Phase 3's reactions step adds `social:react:self` — CONSENT-GATED and
     // SENSITIVE (its justification below is a manifest requirement, not a
@@ -49,13 +43,13 @@ describe('block.manifest.json', () => {
       'collections:read:private',
       'social:tip:self',
       'buzz:read:self',
-      'apps:storage:read',
-      'apps:storage:write',
-      'apps:storage:shared:read',
-      'apps:storage:shared:write',
       'apps:storage',
       'social:react:self',
     ]);
+    // 🔴 None of the four legacy storage scopes may return (0.3.0).
+    for (const legacy of ['apps:storage:read', 'apps:storage:write', 'apps:storage:shared:read', 'apps:storage:shared:write']) {
+      expect(manifest.scopes).not.toContain(legacy);
+    }
     // 🔴 `collections:write:self` was DROPPED in 0.2.10 and must not come back.
     // Following moved to the host-mediated bridge, which needs no scope: the
     // host calls the session-authed procedure and self-binds the viewer. Re-adding
@@ -85,17 +79,16 @@ describe('block.manifest.json', () => {
     // or `iframe.src`, and what this validates is byte-for-byte the file
     // `civitai app submit` uploads rather than a local variant of it.
     //
-    // Every declared scope validates directly (incl. the 4-segment shared-storage
-    // ones and the consent-gated private read) — no exemption needed. The count
+    // Every declared scope validates directly (incl. the consent-gated private
+    // read) — no exemption needed. The count
     // is deliberately not restated here; it rots on every scope change and the
     // ledger above is the place that owns it.
     expect(validated.scopes).toEqual(manifest.scopes);
-    expect(validated.scopes).toContain('apps:storage:read');
-    expect(validated.scopes).toContain('apps:storage:shared:read');
+    expect(validated.scopes).toContain('apps:storage');
     expect(validated.scopes).toContain('collections:read:private');
   });
 
-  it('declares the popular_plays document-store collection, write:"none", and no publish scope', () => {
+  it('declares the private kv collection and popular_plays (write:"none"), and no publish scope', () => {
     // The declaration IS the collection: undeclared, it does not exist and
     // every call is refused `collection_not_declared`. `write: "none"` is the
     // load-bearing choice — nobody authors a document, so the consent-gated
@@ -105,8 +98,13 @@ describe('block.manifest.json', () => {
     // `"anyone"`). The counter and the mark must not share a name (the server
     // refuses that too): `plays` tallies raw plays and creates documents,
     // `played` is the per-viewer mark whose count ranks the rail.
+    //
+    // `kv` (0.3.0) is the browse prefs' private collection — its name, key and
+    // `{ value }` wrapping are a contract with the cutover copy script
+    // (`lib/kv-store.ts`). Private writes need only `apps:storage` too.
     expect(manifest.storage).toEqual({
       collections: {
+        kv: { visibility: 'private' },
         popular_plays: { visibility: 'shared', write: 'none', counters: ['plays'], marks: ['played'] },
       },
     });

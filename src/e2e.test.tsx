@@ -26,8 +26,10 @@ async function openNeon(
       {/* The Harness token carries no `social:tip:self`, so without this the T5 consent
           gate short-circuits every tip case in this file into a REQUEST_CONSENT. These
           suites are about the money MECHANICS, not about consent — the gate has its own
-          red/green pair in `components/tip-affordance.test.tsx`. */}
-      <App api={api} isTipGranted={() => true} />
+          red/green pair in `components/tip-affordance.test.tsx`. The real token always
+          carries `apps:storage` (the approved manifest declares it); the Harness's
+          carries none, so it is granted by predicate. */}
+      <App api={api} isTipGranted={() => true} isStorageGranted={() => true} />
     </Harness>,
   );
   const grid = await screen.findByTestId('collection-grid');
@@ -373,14 +375,14 @@ describe('follow toggle — one control, host-mediated', () => {
   });
 });
 
-describe('popular rail (shared play-counts)', () => {
+describe('popular rail (popular_plays tallies)', () => {
   // 🔴 REPOINTED, NOT DELETED — and this test used to PIN THE DEFECT. It asserted
   // that a SINGLE play puts a collection on a rail headed "🔥 Popular right now",
   // which is the exact behaviour the threshold removes: one play cannot tell
   // "people like this" from "the author opened it once". Its real subject — the
-  // recordPlay → SHARED store → readPopular round trip — is unchanged and still
+  // recordPlay → popular_plays → readPopular round trip — is unchanged and still
   // asserted below; only the claim about what ONE play earns has moved.
-  it('records a play in the SHARED store, but ONE play does not earn the popular rail', async () => {
+  it('records a play in popular_plays, but ONE play does not earn the popular rail', async () => {
     const api = createFakeApi({ viewerUserId: 99 });
     await openNeon(api);
     // 0.2.14: the Player no longer owns an exit. In classic mode the themed
@@ -396,56 +398,38 @@ describe('popular rail (shared play-counts)', () => {
     expect(screen.queryByText(/Popular right now/)).not.toBeInTheDocument();
   });
 
-  it('ranks the rail by distinct-viewer vote count (desc) from the seeded SHARED store', async () => {
-    // Seed the mock host's SHARED store directly with two collection entries at
-    // different vote counts — proves `readPopular` ranks by count, not insertion
-    // order, and resolves each entry's collectionId back to a known card.
+  it('ranks the rail by distinct-viewer played-mark count (desc) from popular_plays', async () => {
+    // Seeded so the ranking INVERTS key order (101 < 102 < 201 by key, 201 > 102
+    // > 101 by marks), so a key-ordered rail would be WRONG.
+    // 🔴 All three clear POPULAR_MIN_PLAYS and there are POPULAR_MIN_ENTRIES of
+    // them, so the rail renders and the RANKING claim is what is under test.
+    // 🔴 201 ('My Public Board'), NOT an invented id: `resolvePopularEntries`
+    // DROPS an entry whose collectionId resolves to nothing. The fake API ships
+    // 101, 102, 201, 202.
     const api = createFakeApi({ viewerUserId: 99 });
-    // The SHARED store is REST after the port, so the seed has to reach a `fetch`
-    // fake as well as the mock host — see the note in App.test.tsx's renderApp.
-    const sharedSeed = [
-      { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] },
-      { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] },
-      { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] },
-    ];
+    const doc = (key: string, viewers: number[]) => ({
+      collection: 'popular_plays',
+      key,
+      counters: { plays: viewers.length },
+      marks: { played: viewers },
+    });
     configureSdkRuntime({
-      fetch: createRestFake({ viewerUserId: 99, shared: { seed: sharedSeed } }),
+      fetch: createRestFake({
+        viewerUserId: 99,
+        docStore: { seed: [doc('101', [1, 2]), doc('102', [1, 2, 3]), doc('201', [1, 2, 3, 4])] },
+      }),
     });
     render(
-      <Harness
-        viewer={{ id: 99, username: 'me' }}
-        theme="dark"
-        showLog={false}
-        shared={{
-          seed: [
-            // Newest-first insertion order is [101, 102]; votes invert that so a
-            // pure insertion-order rail would be WRONG.
-            // 🔴 All three clear POPULAR_MIN_PLAYS and there are POPULAR_MIN_ENTRIES
-            // of them, so the rail renders and the RANKING claim is what is under
-            // test. Seeding below the floor would hide the rail and this test
-            // would fail for a reason that has nothing to do with ordering.
-            { value: { title: 'Neon Cities', data: { collectionId: 101 } }, voters: [1, 2] }, // count 2
-            { value: { title: 'Forest Studies', data: { collectionId: 102 } }, voters: [1, 2, 3] }, // count 3
-            // 🔴 201 ('My Public Board'), NOT an invented id: `resolvePopularEntries`
-            // DROPS an entry whose collectionId resolves to nothing, so an
-            // unresolvable companion silently shrinks the set below the entry floor
-            // and hides the rail — the test then fails for a reason that has nothing
-            // to do with ranking. The fake API ships 101, 102, 201, 202.
-            { value: { title: 'My Public Board', data: { collectionId: 201 } }, voters: [1, 2, 3, 4] }, // count 4
-          ],
-        }}
-      >
+      <Harness viewer={{ id: 99, username: 'me' }} theme="dark" showLog={false}>
         {/* The Harness token carries no `social:tip:self`, so without this the T5 consent
-          gate short-circuits every tip case in this file into a REQUEST_CONSENT. These
-          suites are about the money MECHANICS, not about consent — the gate has its own
-          red/green pair in `components/tip-affordance.test.tsx`. */}
-      <App api={api} isTipGranted={() => true} />
+          gate short-circuits every tip case in this file into a REQUEST_CONSENT. */}
+      <App api={api} isTipGranted={() => true} isStorageGranted={() => true} />
       </Harness>,
     );
     await screen.findByTestId('collection-grid');
     const rail = await screen.findByTestId('popular-rail');
     const cards = within(rail).getAllByTestId('popular-card');
-    // Ranked count-desc: Forest Studies (3) before Neon Cities (1).
+    // Ranked count-desc.
     expect(cards[0]).toHaveAttribute('aria-label', 'Play My Public Board — played 4 times');
     expect(cards[1]).toHaveAttribute('aria-label', 'Play Forest Studies — played 3 times');
     expect(cards[2]).toHaveAttribute('aria-label', 'Play Neon Cities — played 2 times');

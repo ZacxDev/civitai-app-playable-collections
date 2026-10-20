@@ -26,7 +26,10 @@
 // So a `localStorage` key here would read and write perfectly, pass every jsdom
 // test, and PERSIST NOTHING IN PRODUCTION. It is the exact shape of a vacuous
 // green: the mechanism under test is the shim, not the platform. That is why
-// this module talks to the host's app-storage bridge instead.
+// this module talks to the platform's durable store instead — since 0.3.0 the
+// document store's private `kv` collection (`lib/kv-store.ts`, which owns the
+// key/data mapping a cutover copy depends on); before that, the legacy
+// per-viewer app storage.
 //
 // A URL query param was rejected for a different reason: the block's own URL is
 // not the one the viewer sees. The address bar belongs to the HOST page
@@ -39,9 +42,10 @@
 // ---------------------------------------------------------------------------
 // 🔴 WHAT THIS CANNOT DO: ANONYMOUS VIEWERS
 // ---------------------------------------------------------------------------
-// App storage is keyed per (block instance, VIEWER). For an anonymous viewer the
-// host resolves `get` to `null` and REJECTS `set`. There is no fourth option —
-// the sandbox denies web storage and the platform has no anon-keyed store — so a
+// A private collection is keyed per VIEWER and has no anonymous reader: the
+// store refuses both calls `sign_in_required`, and `App` does not even enable
+// the read for a signed-out viewer. There is no fourth option — the sandbox
+// denies web storage and the platform has no anon-keyed store — so a
 // signed-out viewer always lands on the defaults. Both calls here are
 // best-effort and neither surfaces an error, because "your sort did not stick"
 // is not something to interrupt a signed-out browse with.
@@ -85,11 +89,13 @@ export interface BrowsePrefs {
 }
 
 /**
- * The app-storage key holding the record.
+ * The key holding the record — the document key in the private `kv`
+ * collection, and byte-for-byte the legacy app-storage key it was copied from
+ * (`lib/kv-store.ts` rule 2): renaming it strands every copied record.
  *
  * Namespaced like the (session-scoped) web-storage keys in `settings.ts` so the
  * two families read the same at a glance, even though they reach different
- * stores. App storage is per-app already, so the prefix is for humans.
+ * stores. The store is per-app already, so the prefix is for humans.
  */
 export const BROWSE_PREFS_KEY = 'playable-collections:browse-prefs';
 
@@ -125,10 +131,10 @@ export function coerceBrowsePrefs(raw: unknown): BrowsePrefs {
 }
 
 /**
- * The slice of the host's app-storage bridge this module needs.
+ * The slice of the durable store this module needs.
  *
- * Structural on purpose: `useAppStorage()` from `@civitai/blocks-react`
- * satisfies it, and so does a three-line fake. Depending on the SHAPE rather
+ * Structural on purpose: `useKvStore()` (`lib/sdk-runtime.ts`) satisfies it,
+ * and so does a three-line fake. Depending on the SHAPE rather
  * than the hook keeps this module testable in the pure-logic (`node`) project,
  * which has no host and no DOM.
  */
@@ -180,22 +186,21 @@ export interface UseBrowsePrefs {
  * If the read REJECTS (host down, transport timeout) the stored record's content
  * is never learned, so writing at all could destroy it: this hook then keeps the
  * choice session-local and writes nothing, for the rest of the mount. That is
- * deliberately the conservative branch. It costs little in practice — the
- * ordinary anonymous case RESOLVES to `null` rather than rejecting, and a host
- * that cannot answer `APP_STORAGE_GET` is not going to service an
- * `APP_STORAGE_SET` either — and it buys "a transient read failure can never
+ * deliberately the conservative branch. It costs little in practice — `App`
+ * never enables the read for an anonymous viewer, and a store that cannot
+ * answer the read is not going to accept the write either — and it buys "a transient read failure can never
  * silently eat a viewer's stored preference".
  */
 export function useBrowsePrefs(
   storage: BrowsePrefsStore,
   opts: { enabled?: boolean } = {},
 ): UseBrowsePrefs {
-  // 🔴 `enabled` IS THE HOST-READINESS GATE, AND IT IS NOT OPTIONAL IN PRACTICE.
-  // App storage is a postMessage round-trip, and the host is not listening until
-  // `BLOCK_INIT` has landed (`useBlockContext().ready`). A read posted before
-  // that is not queued — it is simply never answered, and then costs the
-  // transport's full 30 s timeout. `App` therefore passes `ready` here, the same
-  // signal it already gates every other fetch on.
+  // 🔴 `enabled` IS THE READINESS GATE, AND IT IS NOT OPTIONAL IN PRACTICE. `App`
+  // passes `ready && viewer != null`: `ready` because the store's client needs
+  // the block token `BLOCK_INIT` delivers (the same signal every other fetch is
+  // gated on), and the viewer because a private collection refuses an
+  // anonymous caller. A read is attempted once per false→true transition until
+  // one resolves, so a viewer who signs in mid-session is read then.
   const enabled = opts.enabled ?? true;
   const [prefs, setPrefs] = useState<BrowsePrefs>(() => ({ ...DEFAULT_BROWSE_PREFS }));
   /** Mirrors `prefs` so a setter can build the next record without a stale closure. */
@@ -210,7 +215,7 @@ export function useBrowsePrefs(
    *
    * 🔴 The at-most-once half is not belt-and-braces. This effect keys on the
    * `storage` object's identity, and that identity is stable only because
-   * `useAppStorage` happens to `useMemo(…, [])` it. A second restore firing —
+   * `useKvStore` happens to `useMemo(…, [])` it. A second restore firing —
    * an SDK that stopped memoising, a caller passing a fresh object — would land
    * with the pre-read buffer already drained, and would therefore overwrite a
    * choice the viewer had since made with the older stored value. Latching here
@@ -226,7 +231,7 @@ export function useBrowsePrefs(
    * effect's cleanup before re-running it, so the FIRST read's `.then` returns
    * early and only the second one is applied (measured by resolving the two
    * reads with different records — the first record never reaches `prefs`).
-   * The cost is one extra `APP_STORAGE_GET`, and it is dev-only: React does not
+   * The cost is one extra read, and it is dev-only: React does not
    * double-invoke effects in production builds.
    *
    * Stays `false` forever if the read rejects: no read, no write, no restore.
@@ -275,7 +280,8 @@ export function useBrowsePrefs(
         }
       })
       .catch(() => {
-        // An anonymous viewer, a host that predates app storage, a timed-out
+        // An anonymous viewer, a version whose `kv` collection is not yet
+        // approved (`collection_not_declared`), a timed-out
         // request. None of them is worth a message: the defaults are a complete,
         // working browse surface — and `restoredRef` stays false, so nothing
         // is written over a record we never saw.

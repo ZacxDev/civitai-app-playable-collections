@@ -5,8 +5,9 @@ plays through a Civitai collection's images and videos like a media player —
 auto-advancing images, looping videos, per-media **creator tips**, **curator
 tips**, on-site **collection bookmark (follow)**, configurable pacing, discovery
 of public + your own collections, and a cross-user **"Popular"** rail backed by
-the document store's `popular_plays` collection (migrating from App Blocks
-shared storage, which it still dual-reads during the transition).
+the App Blocks document store's `popular_plays` collection. The viewer's sort
+and popularity window persist in a private `kv` collection of the same store
+(0.3.0 moved both off the legacy app-storage / shared-storage routes).
 
 > This is a Civitai **onsite App Block** — it runs in-platform at
 > `playable-collections.civit.ai`, embedded by the Civitai host. Open it via
@@ -100,8 +101,8 @@ resolved camelCase `PlayerSettings`.
 ## Scopes & the API host origin
 
 Every scope the manifest declares is first-class in `@civitai/app-sdk@0.17.0`
-(the `BLOCK_SCOPES` enum + the relaxed `BLOCK_SCOPE_PATTERN` that now accepts the
-4-segment `apps:storage:shared:*`), so `defineBlock` validates the manifest directly — the
+(the `BLOCK_SCOPES` enum + the relaxed `BLOCK_SCOPE_PATTERN`), so `defineBlock`
+validates the manifest directly — the
 earlier `KNOWN_INCOMING_SCOPES` strip-before-validate workaround is gone.
 
 **API host origin (the run-page loop fix):** the block-token-gated API lives on
@@ -153,10 +154,9 @@ reconcile when Wave 1A lands:
 - **Buzz balance** (`buzz:read:self`): the plan wants a balance readout but pins
   no endpoint. `/api/v1/blocks/me` deliberately omits balance, so this app calls
   `GET /api/v1/blocks/buzz → { balance }`.
-- **Shared play-counts** ("reuse the existing `apps:storage:shared:*`
-  endpoints"): the `apps-shared.router` REST shape isn't in the contract. This
-  app uses `POST /api/v1/blocks/shared-storage/increment { key }` and
-  `GET /api/v1/blocks/shared-storage/top?prefix=playcount:&limit=N`.
+- **Shared play-counts**: originally guessed `shared-storage/increment|top`
+  routes, then the legacy shared store; since 0.3.0 the document store's
+  `popular_plays` collection (`src/lib/popular.ts`).
 - **Sort values**: the app/UI speaks `'newest'` / `'popular'`, but the deployed
   server's `CollectionSort` enum is `'Newest'` | `'Most Followers'`. `src/lib/api.ts`
   translates on the wire via `SORT_PARAM` (there is no name-sort on the service).

@@ -1,16 +1,19 @@
-// An in-memory stand-in for the REST families this app reaches after the
-// port: per-viewer app storage, cross-user shared storage, the Buzz balance,
-// and (Phase 3) the document store's `popular_plays` tallies. Used by the dev
-// harness (`main.tsx`) and by the tests that used to seed those stores
-// through the mock host.
+// An in-memory stand-in for the REST families this app reaches: the Buzz
+// balance and the document store (the private `kv` collection behind the browse
+// prefs, and the `popular_plays` tallies). Used by the dev harness
+// (`main.tsx`) and by the tests.
 //
-// 🔴 WHY THIS IS A `fetch` FAKE AND NOT A MOCK HOST, which is the whole point.
-// Before the port, `useAppStorage`/`useSharedStorage`/`useBuzzBalance` were
-// postMessage conversations and `@civitai/blocks-react/testing`'s mock host
-// answered them. After it, they are HTTP. A transport-level fake would therefore
-// "answer a conversation nobody is having" — the suite would pass while
-// exercising none of the code that now carries the traffic. The app's real
-// boundary for these three is `fetch`, so the fake belongs there.
+// 🔴 WHY THIS IS A `fetch` FAKE AND NOT A MOCK HOST. These are HTTP, not
+// postMessage conversations, so a transport-level fake would "answer a
+// conversation nobody is having" — the suite would pass while exercising none of
+// the code that carries the traffic. The app's real boundary is `fetch`.
+//
+// 🔴 THE LEGACY STORES ARE DELIBERATELY ABSENT. Until 0.3.0 this fake also
+// answered `blocks/app-storage/*` and `blocks/shared-storage/*`. Both surfaces
+// are being deleted platform-wide and this app no longer calls them, so a call
+// to either now falls through to the loud 404 at the bottom — which is what
+// makes a regression back onto a legacy route visible in every test that
+// renders the app.
 //
 // 🔴 WHAT IT IS NOT. It is not a second implementation of the platform's policy:
 // no scope checks, no trust gates, no rate limits, no moderation. Those are the
@@ -19,30 +22,18 @@
 // the ROUTE SHAPES — path, method, body, reply envelope — and those are taken
 // from the route files, named per family below.
 //
-// 🔴 KEYS ARE ULID-SHAPED, NOT `shared_<n>`. The real server GENERATES a ULID
-// (`apps-shared.router.ts`), and this repo has already been bitten once by an
-// e2e case that targeted the retired mock host's `shared_2` minting convention —
-// a test asserting a fake's implementation detail rather than the platform's
-// contract. A seed may pin its own key; otherwise the mint is ULID-shaped, and
-// deliberately DETERMINISTIC so a test can predict it without a clock.
-
-/** One seeded shared row. Mirrors the mock host's `MockSharedSeed`. */
-export interface RestSharedSeed {
-  value: unknown;
-  /** Defaults to the configured viewer, i.e. "the viewer wrote this". */
-  authorUserId?: number;
-  /** Viewer ids holding an up-vote. The row's `count` is this list's length. */
-  voters?: number[];
-  /** Pin the row's key instead of minting one. */
-  key?: string;
-}
-
-/** One seeded document-store document. Mirrors {@link RestSharedSeed}'s shape. */
+/** One seeded document-store document. */
 export interface RestDocSeed {
-  /** The declared collection's name (this app declares one: `popular_plays`). */
+  /** The declared collection's name (`kv` private, `popular_plays` shared). */
   collection: string;
   /** The document's key (for `popular_plays`, a collection id as a string). */
   key: string;
+  /**
+   * The document's data. Omit for a counter-created document (`{}`, author
+   * kind `counter`); give it for a viewer-written one (author kind `user`) —
+   * e.g. a `kv` record `{ value: … }`, the copy script's shape.
+   */
+  data?: Record<string, unknown>;
   /** Counter tallies the document carries, by counter name. */
   counters?: Record<string, number>;
   /** Mark name → ids of the viewers holding that mark. The count is the list's length. */
@@ -50,18 +41,12 @@ export interface RestDocSeed {
 }
 
 export interface RestFakeOptions {
-  /** The signed-in viewer's id — decides `viewerVoted` and default authorship. */
+  /** The signed-in viewer's id — decides whose marks are the viewer's own. */
   viewerUserId?: number;
-  /** Per-viewer KV seed (key → JSON value). Mirrors `MockStorageScenario.seed`. */
-  storage?: { seed?: Record<string, unknown>; limitBytes?: number; limitRows?: number };
-  /** Shared-store seed, listed newest-first in the order given. */
-  shared?: { seed?: RestSharedSeed[] };
   /**
    * Document-store seed + kill switch. `disabled` answers every
    * `blocks/storage/*` call with the store's own 503 envelope — how a server
-   * with the document store not enabled (or a collection that does not exist
-   * yet) reads to the app, which is the state the migration's fallback exists
-   * for.
+   * with the document store not enabled reads to the app.
    */
   docStore?: { seed?: RestDocSeed[]; disabled?: boolean };
   /**
@@ -71,30 +56,23 @@ export interface RestFakeOptions {
    */
   buzz?: { blue: number; green: number; yellow: number } | null;
   /**
-   * Called for every request this fake answers. The observation seam a test needs
-   * now that these three families are HTTP: a guard that used to watch an
-   * `APP_STORAGE_SET` postMessage watches the `blocks/app-storage/set` call here.
+   * Called for every request this fake receives — including the ones it 404s,
+   * so a test can assert that NO request reached a legacy storage route.
    */
   onRequest?: (call: { path: string; method: string; body: Record<string, unknown> }) => void;
 }
 
-interface SharedRow {
-  key: string;
-  authorUserId: number;
-  value: unknown;
-  voters: Set<number>;
-  createdAt: string;
-  updatedAt: string;
-}
-
 /**
- * One document-store document, reduced to what the tally routes carry: this
- * app's only declared collection is `write: "none"`, so a document's `data`
- * is always the empty object the creating increment made, and everything a
- * reader can see is its counters and its per-viewer marks.
+ * One document-store document: a `popular_plays` tally document (empty data,
+ * created by its first increment) or a private `kv` record (data written by
+ * PUT). This fake serves ONE viewer, so a private collection needs no
+ * per-viewer key space.
  */
 interface DocRow {
   key: string;
+  data: Record<string, unknown>;
+  version: number;
+  authorKind: 'counter' | 'user';
   counters: Map<string, number>;
   /** Mark name → the viewer ids holding it. The count is the set's size. */
   marks: Map<string, Set<number>>;
@@ -115,30 +93,6 @@ const EPOCH = '2026-01-01T00:00:00.000Z';
  */
 const DEFAULT_BUZZ_BALANCE = { blue: 1000, green: 0, yellow: 5000 };
 
-/** Crockford base32, the ULID alphabet. */
-const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-
-/**
- * A 26-character ULID-SHAPED key, derived from a counter.
- *
- * Not a real ULID — it is not time-ordered and carries no entropy — and it does
- * not pretend to be. What matters at this seam is that it looks nothing like an
- * index, so a test cannot accidentally hard-code `shared_2` and pass.
- */
-function mintKey(n: number): string {
-  let rest = n;
-  const tail: string[] = [];
-  for (let i = 0; i < 26; i += 1) {
-    tail.push(CROCKFORD[rest % 32] as string);
-    rest = Math.floor(rest / 32) + 7;
-  }
-  return tail.reverse().join('');
-}
-
-function bytesOf(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value) ?? '').length;
-}
-
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -156,35 +110,6 @@ function json(body: unknown, status = 200): Response {
  */
 export function createRestFake(options: RestFakeOptions = {}): typeof globalThis.fetch {
   const viewerUserId = options.viewerUserId ?? 99;
-  const kv = new Map<string, { value: unknown; updatedAt: string }>(
-    Object.entries(options.storage?.seed ?? {}).map(([k, v]) => [k, { value: v, updatedAt: EPOCH }]),
-  );
-  const limitBytes = options.storage?.limitBytes ?? 50 * 1024 * 1024;
-  const limitRows = options.storage?.limitRows ?? 1_000_000;
-
-  let minted = 0;
-  const rows: SharedRow[] = (options.shared?.seed ?? []).map((seed) => {
-    minted += 1;
-    return {
-      key: seed.key ?? mintKey(minted),
-      authorUserId: seed.authorUserId ?? viewerUserId,
-      value: seed.value,
-      voters: new Set(seed.voters ?? []),
-      createdAt: EPOCH,
-      updatedAt: EPOCH,
-    };
-  });
-
-  const project = (row: SharedRow) => ({
-    key: row.key,
-    authorUserId: row.authorUserId,
-    value: row.value,
-    count: row.voters.size,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    viewerVoted: row.voters.has(viewerUserId),
-  });
-
   const docStores = new Map<string, Map<string, DocRow>>();
   for (const seed of options.docStore?.seed ?? []) {
     let coll = docStores.get(seed.collection);
@@ -194,22 +119,25 @@ export function createRestFake(options: RestFakeOptions = {}): typeof globalThis
     }
     coll.set(seed.key, {
       key: seed.key,
+      data: seed.data ?? {},
+      version: 1,
+      authorKind: seed.data === undefined ? 'counter' : 'user',
       counters: new Map(Object.entries(seed.counters ?? {})),
       marks: new Map(Object.entries(seed.marks ?? {}).map(([name, ids]) => [name, new Set(ids)])),
     });
   }
 
   // The wire shape `@civitai/sdk`'s document client validates field by field:
-  // `author` is `{ kind: 'counter' }` because in a `write: "none"` collection
-  // every document was created by a counter's first increment, and `viewer`
-  // carries only the READING viewer's own mark names.
+  // `author` is `{ kind: 'counter' }` for a document its first increment
+  // created, the viewer's own for a PUT one, and `viewer` carries only the
+  // READING viewer's own mark names.
   const projectDoc = (row: DocRow) => ({
     key: row.key,
-    data: {},
-    version: 1,
+    data: row.data,
+    version: row.version,
     createdAt: EPOCH,
     updatedAt: EPOCH,
-    author: { kind: 'counter' },
+    author: row.authorKind === 'counter' ? { kind: 'counter' } : { kind: 'user', isViewer: true },
     counters: Object.fromEntries(row.counters),
     marks: Object.fromEntries([...row.marks].map(([name, ids]) => [name, ids.size])),
     viewer: { marks: [...row.marks].filter(([, ids]) => ids.has(viewerUserId)).map(([name]) => name) },
@@ -227,95 +155,6 @@ export function createRestFake(options: RestFakeOptions = {}): typeof globalThis
     if (path === 'blocks/buzz') {
       if (options.buzz === null) return json({ error: 'Forbidden' }, 403);
       return json(options.buzz ?? DEFAULT_BUZZ_BALANCE);
-    }
-
-    // --- per-viewer KV: POST blocks/app-storage/* ------------------------------
-    // Shapes from src/pages/api/v1/blocks/app-storage/{get,set,delete,list,quota}.ts
-    if (path.startsWith('blocks/app-storage/')) {
-      const op = path.slice('blocks/app-storage/'.length);
-      const key = String(body.key ?? '');
-      if (op === 'get') return json({ value: kv.get(key)?.value ?? null });
-      if (op === 'set') {
-        const size = bytesOf(body.value);
-        kv.set(key, { value: body.value, updatedAt: EPOCH });
-        // `{ ok: true, sizeBytes }`, and `sizeBytes` is REQUIRED — the SDK's client
-        // throws without it, and the route's docblock says there is "no 2xx path
-        // that means not written".
-        return json({ ok: true, sizeBytes: size });
-      }
-      if (op === 'delete') return json({ ok: true, deleted: kv.delete(key) });
-      if (op === 'list') {
-        const prefix = body.prefix === undefined ? '' : String(body.prefix);
-        const keys = [...kv.entries()]
-          .filter(([k]) => k.startsWith(prefix))
-          .map(([k, v]) => ({ key: k, updatedAt: v.updatedAt }));
-        return json({ keys });
-      }
-      if (op === 'quota') {
-        let usedBytes = 0;
-        for (const [, v] of kv) usedBytes += bytesOf(v.value);
-        return json({ usedBytes, rowCount: kv.size, limitBytes, limitRows });
-      }
-    }
-
-    // --- shared store: blocks/shared-storage/* ---------------------------------
-    // Shapes from src/pages/api/v1/blocks/shared-storage/*.ts. Reads are GET with
-    // a query string, writes are POST with a body — the route table's own split;
-    // a read sent as POST is a 405 on the real surface.
-    if (path.startsWith('blocks/shared-storage/')) {
-      const op = path.slice('blocks/shared-storage/'.length);
-      if (op === 'list' && method === 'GET') {
-        const limit = url.searchParams.get('limit');
-        const page = limit === null ? rows : rows.slice(0, Number(limit));
-        // `metadata` is where `nextCursor` lives, and the SDK guards its presence
-        // as strictly as `items` — so it is always sent, even when empty.
-        return json({ items: page.map(project), metadata: {} });
-      }
-      if (op === 'item' && method === 'GET') {
-        const found = rows.find((r) => r.key === url.searchParams.get('key'));
-        return json({ item: found ? project(found) : null });
-      }
-      if (op === 'append' && method === 'POST') {
-        minted += 1;
-        const row: SharedRow = {
-          key: mintKey(minted),
-          authorUserId: viewerUserId,
-          value: body.value,
-          voters: new Set(),
-          createdAt: EPOCH,
-          updatedAt: EPOCH,
-        };
-        // Newest-first, which is the order `list` documents.
-        rows.unshift(row);
-        return json({ key: row.key });
-      }
-      if (op === 'update' && method === 'POST') {
-        const row = rows.find((r) => r.key === body.key);
-        if (!row) return json({ error: 'NOT_FOUND' }, 404);
-        row.value = body.value;
-        return json({ ok: true });
-      }
-      if (op === 'withdraw' && method === 'POST') {
-        const at = rows.findIndex((r) => r.key === body.key);
-        if (at < 0) return json({ deleted: false });
-        rows.splice(at, 1);
-        return json({ deleted: true });
-      }
-      if (op === 'vote' && method === 'POST') {
-        const row = rows.find((r) => r.key === body.key);
-        // The real route pre-checks existence and answers 404 for a missing or
-        // hidden row, so it is not an oracle for withdrawn rows.
-        if (!row) return json({ error: 'NOT_FOUND' }, 404);
-        // 🔴 IDEMPOTENT, because the platform's is: a `Set` reproduces the real
-        // route's "atomic insert-gated counter — a double vote is a no-op and the
-        // tally never inflates". `recordPlay` votes then re-reads, so a fake that
-        // incremented per call would make an inflating count look correct.
-        row.voters.add(viewerUserId);
-        return json({ count: row.voters.size });
-      }
-      if (method !== 'GET' && method !== 'POST') {
-        return json({ error: 'Method not allowed' }, 405);
-      }
     }
 
     // --- document store: blocks/storage/* --------------------------------------
@@ -367,6 +206,27 @@ export function createRestFake(options: RestFakeOptions = {}): typeof globalThis
         });
       }
 
+      if (collection !== undefined && seg.length === 4 && method === 'GET') {
+        const row = coll?.get(seg[3] as string);
+        return row ? json(projectDoc(row)) : docNotFound();
+      }
+
+      if (collection !== undefined && seg.length === 4 && method === 'PUT') {
+        // Upsert: create at version 1, replace and bump the version after.
+        if (!coll) {
+          coll = new Map();
+          docStores.set(collection, coll);
+        }
+        const key = seg[3] as string;
+        const data = (body.data ?? {}) as Record<string, unknown>;
+        const prev = coll.get(key);
+        const row: DocRow = prev
+          ? { ...prev, data, version: prev.version + 1 }
+          : { key, data, version: 1, authorKind: 'user', counters: new Map(), marks: new Map() };
+        coll.set(key, row);
+        return json(projectDoc(row));
+      }
+
       if (collection !== undefined && seg.length === 6 && seg[4] === 'counters' && method === 'POST') {
         if (!coll) {
           coll = new Map();
@@ -377,7 +237,7 @@ export function createRestFake(options: RestFakeOptions = {}): typeof globalThis
         if (!row) {
           // The first increment of a missing key creates the document — the
           // ONLY creation a `write: "none"` collection has.
-          row = { key, counters: new Map(), marks: new Map() };
+          row = { key, data: {}, version: 1, authorKind: 'counter', counters: new Map(), marks: new Map() };
           coll.set(key, row);
         }
         const by = typeof body.by === 'number' ? body.by : 1;

@@ -9,10 +9,10 @@
 // `useBlockToken()`. It mirrors the documented endpoint semantics the app relies
 // on: self-tip rejection, insufficient-balance rejection, and follow toggling.
 //
-// NOTE: Buzz balance and the cross-user "popular" play-counts are NO LONGER part
-// of the ApiClient — they go through the host bridges (`useBuzzBalance()` /
-// `useSharedStorage()`), which the SDK mock host answers directly (seed via the
-// `<Harness buzzBalance=… shared=…>` props in tests). So the fake models neither.
+// NOTE: Buzz balance and the cross-user "popular" play-counts are NOT part of
+// the ApiClient — they go through `useBuzzBalance()` and the document store's
+// `popular_plays` collection, both answered in tests by `dev-rest.ts`'s fetch
+// fake. So this fake models neither.
 
 import { ApiError, type ApiClient } from './lib/api.js';
 import { PERIOD_WIRE, isRankedWindow, type CollectionPeriod } from './lib/period.js';
