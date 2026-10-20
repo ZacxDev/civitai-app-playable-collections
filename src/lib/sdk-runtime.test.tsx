@@ -22,16 +22,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   configureSdkRuntime,
   resetSdkRuntime,
-  useAppStorage,
   useBlockContext,
   useBlockResize,
   useBlockToken,
   useBrowsingLevels,
   useBuzzBalance,
   useHostOrigin,
+  useKvStore,
   useRequestConsent,
   useRequestSignIn,
-  useSharedStorage,
   useStorageCollection,
 } from './sdk-runtime.js';
 
@@ -453,77 +452,6 @@ describe('group 3: REST bindings — the wire, not a stub', () => {
     await waitFor(() => expect(screen.getByTestId('b').textContent).toBe('error'));
   });
 
-  it('useSharedStorage.vote POSTs the verified route and returns the new count', async () => {
-    const f = fakeFetch({ 'shared-storage/vote': { count: 12 } });
-    configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
-
-    let vote: ((key: string) => Promise<number>) | null = null;
-    function Voter() {
-      const shared = useSharedStorage();
-      vote = shared.vote;
-      return null;
-    }
-    render(<Voter />);
-
-    const count = await vote!('row-9');
-    expect(count).toBe(12);
-
-    const call = f.calls.find((c) => c.url.includes('shared-storage/vote'));
-    expect(call).toBeDefined();
-    // 🔴 PINNED AGAINST THE ROUTE FILE, not against what the SDK happens to send:
-    // civitai `src/pages/api/v1/blocks/shared-storage/vote.ts` is POST, body
-    // `{ key }`, reply `{ count }`. This is app-layer precisely because
-    // `starters#479` kept vote OUT of `AppClient.sharedStorage`, so nothing in the
-    // SDK will fail if this drifts — which is why the assertion lives here.
-    expect(call!.method).toBe('POST');
-    expect(call!.body).toEqual({ key: 'row-9' });
-    expect(call!.url).toContain('/blocks/shared-storage/vote');
-  });
-
-  it('useSharedStorage.vote THROWS on a reply carrying no numeric count', async () => {
-    const f = fakeFetch({ 'shared-storage/vote': { ok: true } });
-    configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
-
-    let vote: ((key: string) => Promise<number>) | null = null;
-    function Voter() {
-      vote = useSharedStorage().vote;
-      return null;
-    }
-    render(<Voter />);
-
-    // 🔴 THE `?? 0` REGRESSION. `recordPlay` writes this number into the popular
-    // rail, so coercing a malformed reply to 0 would publish a play count of zero
-    // and rank on it. A failure must reject.
-    await expect(vote!('row-9')).rejects.toThrow(/numeric `count`/);
-  });
-
-  it('useSharedStorage.list and .append reach the SDK client’s own routes', async () => {
-    const f = fakeFetch({
-      'shared-storage/list': { items: [], metadata: { nextCursor: 'c2' } },
-      'shared-storage/append': { key: 'k-new' },
-    });
-    configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
-
-    let shared: ReturnType<typeof useSharedStorage> | null = null;
-    function S() {
-      shared = useSharedStorage();
-      return null;
-    }
-    render(<S />);
-
-    const page = await shared!.list({ limit: 5 });
-    expect(page.nextCursor).toBe('c2');
-    const appended = await shared!.append({ title: 'hello' });
-    expect(appended.key).toBe('k-new');
-
-    const list = f.calls.find((c) => c.url.includes('shared-storage/list'));
-    expect(list!.method).toBe('GET');
-    // The cursor/limit go on the query string — the paging mutant this repo has
-    // already been bitten by once (a dropped `cursor` survived a whole suite).
-    expect(list!.url).toContain('limit=5');
-    expect(f.calls.find((c) => c.url.includes('shared-storage/append'))!.method).toBe('POST');
-  });
-
   it('useStorageCollection.list GETs the collection route with the sort on the query string', async () => {
     const doc = {
       key: '101',
@@ -616,21 +544,24 @@ describe('group 3: REST bindings — the wire, not a stub', () => {
     await expect(plays!.list()).rejects.toMatchObject({ code: 'collection_not_declared' });
   });
 
-  it('useAppStorage reaches blocks/app-storage and keeps a STABLE identity', async () => {
-    // `sizeBytes` is REQUIRED, not optional: the SDK's storage client throws
-    // without it, and the route's docblock states success is always
-    // `{ ok: true, sizeBytes }` with "no 2xx path that means not written". The
-    // bridge hook's type had it optional — a real tightening the port inherits, and
-    // the reason this fixture cannot be the thin `{ ok: true }` it started as.
-    const f = fakeFetch({
-      'app-storage/get': { value: { sort: 'popular' } },
-      'app-storage/set': { ok: true, sizeBytes: 21 },
-    });
+  it('useKvStore reaches the private kv collection (copy-script shape) and keeps a STABLE identity', async () => {
+    const prefsDoc = {
+      key: 'playable-collections:browse-prefs',
+      data: { value: { sort: 'newest', period: 'year' } },
+      version: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      author: { kind: 'user', isViewer: true },
+      counters: {},
+      marks: {},
+      viewer: { marks: [] },
+    };
+    const f = fakeFetch({ 'blocks/storage/kv/': prefsDoc });
     configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
 
     const seen: unknown[] = [];
     function Storage() {
-      const storage = useAppStorage();
+      const storage = useKvStore();
       const [, bump] = useState(0);
       seen.push(storage);
       useEffect(() => {
@@ -642,16 +573,23 @@ describe('group 3: REST bindings — the wire, not a stub', () => {
 
     // 🔴 THE DEPENDENCY-ARRAY CONTRACT. `lib/browse-prefs.ts` puts this object in
     // an effect's deps; a fresh identity per render would re-run that effect
-    // forever. The bridge hook documented itself as stable and this must be too.
+    // forever.
     await waitFor(() => expect(seen.length).toBeGreaterThan(1));
     expect(new Set(seen).size).toBe(1);
 
-    const storage = seen[0] as ReturnType<typeof useAppStorage>;
-    await storage.set('browse-prefs', { sort: 'popular' });
-    const call = f.calls.find((c) => c.url.includes('app-storage/set'));
-    expect(call).toBeDefined();
-    expect(call!.method).toBe('POST');
-    expect(call!.body).toEqual({ key: 'browse-prefs', value: { sort: 'popular' } });
+    const storage = seen[0] as ReturnType<typeof useKvStore>;
+    // The read unwraps `value` — the copy script's wrapping.
+    expect(await storage.get('playable-collections:browse-prefs')).toEqual({ sort: 'newest', period: 'year' });
+    const get = f.calls.find((c) => c.method === 'GET');
+    expect(get!.url).toContain('/blocks/storage/kv/playable-collections%3Abrowse-prefs');
+
+    await storage.set('playable-collections:browse-prefs', { sort: 'popular', period: 'month' });
+    const put = f.calls.find((c) => c.method === 'PUT');
+    expect(put).toBeDefined();
+    expect(put!.url).toContain('/blocks/storage/kv/playable-collections%3Abrowse-prefs');
+    expect(put!.body).toEqual({ data: { value: { sort: 'popular', period: 'month' } } });
+    // Nothing reached either legacy store.
+    expect(f.calls.some((c) => /blocks\/(app-storage|shared-storage)\//.test(c.url))).toBe(false);
   });
 });
 
@@ -792,12 +730,24 @@ describe('a rejected initialize() is not cached', () => {
       // Host has not posted BLOCK_INIT: `ready: false` is exactly what the SDK's
       // own `ready()` gate blocks on.
       const t = fakeTransport(baseSnapshot({ ready: false }));
-      const f = fakeFetch({ 'app-storage/get': { value: { sort: 'popular' } } });
+      const f = fakeFetch({
+        'blocks/storage/kv/': {
+          key: 'browse-prefs',
+          data: { value: { sort: 'popular' } },
+          version: 1,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          author: { kind: 'user', isViewer: true },
+          counters: {},
+          marks: {},
+          viewer: { marks: [] },
+        },
+      });
       configureSdkRuntime({ transport: t.transport as never, fetch: f.impl });
 
-      let storage!: ReturnType<typeof useAppStorage>;
+      let storage!: ReturnType<typeof useKvStore>;
       function Probe() {
-        storage = useAppStorage();
+        storage = useKvStore();
         return null;
       }
       render(<Probe />);

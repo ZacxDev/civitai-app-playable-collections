@@ -60,18 +60,19 @@ function urlOf(input: string | URL | Request): string {
 
 describe('a feed loader that settles after unmount', () => {
   it('writes no state once the component is gone and the environment is torn down', async () => {
-    // Hold the shared-storage read open, so the popular loader is provably still
-    // in flight at the moment we unmount.
+    // Hold the popular rail's read (the document store's `popular_plays` list
+    // since 0.3.0; the legacy shared store before it) open, so the popular
+    // loader is provably still in flight at the moment we unmount.
     let release!: (body: unknown) => void;
     const pending = new Promise<unknown>((resolve) => {
       release = resolve;
     });
-    let reachedSharedStorage = false;
+    let reachedPopularRead = false;
 
     const fetchImpl = (async (input: string | URL | Request) => {
       const url = urlOf(input);
-      if (url.includes('shared-storage')) {
-        reachedSharedStorage = true;
+      if (url.includes('blocks/storage/popular_plays')) {
+        reachedPopularRead = true;
         const body = await pending;
         return new Response(JSON.stringify(body), {
           status: 200,
@@ -84,8 +85,8 @@ describe('a feed loader that settles after unmount', () => {
       });
     }) as typeof globalThis.fetch;
 
-    // `fetch` is the seam the port creates: shared storage is HTTP now, so the
-    // mock HOST never sees these calls and seeding the host would exercise nothing.
+    // `fetch` is the seam: the store is HTTP, so the mock HOST never sees these
+    // calls and seeding the host would exercise nothing.
     configureSdkRuntime({ fetch: fetchImpl });
 
     const rejections: unknown[] = [];
@@ -99,6 +100,7 @@ describe('a feed loader that settles after unmount', () => {
           <App
             api={createFakeApi({ viewerUserId: 99 }) as unknown as ApiClient}
             isTipGranted={() => true}
+            isStorageGranted={() => true}
           />
         </Harness>,
       );
@@ -107,7 +109,7 @@ describe('a feed loader that settles after unmount', () => {
       // starts — a request that was never issued cannot settle late, so the
       // assertion at the end would hold for the wrong reason and keep holding if
       // someone deleted the rail entirely.
-      await waitFor(() => expect(reachedSharedStorage).toBe(true));
+      await waitFor(() => expect(reachedPopularRead).toBe(true));
 
       unmount();
 
@@ -116,7 +118,7 @@ describe('a feed loader that settles after unmount', () => {
       // after a test, so `window` is already gone when a late promise settles.
       Reflect.deleteProperty(globalThis as unknown as Record<string, unknown>, 'window');
 
-      release({ entries: [] });
+      release({ items: [], nextCursor: null });
       // Let the continuation and any rejection it raises be delivered.
       await new Promise((resolve) => setImmediate(resolve));
       await new Promise((resolve) => setImmediate(resolve));

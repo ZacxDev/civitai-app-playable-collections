@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { SharedAppendValue, SharedListItem } from '@civitai/blocks-react';
 import { createFakeStorage } from '@civitai/sdk/testing';
 
 import {
@@ -9,133 +8,18 @@ import {
   POPULAR_MIN_ENTRIES,
   POPULAR_MIN_PLAYS,
   POPULAR_PLAYS_COLLECTION,
-  entryCollectionId,
-  mergePopular,
   popularRailEntries,
   readPopular,
   readPopularDoc,
-  readPopularMigrated,
   recordPlay,
   recordPlayDoc,
-  recordPlayMigrated,
   resolvePopularEntries,
   summaryFromPage,
   totalBuzz,
   type PlaysStore,
-  type SharedStore,
 } from './popular.js';
 import { manifest } from '../manifest.js';
 import type { CollectionPage, CollectionSummary, PopularEntry } from '../types.js';
-
-/**
- * A minimal in-memory fake of the SHARED store's `list`/`append`/`vote` surface,
- * with the host's one-idempotent-vote-per-viewer invariant, so the popularity
- * helpers can be exercised without a real host bridge.
- */
-function makeFakeShared(viewer = 99) {
-  let seq = 0;
-  const entries: SharedListItem[] = [];
-  const voters = new Map<string, Set<number>>();
-
-  const store: SharedStore & { entries: SharedListItem[]; seed(value: SharedAppendValue, votes: number[]): string } = {
-    entries,
-    seed(value, votes) {
-      const key = `k${++seq}`;
-      entries.push({
-        key, authorUserId: viewer, value, count: votes.length,
-        createdAt: new Date(), updatedAt: new Date(),
-        // 🔴 DERIVED from the same `votes` this seed was handed, never hardcoded.
-        // `viewerVoted` arrived as a REQUIRED field in @civitai/blocks-react
-        // 0.47.0; a fake that pinned it to a constant would encode a shape the
-        // real host never produces, and every test reading it would agree with
-        // the fake instead of with the contract.
-        viewerVoted: votes.includes(viewer),
-      });
-      voters.set(key, new Set(votes));
-      return key;
-    },
-    async list(opts) {
-      // Host lists newest-first.
-      const items = [...entries].reverse();
-      return { items: opts?.limit != null ? items.slice(0, opts.limit) : items };
-    },
-    async append(value) {
-      const key = `k${++seq}`;
-      entries.push({
-        key, authorUserId: viewer, value, count: 0,
-        createdAt: new Date(), updatedAt: new Date(),
-        // A freshly appended entry carries no vote from its own author.
-        viewerVoted: false,
-      });
-      voters.set(key, new Set());
-      return { key };
-    },
-    async vote(key) {
-      const set = voters.get(key) ?? new Set<number>();
-      set.add(viewer);
-      voters.set(key, set);
-      const entry = entries.find((e) => e.key === key);
-      // 🔴 BOTH fields move together. Updating `count` alone would let `list`
-      // report viewerVoted:false for an entry this viewer just voted on — the
-      // fake would then be the only place that behaviour exists.
-      if (entry) { entry.count = set.size; entry.viewerVoted = true; }
-      return entry?.count ?? 0;
-    },
-  };
-  return store;
-}
-
-/**
- * 🔴 A TEST OF THE FAKE, ON PURPOSE — and the only kind of test that can catch
- * this class. `viewerVoted` arrived as a REQUIRED field on `SharedListItem` in
- * @civitai/blocks-react 0.47.0, and no production code here reads it yet. So a
- * fake that reported a constant would be green forever, and the first consumer
- * would be written against the fake's shape rather than the host's — the
- * "both-wrong-blind" failure, where the fixture encodes the same wrong shape as
- * the code that reads it.
- *
- * MEASURED: with these two cases absent, reverting the fake's vote path to
- * update `count` alone left the whole file green (18/18). They are what makes
- * that line load-bearing.
- */
-describe('the fake shared store matches the host contract for viewerVoted', () => {
-  it('reports false for an entry this viewer has not voted on', async () => {
-    const shared = makeFakeShared(99);
-    shared.seed({ title: 'a', data: { collectionId: 1 } }, [7, 8]); // other voters only
-    const { items } = await shared.list();
-    expect(items[0].count).toBe(2);
-    expect(items[0].viewerVoted).toBe(false);
-  });
-
-  it('reports true once this viewer votes, without a re-list from scratch', async () => {
-    const shared = makeFakeShared(99);
-    const key = shared.seed({ title: 'a', data: { collectionId: 1 } }, []);
-    expect((await shared.list()).items[0].viewerVoted).toBe(false);
-    await shared.vote(key);
-    const { items } = await shared.list();
-    // 🔴 BOTH, because updating count alone is the mutant that survived.
-    expect(items[0].count).toBe(1);
-    expect(items[0].viewerVoted).toBe(true);
-  });
-
-  it('reports false for an entry this viewer just appended — appending is not voting', async () => {
-    // The third arm. Measured: without this, flipping append()'s `viewerVoted`
-    // to true survived the whole file. `recordPlay` goes through append, so a
-    // fake that auto-votes the author would silently inflate every first play.
-    const shared = makeFakeShared(99);
-    await shared.append({ title: 'fresh', data: { collectionId: 5 } });
-    const { items } = await shared.list();
-    expect(items[0].count).toBe(0);
-    expect(items[0].viewerVoted).toBe(false);
-  });
-
-  it('reports true for a seeded entry whose votes already include this viewer', async () => {
-    const shared = makeFakeShared(99);
-    shared.seed({ title: 'a', data: { collectionId: 1 } }, [7, 99]);
-    const { items } = await shared.list();
-    expect(items[0].viewerVoted).toBe(true);
-  });
-});
 
 describe('popularRailEntries — the rail must earn its heading', () => {
   const e = (count: number) => ({ count });
@@ -175,106 +59,6 @@ describe('popularRailEntries — the rail must earn its heading', () => {
 
   it('an empty input is empty out, without throwing', () => {
     expect(popularRailEntries([])).toEqual([]);
-  });
-});
-
-describe('entryCollectionId', () => {
-  it('extracts a finite numeric collectionId from the opaque data blob', () => {
-    expect(entryCollectionId({ title: 't', data: { collectionId: 42 } })).toBe(42);
-  });
-  it('returns null for missing / malformed data', () => {
-    expect(entryCollectionId({ title: 't' })).toBeNull();
-    expect(entryCollectionId({ title: 't', data: {} })).toBeNull();
-    expect(entryCollectionId({ title: 't', data: { collectionId: 'nope' } })).toBeNull();
-    expect(entryCollectionId({ title: 't', data: { collectionId: Number.NaN } })).toBeNull();
-    expect(entryCollectionId({ title: 't', data: 'scalar' })).toBeNull();
-  });
-});
-
-describe('recordPlay', () => {
-  it('creates one entry tagged with the collectionId and self-votes it to count 1', async () => {
-    const shared = makeFakeShared(99);
-    await recordPlay(shared, { id: 101, name: 'Neon Cities' });
-    expect(shared.entries).toHaveLength(1);
-    expect(shared.entries[0].value.title).toBe('Neon Cities');
-    expect(entryCollectionId(shared.entries[0].value)).toBe(101);
-    expect(shared.entries[0].count).toBe(1);
-  });
-
-  it('is idempotent per viewer: replaying the same collection does not add an entry or inflate the count', async () => {
-    const shared = makeFakeShared(99);
-    await recordPlay(shared, { id: 101, name: 'Neon Cities' });
-    await recordPlay(shared, { id: 101, name: 'Neon Cities' });
-    expect(shared.entries).toHaveLength(1);
-    expect(shared.entries[0].count).toBe(1);
-  });
-
-  it('votes on the existing entry rather than creating a duplicate', async () => {
-    const shared = makeFakeShared(99);
-    // Seed an entry authored by someone else with 0 votes.
-    shared.seed({ title: 'Neon Cities', data: { collectionId: 101 } }, []);
-    await recordPlay(shared, { id: 101, name: 'Neon Cities' });
-    expect(shared.entries).toHaveLength(1);
-    expect(shared.entries[0].count).toBe(1);
-  });
-
-  it('falls back to a synthesized title when the name is blank', async () => {
-    const shared = makeFakeShared(99);
-    await recordPlay(shared, { id: 7, name: '   ' });
-    expect(shared.entries[0].value.title).toBe('Collection 7');
-  });
-});
-
-/**
- * REGRESSION GUARD (the whole reason for v0.1.7): the OLD code posted a GUESSED
- * `{ key: "playcount:<id>" }` counter shape to a shared-storage/increment route.
- * The real SHARED store is a votable-entry model — `append({ value: { title,
- * data } })` then `vote(key)`. These tests PIN the exact method + payload so the
- * guessed-`{key}` shape can never silently come back.
- */
-describe('recordPlay — pins the SHARED-store call shape (no more guessed {key})', () => {
-  it('appends { title, data: { collectionId } } then votes the minted key — never a raw counter key', async () => {
-    const append = vi.fn(async (_value: SharedAppendValue) => ({ key: 'entry-key-1' }));
-    const vote = vi.fn(async () => 1);
-    const list = vi.fn(async () => ({ items: [] as SharedListItem[] }));
-    const shared: SharedStore = { append, vote, list };
-
-    await recordPlay(shared, { id: 101, name: 'Neon Cities' });
-
-    // The entry is the votable `{ title, body?, data }` record — the moderated
-    // human title in `title`, the app's opaque collectionId in `data`.
-    expect(append).toHaveBeenCalledTimes(1);
-    expect(append).toHaveBeenCalledWith({ title: 'Neon Cities', data: { collectionId: 101 } });
-    // NOT the retired guessed counter shape.
-    expect(append).not.toHaveBeenCalledWith(expect.objectContaining({ key: expect.anything() }));
-
-    // Then an idempotent up-vote on the host-minted key (not a synthesized
-    // "playcount:101" string).
-    expect(vote).toHaveBeenCalledTimes(1);
-    expect(vote).toHaveBeenCalledWith('entry-key-1');
-  });
-});
-
-describe('readPopular', () => {
-  it('ranks by vote count desc, drops untagged / zero-count entries, and applies the limit', async () => {
-    const shared = makeFakeShared(99);
-    shared.seed({ title: 'A', data: { collectionId: 1 } }, [1, 2, 3]); // count 3
-    shared.seed({ title: 'B', data: { collectionId: 2 } }, [1]); // count 1
-    shared.seed({ title: 'C', data: { collectionId: 3 } }, [1, 2]); // count 2
-    shared.seed({ title: 'Zero', data: { collectionId: 4 } }, []); // count 0 -> dropped
-    shared.seed({ title: 'Untagged' }, [1, 2, 3, 4]); // no collectionId -> dropped
-
-    expect(await readPopular(shared, 10)).toEqual([
-      { collectionId: 1, count: 3 },
-      { collectionId: 3, count: 2 },
-      { collectionId: 2, count: 1 },
-    ]);
-    expect(await readPopular(shared, 1)).toEqual([{ collectionId: 1, count: 3 }]);
-  });
-
-  it('returns an empty list when nothing has been played', async () => {
-    const shared = makeFakeShared(99);
-    expect(await readPopular(shared, 10)).toEqual([]);
   });
 });
 
@@ -497,101 +281,34 @@ describe('readPopularDoc', () => {
   });
 });
 
-describe('mergePopular', () => {
-  it('the document store wins per collection; legacy-only collections keep their count', () => {
-    const doc: PopularEntry[] = [
-      { collectionId: 1, count: 5 },
-      { collectionId: 2, count: 4 },
-    ];
-    const legacy: PopularEntry[] = [
-      { collectionId: 1, count: 9 }, // shadowed by the doc count, NOT summed
-      { collectionId: 3, count: 2 },
-    ];
-    expect(mergePopular(doc, legacy, 10)).toEqual([
-      { collectionId: 1, count: 5 },
-      { collectionId: 2, count: 4 },
-      { collectionId: 3, count: 2 },
-    ]);
-  });
-
-  it('slices AFTER merging, so shadowing promotes the legacy entry below the cut', () => {
-    // Legacy top-2 is [100, 90]; the doc store shadows id 1 down to 1. Sliced
-    // per-store first, the merged rail would be [90, 1]; merged first, the
-    // legacy #3 (80) rightly takes the second slot.
-    const legacy: PopularEntry[] = [
-      { collectionId: 1, count: 100 },
-      { collectionId: 2, count: 90 },
-      { collectionId: 3, count: 80 },
-    ];
-    const doc: PopularEntry[] = [{ collectionId: 1, count: 1 }];
-    expect(mergePopular(doc, legacy, 2)).toEqual([
-      { collectionId: 2, count: 90 },
-      { collectionId: 3, count: 80 },
-    ]);
-  });
-});
-
-describe('recordPlayMigrated', () => {
-  it('writes to the document store when it is available and does NOT touch the legacy store', async () => {
+describe('recordPlay / readPopular — the app-facing pair, document store only', () => {
+  it('record then read round-trips through popular_plays, one distinct viewer per play', async () => {
     const { as } = makeFakePlays();
-    const legacy = makeFakeShared(99);
-    await recordPlayMigrated(as(), legacy, { id: 101, name: 'Neon Cities' });
-    expect(await readPopularDoc(as(), 10)).toEqual([{ collectionId: 101, count: 1 }]);
-    expect(legacy.entries).toHaveLength(0);
-  });
-
-  it('falls back to the legacy vote when the document store refuses', async () => {
-    const refusing: PlaysStore = {
-      list: vi.fn(async () => ({ items: [], nextCursor: null })),
-      increment: vi.fn(async () => {
-        throw new Error('collection_not_declared');
-      }),
-      mark: vi.fn(async () => ({ marked: true as const, count: 1 })),
-    };
-    const legacy = makeFakeShared(99);
-    await recordPlayMigrated(refusing, legacy, { id: 101, name: 'Neon Cities' });
-    expect(legacy.entries).toHaveLength(1);
-    expect(legacy.entries[0].count).toBe(1);
-  });
-
-  it('with no document store (null) it is exactly the legacy recordPlay', async () => {
-    const legacy = makeFakeShared(99);
-    await recordPlayMigrated(null, legacy, { id: 101, name: 'Neon Cities' });
-    expect(legacy.entries).toHaveLength(1);
-    expect(legacy.entries[0].count).toBe(1);
-  });
-});
-
-describe('readPopularMigrated', () => {
-  it('merges both stores, document store winning per collection', async () => {
-    const { as } = makeFakePlays();
-    for (const v of ['a', 'b', 'c', 'd', 'e']) await recordPlayDoc(as(v), { id: 1 });
-    const legacy = makeFakeShared(99);
-    legacy.seed({ title: 'A', data: { collectionId: 1 } }, [1, 2, 3, 4, 5, 6, 7, 8, 9]); // 9, shadowed to 5
-    legacy.seed({ title: 'B', data: { collectionId: 2 } }, [1, 2]); // legacy-only, kept
-    expect(await readPopularMigrated(as(), legacy, 10)).toEqual([
-      { collectionId: 1, count: 5 },
-      { collectionId: 2, count: 2 },
+    await recordPlay(as('alice'), { id: 101 });
+    await recordPlay(as('bob'), { id: 101 });
+    await recordPlay(as('alice'), { id: 202 });
+    expect(await readPopular(as(), 10)).toEqual([
+      { collectionId: 101, count: 2 },
+      { collectionId: 202, count: 1 },
     ]);
   });
 
-  it('degrades to exactly the legacy ranking when the document store refuses', async () => {
-    const refusing: PlaysStore = {
-      list: vi.fn(async () => {
-        throw new Error('storage_disabled');
-      }),
-      increment: vi.fn(async () => ({ value: 0 })),
-      mark: vi.fn(async () => ({ marked: true as const, count: 0 })),
-    };
-    const legacy = makeFakeShared(99);
-    legacy.seed({ title: 'A', data: { collectionId: 1 } }, [1, 2, 3]);
-    expect(await readPopularMigrated(refusing, legacy, 10)).toEqual(await readPopular(legacy, 10));
+  it('with no store (token lacks apps:storage) records nothing and reads an empty rail', async () => {
+    // No request is possible here — there is no store argument to make one
+    // through — and there is no legacy store to fall back to any more.
+    await expect(recordPlay(null, { id: 101 })).resolves.toBeUndefined();
+    expect(await readPopular(null, 10)).toEqual([]);
   });
 
-  it('with no document store (null) it is exactly readPopular', async () => {
-    const legacy = makeFakeShared(99);
-    legacy.seed({ title: 'A', data: { collectionId: 1 } }, [1, 2, 3]);
-    expect(await readPopularMigrated(null, legacy, 10)).toEqual(await readPopular(legacy, 10));
+  it('propagates a store refusal instead of turning it into an empty result', async () => {
+    const fake = createFakeStorage({
+      manifest: { scopes: manifest.scopes as string[], storage: manifest.storage },
+      viewer: { username: 'alice' },
+      disabled: true,
+    });
+    const plays = fake.storage.collection(POPULAR_PLAYS_COLLECTION) as PlaysStore;
+    await expect(recordPlay(plays, { id: 101 })).rejects.toMatchObject({ code: 'storage_disabled' });
+    await expect(readPopular(plays, 10)).rejects.toMatchObject({ code: 'storage_disabled' });
   });
 });
 
